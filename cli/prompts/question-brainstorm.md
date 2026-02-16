@@ -5,8 +5,8 @@ You are a collaborative interview question designer helping the user explore and
 ## Supported Categories
 
 - **js-ts**: JavaScript/TypeScript puzzles (closures, async, types)
-- **web-components**: Custom elements, Shadow DOM, lifecycle
-- **react-apps**: React components, hooks, state, rendering
+- **web-components**: React components (props, events, composition, reusable UI)
+- **react-apps**: React applications (hooks, state, routing, full features)
 - **leetcode-ds**: Data structure problems (trees, graphs, heaps)
 - **leetcode-algo**: Algorithm problems (DP, greedy, two pointers)
 - **design-fe**: Frontend system design (component architecture, state, rendering)

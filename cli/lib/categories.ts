@@ -65,12 +65,12 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
   },
   'web-components': {
     slug: 'web-components',
-    name: 'Web Components',
-    shortName: 'WebComp',
+    name: 'React Components',
+    shortName: 'React',
     type: 'coding',
     suggestedTimes: { easy: 20, medium: 35, hard: 50 },
-    solutionFiles: ['component.ts', 'index.html'],
-    testFiles: ['component.test.ts'],
+    solutionFiles: ['Component.tsx'],
+    testFiles: ['Component.test.tsx'],
     templateDir: 'web-components',
   },
   'react-apps': {

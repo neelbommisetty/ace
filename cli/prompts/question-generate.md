@@ -43,11 +43,11 @@ Bad `signature` examples (NEVER do this):
 
 **Test requirements:**
 - Generate 6–10 test cases covering: happy path, edge cases, and performance-sensitive scenarios
-- For **React** questions: use `@testing-library/react` with `render` and `screen`
+- For **React** questions (`react-apps`, `web-components`): use `@testing-library/react` with `render` and `screen`
 - Imports must reference the solution file correctly:
   - `js-ts`, `leetcode-ds`, `leetcode-algo`: `import { solution } from './solution'`
   - `react-apps`: `import App from './App'`
-  - `web-components`: import the component from the appropriate file (e.g., `'./component'`)
+  - `web-components`: `import { ComponentName } from './Component'` (named export)
 - Use `describe`, `it`, `expect` from Vitest
 - Tests must be self-contained and runnable
 
@@ -71,4 +71,4 @@ Return a JSON object with:
 - Questions should be achievable within the suggested time for the category and difficulty
 - Avoid ambiguous wording; constraints and expected behavior should be explicit
 - For LeetCode-style questions: include time/space complexity expectations in the description
-- For React/Web Components: focus on realistic UI behavior, not toy examples
+- For React questions (`react-apps`, `web-components`): focus on realistic UI behavior, not toy examples

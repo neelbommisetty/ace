@@ -17,7 +17,6 @@ interface ScaffoldOptions {
   signature?: string;
   testCode?: string;
   solutionCode?: string;
-  htmlCode?: string;
   notesTemplate?: string;
 }
 
@@ -60,7 +59,6 @@ export function scaffoldQuestion(opts: ScaffoldOptions): string {
     signature: opts.signature || '',
     testCode: opts.testCode || '',
     solutionCode: opts.solutionCode || '',
-    htmlCode: opts.htmlCode || '',
   };
 
   // README.md
@@ -96,17 +94,6 @@ export function scaffoldQuestion(opts: ScaffoldOptions): string {
         fs.writeFileSync(path.join(questionDir, testFile), tmpl(templateData));
       } else if (opts.testCode) {
         fs.writeFileSync(path.join(questionDir, testFile), opts.testCode);
-      }
-    }
-
-    // Handle index.html for web components
-    if (config.solutionFiles.includes('index.html') && opts.htmlCode) {
-      fs.writeFileSync(path.join(questionDir, 'index.html'), opts.htmlCode);
-    } else {
-      const htmlTemplatePath = path.join(templateDir, 'index.html.hbs');
-      if (fs.existsSync(htmlTemplatePath) && config.solutionFiles.includes('index.html')) {
-        const tmpl = loadTemplate(htmlTemplatePath);
-        fs.writeFileSync(path.join(questionDir, 'index.html'), tmpl(templateData));
       }
     }
   }

@@ -1,0 +1,29 @@
+{{#if solutionCode}}
+{{{solutionCode}}}
+{{else}}
+{{#if signature}}
+import React from 'react';
+
+{{{signature}}} {
+  return (
+    <div>
+      <h1>{{title}}</h1>
+      {/* TODO: implement */}
+    </div>
+  );
+}
+{{else}}
+import React from 'react';
+
+// TODO: implement your React component here
+
+export function Component() {
+  return (
+    <div>
+      <h1>{{title}}</h1>
+      {/* TODO: implement */}
+    </div>
+  );
+}
+{{/if}}
+{{/if}}

@@ -54,7 +54,6 @@ export async function run(args: string[]): Promise<void> {
   } else {
     // Reset solution files to stubs
     for (const file of config.solutionFiles) {
-      if (file === 'index.html') continue; // Don't reset HTML scaffold
       const filePath = path.join(question.dir, file);
       const stubContent = getStubContent(question.category, file);
       if (stubContent) {

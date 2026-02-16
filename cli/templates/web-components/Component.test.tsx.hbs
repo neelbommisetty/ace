@@ -1,0 +1,16 @@
+{{#if testCode}}
+{{{testCode}}}
+{{else}}
+import { describe, it, expect } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { Component } from './Component';
+
+describe('{{title}}', () => {
+  it('renders without crashing', () => {
+    render(<Component />);
+    expect(screen.getByText('{{title}}')).toBeDefined();
+  });
+
+  it.todo('add more test cases');
+});
+{{/if}}
