@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import prompts from 'prompts';
+import chalk from 'chalk';
 import type { Scorecard, Attempt, CategorySlug, Difficulty, QuestionStatus } from './categories.js';
-import { getSuggestedTime } from './categories.js';
+import { getSuggestedTime, CATEGORIES } from './categories.js';
 import { resolveWorkspaceRoot, getQuestionsDir } from './paths.js';
 
 export function getScorecardPath(category: CategorySlug, slug: string): string {
@@ -131,4 +133,38 @@ export function findQuestion(slug: string): { category: CategorySlug; slug: stri
   }
 
   return null;
+}
+
+export async function promptForSlug(): Promise<string | null> {
+  const questions = getAllQuestions();
+  
+  if (questions.length === 0) {
+    console.log(chalk.yellow('No questions found. Create one first with `ace generate` or `ace add`.'));
+    return null;
+  }
+
+  const choices = questions.map((q) => {
+    const categoryName = CATEGORIES[q.category]?.shortName || q.category;
+    const statusColors: Record<string, (s: string) => string> = {
+      untouched: chalk.gray,
+      'in-progress': chalk.yellow,
+      attempted: chalk.red,
+      solved: chalk.green,
+    };
+    const statusColor = statusColors[q.scorecard.status] || chalk.white;
+    
+    return {
+      title: `${chalk.cyan(categoryName)} / ${q.slug} ${statusColor(`(${q.scorecard.status})`)}`,
+      value: q.slug,
+    };
+  });
+
+  const result = await prompts({
+    type: 'select',
+    name: 'slug',
+    message: 'Select a question:',
+    choices,
+  });
+
+  return result.slug || null;
 }

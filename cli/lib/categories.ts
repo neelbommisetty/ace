@@ -18,6 +18,7 @@ export interface CategoryConfig {
   slug: CategorySlug;
   name: string;
   shortName: string;
+  hint: string;
   type: QuestionType;
   suggestedTimes: Record<Difficulty, number>;
   solutionFiles: string[];
@@ -57,6 +58,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     slug: 'js-ts',
     name: 'JS/TS Puzzles',
     shortName: 'JS/TS',
+    hint: 'Closures, async patterns, type utilities',
     type: 'coding',
     suggestedTimes: { easy: 15, medium: 30, hard: 45 },
     solutionFiles: ['solution.ts'],
@@ -67,6 +69,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     slug: 'web-components',
     name: 'React Components',
     shortName: 'React',
+    hint: 'Props, events, composition, reusable UI',
     type: 'coding',
     suggestedTimes: { easy: 20, medium: 35, hard: 50 },
     solutionFiles: ['Component.tsx'],
@@ -77,6 +80,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     slug: 'react-apps',
     name: 'React Web Apps',
     shortName: 'React',
+    hint: 'Hooks, state, routing, full features',
     type: 'coding',
     suggestedTimes: { easy: 25, medium: 45, hard: 60 },
     solutionFiles: ['App.tsx'],
@@ -87,6 +91,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     slug: 'leetcode-ds',
     name: 'LeetCode Data Structures',
     shortName: 'LC-DS',
+    hint: 'Trees, graphs, heaps, hash maps',
     type: 'coding',
     suggestedTimes: { easy: 15, medium: 30, hard: 45 },
     solutionFiles: ['solution.ts'],
@@ -97,6 +102,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     slug: 'leetcode-algo',
     name: 'LeetCode Algorithms',
     shortName: 'LC-Algo',
+    hint: 'DP, greedy, two pointers, sorting',
     type: 'coding',
     suggestedTimes: { easy: 15, medium: 30, hard: 45 },
     solutionFiles: ['solution.ts'],
@@ -107,6 +113,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     slug: 'design-fe',
     name: 'System Design — Frontend',
     shortName: 'Design-FE',
+    hint: 'Component architecture, state, rendering',
     type: 'design',
     suggestedTimes: { easy: 25, medium: 40, hard: 55 },
     solutionFiles: ['notes.md'],
@@ -117,6 +124,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     slug: 'design-be',
     name: 'System Design — Backend',
     shortName: 'Design-BE',
+    hint: 'APIs, databases, caching, queues',
     type: 'design',
     suggestedTimes: { easy: 25, medium: 40, hard: 55 },
     solutionFiles: ['notes.md'],
@@ -127,6 +135,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     slug: 'design-full',
     name: 'System Design — Full Stack',
     shortName: 'Design-Full',
+    hint: 'End-to-end systems, trade-offs',
     type: 'design',
     suggestedTimes: { easy: 30, medium: 45, hard: 60 },
     solutionFiles: ['notes.md'],
