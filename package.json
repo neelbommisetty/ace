@@ -46,8 +46,7 @@
   "author": "Neel",
   "license": "MIT",
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
