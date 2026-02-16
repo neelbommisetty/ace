@@ -29,9 +29,18 @@ function getAvailableProviders(): LLMProvider[] {
 }
 
 export function getDefaultProvider(): LLMProvider | null {
-  const providers = getAvailableProviders();
-  if (providers.length === 0) return null;
-  return providers[0];
+  const config = getConfig();
+  const available = getAvailableProviders();
+  if (available.length === 0) return null;
+  
+  // Respect saved preference if that provider is available
+  if (config.default_provider && available.includes(config.default_provider as LLMProvider)) {
+    return config.default_provider as LLMProvider;
+  }
+  
+  // Default to openai if available, otherwise first available
+  if (available.includes('openai')) return 'openai';
+  return available[0];
 }
 
 export function requireProvider(preferred?: string): LLMProvider {

@@ -6,6 +6,7 @@ import { getGlobalAceDir } from './paths.js';
 export interface AceConfig {
   OPENAI_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
+  default_provider?: string;
   [key: string]: string | undefined;
 }
 
