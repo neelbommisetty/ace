@@ -117,23 +117,26 @@ export async function run(args: string[]): Promise<void> {
 
   // Create tsconfig.json if missing
   const tsconfigPath = path.join(root, 'tsconfig.json');
-  if (!fs.existsSync(tsconfigPath) || force) {
+  const tsconfigExisted = fs.existsSync(tsconfigPath);
+  if (!tsconfigExisted || force) {
     fs.writeFileSync(tsconfigPath, JSON.stringify(TSCONFIG_TEMPLATE, null, 2) + '\n', 'utf-8');
-    changes.push(force && fs.existsSync(tsconfigPath) ? 'Overwrote tsconfig.json' : 'Created tsconfig.json');
+    changes.push(tsconfigExisted ? 'Overwrote tsconfig.json' : 'Created tsconfig.json');
   }
 
   // Create vitest.config.ts if missing
   const vitestConfigPath = path.join(root, 'vitest.config.ts');
-  if (!fs.existsSync(vitestConfigPath) || force) {
+  const vitestConfigExisted = fs.existsSync(vitestConfigPath);
+  if (!vitestConfigExisted || force) {
     fs.writeFileSync(vitestConfigPath, VITEST_CONFIG_TEMPLATE, 'utf-8');
-    changes.push(force && fs.existsSync(vitestConfigPath) ? 'Overwrote vitest.config.ts' : 'Created vitest.config.ts');
+    changes.push(vitestConfigExisted ? 'Overwrote vitest.config.ts' : 'Created vitest.config.ts');
   }
 
   // Create vitest.setup.ts if missing
   const vitestSetupPath = path.join(root, 'vitest.setup.ts');
-  if (!fs.existsSync(vitestSetupPath) || force) {
+  const vitestSetupExisted = fs.existsSync(vitestSetupPath);
+  if (!vitestSetupExisted || force) {
     fs.writeFileSync(vitestSetupPath, VITEST_SETUP_TEMPLATE, 'utf-8');
-    changes.push(force && fs.existsSync(vitestSetupPath) ? 'Overwrote vitest.setup.ts' : 'Created vitest.setup.ts');
+    changes.push(vitestSetupExisted ? 'Overwrote vitest.setup.ts' : 'Created vitest.setup.ts');
   }
 
   // Print summary
