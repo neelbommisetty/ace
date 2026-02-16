@@ -164,3 +164,32 @@ export async function chatStream(
   }
   return streamAnthropic(messages);
 }
+
+export async function validateOpenAIKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
+  try {
+    const client = new OpenAI({ apiKey });
+    await client.models.list();
+    return { valid: true };
+  } catch (err: any) {
+    const message = err?.message || 'Unknown error';
+    return { valid: false, error: message };
+  }
+}
+
+export async function validateAnthropicKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
+  try {
+    const client = new Anthropic({ apiKey });
+    await client.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    return { valid: true };
+  } catch (err: any) {
+    if (err?.status === 401) {
+      return { valid: false, error: 'Invalid API key (401 Unauthorized)' };
+    }
+    const message = err?.message || 'Unknown error';
+    return { valid: false, error: message };
+  }
+}

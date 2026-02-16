@@ -1,12 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
 import chalk from 'chalk';
 import { getQuestionsDir, isWorkspaceInitialized } from '../lib/paths.js';
 
-function parseArgs(args: string[]): { force: boolean; writeScripts: boolean } {
+function parseArgs(args: string[]): { force: boolean } {
   return {
     force: args.includes('--force'),
-    writeScripts: args.includes('--write-scripts'),
   };
 }
 
@@ -26,14 +26,46 @@ export default defineConfig({
 const VITEST_SETUP_TEMPLATE = `import '@testing-library/jest-dom/vitest';
 `;
 
-const PACKAGE_JSON_SCRIPTS = {
-  ace: 'tsx cli/index.ts',
-  test: 'vitest run',
-  'test:watch': 'vitest',
+const PACKAGE_JSON_TEMPLATE = {
+  name: 'ace-workspace',
+  private: true,
+  type: 'module',
+  scripts: {
+    test: 'vitest run',
+    'test:watch': 'vitest',
+  },
+  devDependencies: {
+    '@testing-library/jest-dom': '^6.9.1',
+    '@testing-library/react': '^16.3.2',
+    '@types/react': '^19.2.14',
+    '@types/react-dom': '^19.2.3',
+    'happy-dom': '^20.6.1',
+    'react': '^19.2.4',
+    'react-dom': '^19.2.4',
+    'typescript': '^5.9.3',
+    'vitest': '^4.0.18',
+  },
+};
+
+const TSCONFIG_TEMPLATE = {
+  compilerOptions: {
+    target: 'ES2022',
+    module: 'ESNext',
+    moduleResolution: 'bundler',
+    esModuleInterop: true,
+    allowImportingTsExtensions: true,
+    noEmit: true,
+    strict: true,
+    skipLibCheck: true,
+    resolveJsonModule: true,
+    isolatedModules: true,
+    jsx: 'react-jsx',
+  },
+  include: ['questions/**/*'],
 };
 
 export async function run(args: string[]): Promise<void> {
-  const { force, writeScripts } = parseArgs(args);
+  const { force } = parseArgs(args);
   const root = process.cwd();
 
   console.log(chalk.cyan('\n--- Initialize Workspace ---'));
@@ -55,6 +87,41 @@ export async function run(args: string[]): Promise<void> {
     changes.push('Created questions/');
   }
 
+  // Create or merge package.json
+  const packageJsonPath = path.join(root, 'package.json');
+  if (!fs.existsSync(packageJsonPath)) {
+    fs.writeFileSync(packageJsonPath, JSON.stringify(PACKAGE_JSON_TEMPLATE, null, 2) + '\n', 'utf-8');
+    changes.push('Created package.json');
+  } else {
+    // Merge scripts into existing package.json
+    try {
+      const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+      pkg.scripts = pkg.scripts || {};
+      
+      let updated = false;
+      for (const [key, value] of Object.entries(PACKAGE_JSON_TEMPLATE.scripts)) {
+        if (!pkg.scripts[key]) {
+          pkg.scripts[key] = value;
+          updated = true;
+        }
+      }
+      
+      if (updated) {
+        fs.writeFileSync(packageJsonPath, JSON.stringify(pkg, null, 2) + '\n', 'utf-8');
+        changes.push('Updated package.json scripts');
+      }
+    } catch (err) {
+      console.warn(chalk.yellow('Warning: Could not update package.json scripts'));
+    }
+  }
+
+  // Create tsconfig.json if missing
+  const tsconfigPath = path.join(root, 'tsconfig.json');
+  if (!fs.existsSync(tsconfigPath) || force) {
+    fs.writeFileSync(tsconfigPath, JSON.stringify(TSCONFIG_TEMPLATE, null, 2) + '\n', 'utf-8');
+    changes.push(force && fs.existsSync(tsconfigPath) ? 'Overwrote tsconfig.json' : 'Created tsconfig.json');
+  }
+
   // Create vitest.config.ts if missing
   const vitestConfigPath = path.join(root, 'vitest.config.ts');
   if (!fs.existsSync(vitestConfigPath) || force) {
@@ -69,32 +136,6 @@ export async function run(args: string[]): Promise<void> {
     changes.push(force && fs.existsSync(vitestSetupPath) ? 'Overwrote vitest.setup.ts' : 'Created vitest.setup.ts');
   }
 
-  // Handle package.json scripts
-  const packageJsonPath = path.join(root, 'package.json');
-  if (fs.existsSync(packageJsonPath)) {
-    if (writeScripts) {
-      try {
-        const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-        pkg.scripts = pkg.scripts || {};
-        
-        let added = false;
-        for (const [key, value] of Object.entries(PACKAGE_JSON_SCRIPTS)) {
-          if (!pkg.scripts[key]) {
-            pkg.scripts[key] = value;
-            added = true;
-          }
-        }
-        
-        if (added) {
-          fs.writeFileSync(packageJsonPath, JSON.stringify(pkg, null, 2) + '\n', 'utf-8');
-          changes.push('Added scripts to package.json');
-        }
-      } catch (err) {
-        console.warn(chalk.yellow('Warning: Could not update package.json scripts'));
-      }
-    }
-  }
-
   // Print summary
   if (changes.length > 0) {
     console.log(chalk.green('✓ Workspace initialized:\n'));
@@ -107,13 +148,22 @@ export async function run(args: string[]): Promise<void> {
 
   console.log();
 
+  // Install dependencies
+  console.log(chalk.cyan('--- Installing dependencies ---'));
+  try {
+    execSync('npm install', { cwd: root, stdio: 'inherit' });
+    console.log(chalk.green('\n✓ Dependencies installed'));
+  } catch {
+    console.error(chalk.red('\n✗ npm install failed. Please run it manually.'));
+  }
+
+  console.log();
+
   // Print next steps
   console.log(chalk.bold('Next steps:'));
-  console.log(chalk.dim('  1. Install dependencies (if not already installed):'));
-  console.log(chalk.dim('     npm install vitest happy-dom @testing-library/jest-dom'));
-  console.log(chalk.dim('  2. Configure API keys:'));
+  console.log(chalk.dim('  1. Configure API keys:'));
   console.log(chalk.dim('     ace setup'));
-  console.log(chalk.dim('  3. Generate or add questions:'));
+  console.log(chalk.dim('  2. Generate or add questions:'));
   console.log(chalk.dim('     ace generate --topic "debounce"'));
   console.log(chalk.dim('     ace add'));
   console.log();

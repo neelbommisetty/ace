@@ -1,6 +1,7 @@
 import prompts from 'prompts';
 import chalk from 'chalk';
 import { saveGlobalAceConfig, maskApiKey, loadAceConfig } from '../lib/config.js';
+import { validateOpenAIKey, validateAnthropicKey } from '../lib/llm.js';
 
 function parseArgs(args: string[]): Record<string, string> {
   const result: Record<string, string> = {};
@@ -18,6 +19,12 @@ function parseArgs(args: string[]): Record<string, string> {
     }
   }
   return result;
+}
+
+function printStatusLine(label: string, status: boolean | null, detail: string): void {
+  const icon = status === true ? chalk.green('✓') : status === false ? chalk.red('✗') : chalk.yellow('–');
+  const paddedLabel = label.padEnd(18);
+  console.log(`  ${icon}  ${paddedLabel} ${chalk.dim(detail)}`);
 }
 
 export async function run(args: string[]): Promise<void> {
@@ -88,14 +95,57 @@ export async function run(args: string[]): Promise<void> {
     console.log(chalk.yellow('\nNo new keys provided. Existing configuration unchanged.'));
   }
 
-  // Show summary
+  // Validate keys
+  console.log(chalk.cyan('\n--- Validating API Keys ---\n'));
+  
   const final = loadAceConfig();
-  console.log(chalk.dim('\nConfigured providers:'));
+  
+  let openaiValid: boolean | null = null;
+  let openaiError: string | undefined;
   if (final.OPENAI_API_KEY) {
-    console.log(chalk.dim(`  • OpenAI: ${maskApiKey(final.OPENAI_API_KEY)}`));
+    console.log(chalk.dim('Validating OpenAI key...'));
+    const result = await validateOpenAIKey(final.OPENAI_API_KEY);
+    openaiValid = result.valid;
+    openaiError = result.error;
   }
+
+  let anthropicValid: boolean | null = null;
+  let anthropicError: string | undefined;
   if (final.ANTHROPIC_API_KEY) {
-    console.log(chalk.dim(`  • Anthropic: ${maskApiKey(final.ANTHROPIC_API_KEY)}`));
+    console.log(chalk.dim('Validating Anthropic key...'));
+    const result = await validateAnthropicKey(final.ANTHROPIC_API_KEY);
+    anthropicValid = result.valid;
+    anthropicError = result.error;
   }
-  console.log();
+
+  // Display status dashboard
+  console.log(chalk.cyan('\n╭─────────────────────────────────────────╮'));
+  console.log(chalk.cyan('│') + chalk.bold('  ace status') + '                            ' + chalk.cyan('│'));
+  console.log(chalk.cyan('├─────────────────────────────────────────┤'));
+  
+  if (final.OPENAI_API_KEY) {
+    const detail = openaiValid ? maskApiKey(final.OPENAI_API_KEY) : openaiError || 'validation failed';
+    printStatusLine('OpenAI key', openaiValid, detail);
+  } else {
+    printStatusLine('OpenAI key', null, 'not configured');
+  }
+
+  if (final.ANTHROPIC_API_KEY) {
+    const detail = anthropicValid ? maskApiKey(final.ANTHROPIC_API_KEY) : anthropicError || 'validation failed';
+    printStatusLine('Anthropic key', anthropicValid, detail);
+  } else {
+    printStatusLine('Anthropic key', null, 'not configured');
+  }
+
+  console.log(chalk.cyan('├─────────────────────────────────────────┤'));
+  
+  const ready = (openaiValid === true || anthropicValid === true);
+  printStatusLine('Ready', ready, ready ? 'at least one provider configured' : 'no valid API keys');
+  
+  console.log(chalk.cyan('╰─────────────────────────────────────────╯\n'));
+
+  if (!ready && (openaiValid === false || anthropicValid === false)) {
+    console.log(chalk.yellow('Warning: No valid API keys configured.'));
+    console.log(chalk.dim('Run `ace setup` again with valid keys to use LLM features.\n'));
+  }
 }
