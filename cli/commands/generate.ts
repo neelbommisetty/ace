@@ -83,6 +83,12 @@ Question type: ${categoryConfig.type}`;
 
   const slug = parsed.slug || slugify(parsed.title || topic);
 
+  // Never pass solutionCode from LLM — it may contain a full implementation.
+  // Templates will build a proper stub from the signature instead.
+  if (parsed.solutionCode) {
+    console.log(chalk.dim('Note: Discarded LLM solutionCode; using signature-based stub.'));
+  }
+
   const questionDir = scaffoldQuestion({
     title: parsed.title || topic,
     slug,
@@ -91,7 +97,6 @@ Question type: ${categoryConfig.type}`;
     description: parsed.description || '',
     signature: parsed.signature,
     testCode: parsed.testCode,
-    solutionCode: parsed.solutionCode,
   });
 
   console.log(chalk.green(`\nCreated: questions/${category}/${slug}/`));
@@ -216,6 +221,11 @@ ${brainstormSummary}`,
 
   const slug = parsed.slug || slugify(parsed.title || 'brainstorm-question');
 
+  // Never pass solutionCode from LLM — it may contain a full implementation.
+  if (parsed.solutionCode) {
+    console.log(chalk.dim('Note: Discarded LLM solutionCode; using signature-based stub.'));
+  }
+
   const questionDir = scaffoldQuestion({
     title: parsed.title,
     slug,
@@ -224,7 +234,6 @@ ${brainstormSummary}`,
     description: parsed.description || '',
     signature: parsed.signature,
     testCode: parsed.testCode,
-    solutionCode: parsed.solutionCode,
   });
 
   console.log(chalk.green(`\nCreated: questions/${category}/${slug}/`));

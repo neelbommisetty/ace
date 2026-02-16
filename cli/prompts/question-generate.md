@@ -22,11 +22,24 @@ Return a JSON object with:
   "title": "Human-readable question title",
   "slug": "kebab-case-slug",
   "description": "Markdown description with problem statement, examples, constraints",
-  "signature": "Function signature or component interface the candidate must implement",
-  "testCode": "Full Vitest test file content as a string",
-  "solutionCode": "Stub implementation with the signature only (empty body or minimal placeholder)"
+  "signature": "The exported function/class signature line ONLY (see rules below)",
+  "testCode": "Full Vitest test file content as a string"
 }
 ```
+
+**CRITICAL — Do NOT include `solutionCode` in your response. Do NOT implement the solution.**
+
+The `signature` field must contain ONLY the bare function or class declaration line that the candidate will implement. It must NOT contain any logic, algorithm, data structure manipulation, loops, conditionals, or meaningful code.
+
+Good `signature` examples:
+- `export function debounce<T extends (...args: any[]) => any>(fn: T, delay: number): T`
+- `export function deepClone<T>(obj: T): T`
+- `export class LRUCache<K, V>`
+
+Bad `signature` examples (NEVER do this):
+- A full function body with implementation logic
+- Code that includes `if`, `for`, `while`, `map`, `reduce`, `setTimeout`, or any working logic
+- A complete class with method implementations
 
 **Test requirements:**
 - Generate 6–10 test cases covering: happy path, edge cases, and performance-sensitive scenarios
@@ -37,10 +50,6 @@ Return a JSON object with:
   - `web-components`: import the component from the appropriate file (e.g., `'./component'`)
 - Use `describe`, `it`, `expect` from Vitest
 - Tests must be self-contained and runnable
-
-**Solution stub:**
-- Include the exact function/component signature the candidate must implement
-- Leave the body empty or with a minimal placeholder (e.g., `throw new Error('Not implemented')` or `return null`)
 
 ### For Design Categories (design-fe, design-be, design-full)
 
