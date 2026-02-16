@@ -1,22 +1,25 @@
 import { execSync } from 'node:child_process';
 import chalk from 'chalk';
-import { findQuestion, readScorecard, updateTestResults, writeScorecard } from '../lib/scorecard.js';
+import { findQuestion, readScorecard, updateTestResults, writeScorecard, promptForSlug } from '../lib/scorecard.js';
 import { isDesignCategory } from '../lib/categories.js';
 import { resolveWorkspaceRoot, isWorkspaceInitialized } from '../lib/paths.js';
 
-function parseArgs(args: string[]): { slug?: string; watch: boolean } {
+function parseArgs(args: string[]): { slug?: string; watch: boolean; all: boolean } {
   let slug: string | undefined;
   let watch = false;
+  let all = false;
 
   for (const arg of args) {
     if (arg === '--watch') {
       watch = true;
+    } else if (arg === '--all' || arg === 'all') {
+      all = true;
     } else if (!arg.startsWith('--')) {
       slug = arg;
     }
   }
 
-  return { slug, watch };
+  return { slug, watch, all };
 }
 
 function parseTestOutput(output: string): { total: number; passed: number } {
@@ -40,10 +43,10 @@ export async function run(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const { slug, watch } = parseArgs(args);
+  const { slug, watch, all } = parseArgs(args);
 
-  if (!slug) {
-    // Run all tests
+  // Handle --all flag: run all tests
+  if (all) {
     console.log(chalk.cyan('\nRunning all tests...\n'));
     try {
       const cmd = watch ? 'npx vitest' : 'npx vitest run';
@@ -54,20 +57,27 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
 
-  const question = findQuestion(slug);
+  // If no slug provided, show interactive picker
+  let selectedSlug = slug;
+  if (!selectedSlug) {
+    selectedSlug = await promptForSlug();
+    if (!selectedSlug) return;
+  }
+
+  const question = findQuestion(selectedSlug);
   if (!question) {
-    console.error(chalk.red(`Question not found: ${slug}`));
+    console.error(chalk.red(`Question not found: ${selectedSlug}`));
     console.error(chalk.dim('Run `npm run ace list` to see all questions.'));
     return;
   }
 
   if (isDesignCategory(question.category)) {
-    console.log(chalk.yellow(`"${slug}" is a system design question — no tests to run.`));
-    console.log(chalk.dim('Use `npm run ace feedback ' + slug + '` for LLM review.'));
+    console.log(chalk.yellow(`"${selectedSlug}" is a system design question — no tests to run.`));
+    console.log(chalk.dim('Use `npm run ace feedback ' + selectedSlug + '` for LLM review.'));
     return;
   }
 
-  console.log(chalk.cyan(`\nRunning tests for: ${slug}\n`));
+  console.log(chalk.cyan(`\nRunning tests for: ${selectedSlug}\n`));
 
   let output = '';
   try {
@@ -85,11 +95,11 @@ export async function run(args: string[]): Promise<void> {
 
   // Update scorecard if not in watch mode
   if (!watch) {
-    const scorecard = readScorecard(question.category, slug);
+    const scorecard = readScorecard(question.category, selectedSlug);
     if (scorecard) {
       const { total, passed } = parseTestOutput(output);
       updateTestResults(scorecard, total, passed);
-      writeScorecard(question.category, slug, scorecard);
+      writeScorecard(question.category, selectedSlug, scorecard);
 
       if (total > 0) {
         const color = passed === total ? chalk.green : chalk.red;

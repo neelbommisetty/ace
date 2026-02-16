@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import prompts from 'prompts';
 import chalk from 'chalk';
-import { findQuestion, readScorecard, writeScorecard } from '../lib/scorecard.js';
+import { findQuestion, readScorecard, writeScorecard, getAllQuestions, promptForSlug } from '../lib/scorecard.js';
 import { CATEGORIES, isDesignCategory } from '../lib/categories.js';
 import { chatStream, requireProvider } from '../lib/llm.js';
 import type { LLMMessage } from '../lib/llm.js';
@@ -13,45 +14,32 @@ function loadPrompt(name: string): string {
   return fs.readFileSync(path.join(PROMPTS_DIR, name), 'utf-8');
 }
 
-function parseArgs(args: string[]): { slug?: string; provider?: string } {
+function parseArgs(args: string[]): { slug?: string; provider?: string; all: boolean } {
   let slug: string | undefined;
   let provider: string | undefined;
+  let all = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--provider' && args[i + 1]) {
       provider = args[++i];
+    } else if (arg === '--all' || arg === 'all') {
+      all = true;
     } else if (!arg.startsWith('--')) {
       slug = arg;
     }
   }
 
-  return { slug, provider };
+  return { slug, provider, all };
 }
 
-export async function run(args: string[]): Promise<void> {
-  const root = resolveWorkspaceRoot();
-  if (!isWorkspaceInitialized(root)) {
-    console.error(chalk.red('\nError: Workspace not initialized.'));
-    console.error(chalk.dim('Run `ace init` in this folder first.\n'));
-    process.exit(1);
-  }
-
-  const parsed = parseArgs(args);
-
-  if (!parsed.slug) {
-    console.error(chalk.red('Missing question slug.'));
-    console.error(chalk.dim('Usage: npm run ace feedback <slug>'));
-    return;
-  }
-
-  const question = findQuestion(parsed.slug);
+async function runFeedbackForSlug(slug: string, provider: string): Promise<void> {
+  const question = findQuestion(slug);
   if (!question) {
-    console.error(chalk.red(`Question not found: ${parsed.slug}`));
+    console.error(chalk.red(`Question not found: ${slug}`));
     return;
   }
 
-  const provider = requireProvider(parsed.provider);
   const config = CATEGORIES[question.category];
   const isDesign = isDesignCategory(question.category);
 
@@ -69,7 +57,7 @@ export async function run(args: string[]): Promise<void> {
 
     if (!notes.trim() || notes.includes('<!-- List the core features')) {
       console.error(chalk.yellow('Notes file appears to be empty. Write your design notes first!'));
-      console.error(chalk.dim(`Edit: questions/${question.category}/${parsed.slug}/notes.md`));
+      console.error(chalk.dim(`Edit: questions/${question.category}/${slug}/notes.md`));
       return;
     }
 
@@ -124,7 +112,7 @@ ${solutionContent}
 ${testContent}`;
   }
 
-  console.log(chalk.cyan(`\n--- LLM ${isDesign ? 'Design' : 'Code'} Review: ${parsed.slug} ---`));
+  console.log(chalk.cyan(`\n--- LLM ${isDesign ? 'Design' : 'Code'} Review: ${slug} ---`));
   console.log(chalk.dim(`Provider: ${provider}\n`));
 
   const messages: LLMMessage[] = [
@@ -142,7 +130,7 @@ ${testContent}`;
   console.log('\n');
 
   // Save feedback to scorecard
-  const scorecard = readScorecard(question.category, parsed.slug);
+  const scorecard = readScorecard(question.category, slug);
   if (scorecard) {
     scorecard.llmFeedback = fullResponse;
 
@@ -153,7 +141,61 @@ ${testContent}`;
       lastAttempt.llmScore = parseFloat(scoreMatch[1]);
     }
 
-    writeScorecard(question.category, parsed.slug, scorecard);
+    writeScorecard(question.category, slug, scorecard);
     console.log(chalk.dim('Feedback saved to scorecard.'));
   }
+}
+
+export async function run(args: string[]): Promise<void> {
+  const root = resolveWorkspaceRoot();
+  if (!isWorkspaceInitialized(root)) {
+    console.error(chalk.red('\nError: Workspace not initialized.'));
+    console.error(chalk.dim('Run `ace init` in this folder first.\n'));
+    process.exit(1);
+  }
+
+  const parsed = parseArgs(args);
+  const provider = requireProvider(parsed.provider);
+
+  // Handle --all flag: run feedback for all questions with confirmation
+  if (parsed.all) {
+    const questions = getAllQuestions();
+    if (questions.length === 0) {
+      console.log(chalk.yellow('No questions found. Create one first with `ace generate` or `ace add`.'));
+      return;
+    }
+
+    console.log(chalk.cyan(`\nRunning feedback for ${questions.length} question(s)...\n`));
+
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+      console.log(chalk.bold(`\n[${i + 1}/${questions.length}] ${q.slug}`));
+
+      const { confirm } = await prompts({
+        type: 'confirm',
+        name: 'confirm',
+        message: `Run feedback for "${q.slug}"?`,
+        initial: true,
+      });
+
+      if (!confirm) {
+        console.log(chalk.dim('Skipped.'));
+        continue;
+      }
+
+      await runFeedbackForSlug(q.slug, provider);
+    }
+
+    console.log(chalk.green('\nCompleted feedback for all questions.'));
+    return;
+  }
+
+  // If no slug provided, show interactive picker
+  let selectedSlug = parsed.slug;
+  if (!selectedSlug) {
+    selectedSlug = await promptForSlug();
+    if (!selectedSlug) return;
+  }
+
+  await runFeedbackForSlug(selectedSlug, provider);
 }

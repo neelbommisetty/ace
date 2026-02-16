@@ -1,41 +1,15 @@
 import chalk from 'chalk';
-import { findQuestion, readScorecard } from '../lib/scorecard.js';
+import { findQuestion, readScorecard, getAllQuestions, promptForSlug } from '../lib/scorecard.js';
 import { CATEGORIES } from '../lib/categories.js';
+import type { Scorecard, CategorySlug } from '../lib/categories.js';
 import { resolveWorkspaceRoot, isWorkspaceInitialized } from '../lib/paths.js';
 
-export async function run(args: string[]): Promise<void> {
-  const root = resolveWorkspaceRoot();
-  if (!isWorkspaceInitialized(root)) {
-    console.error(chalk.red('\nError: Workspace not initialized.'));
-    console.error(chalk.dim('Run `ace init` in this folder first.\n'));
-    process.exit(1);
-  }
-
-  const slug = args.find((a) => !a.startsWith('--'));
-
-  if (!slug) {
-    console.error(chalk.red('Missing question slug.'));
-    console.error(chalk.dim('Usage: npm run ace score <slug>'));
-    return;
-  }
-
-  const question = findQuestion(slug);
-  if (!question) {
-    console.error(chalk.red(`Question not found: ${slug}`));
-    return;
-  }
-
-  const scorecard = readScorecard(question.category, slug);
-  if (!scorecard) {
-    console.error(chalk.red('No scorecard found for this question.'));
-    return;
-  }
-
-  const config = CATEGORIES[question.category];
+function displayScorecard(slug: string, category: CategorySlug, scorecard: Scorecard): void {
+  const config = CATEGORIES[category];
 
   console.log(`\n${chalk.bold.cyan('Scorecard:')} ${chalk.bold(scorecard.title || slug)}`);
   console.log(chalk.dim('─'.repeat(60)));
-  console.log(`  ${chalk.bold('Category:')}     ${config?.name || question.category}`);
+  console.log(`  ${chalk.bold('Category:')}     ${config?.name || category}`);
   console.log(`  ${chalk.bold('Difficulty:')}   ${scorecard.difficulty}`);
   console.log(`  ${chalk.bold('Suggested:')}    ~${scorecard.suggestedTime} minutes`);
 
@@ -79,4 +53,51 @@ export async function run(args: string[]): Promise<void> {
   }
 
   console.log(chalk.dim('\n' + '─'.repeat(60)));
+}
+
+export async function run(args: string[]): Promise<void> {
+  const root = resolveWorkspaceRoot();
+  if (!isWorkspaceInitialized(root)) {
+    console.error(chalk.red('\nError: Workspace not initialized.'));
+    console.error(chalk.dim('Run `ace init` in this folder first.\n'));
+    process.exit(1);
+  }
+
+  const hasAll = args.includes('--all') || args.includes('all');
+  const slug = args.find((a) => !a.startsWith('--') && a !== 'all');
+
+  // Handle --all flag: show all scorecards
+  if (hasAll) {
+    const questions = getAllQuestions();
+    if (questions.length === 0) {
+      console.log(chalk.yellow('No questions found. Create one first with `ace generate` or `ace add`.'));
+      return;
+    }
+
+    for (const q of questions) {
+      displayScorecard(q.slug, q.category, q.scorecard);
+    }
+    return;
+  }
+
+  // If no slug provided, show interactive picker
+  let selectedSlug = slug;
+  if (!selectedSlug) {
+    selectedSlug = await promptForSlug();
+    if (!selectedSlug) return;
+  }
+
+  const question = findQuestion(selectedSlug);
+  if (!question) {
+    console.error(chalk.red(`Question not found: ${selectedSlug}`));
+    return;
+  }
+
+  const scorecard = readScorecard(question.category, selectedSlug);
+  if (!scorecard) {
+    console.error(chalk.red('No scorecard found for this question.'));
+    return;
+  }
+
+  displayScorecard(selectedSlug, question.category, scorecard);
 }

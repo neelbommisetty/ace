@@ -167,7 +167,11 @@ async function brainstormMode(provider: LLMProvider): Promise<void> {
     type: 'select',
     name: 'category',
     message: 'Which category?',
-    choices: CATEGORY_SLUGS.map((s) => ({ title: CATEGORIES[s].name, value: s })),
+    choices: CATEGORY_SLUGS.map((s) => ({ 
+      title: CATEGORIES[s].name, 
+      description: CATEGORIES[s].hint,
+      value: s 
+    })),
   });
 
   const { difficulty } = await prompts({
@@ -261,25 +265,26 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
 
-  // Direct mode
-  if (!parsed.topic) {
-    console.error(chalk.red('Missing --topic. Use --brainstorm for interactive mode.'));
-    console.error(chalk.dim('Example: npm run ace generate -- --topic "debounce" --category js-ts --difficulty medium'));
-    return;
-  }
-
+  // Direct mode - prompt for category, difficulty, then topic
   let category = parsed.category as CategorySlug | undefined;
   let difficulty = parsed.difficulty as Difficulty | undefined;
+  let topic = parsed.topic;
 
   if (!category) {
     const result = await prompts({
       type: 'select',
       name: 'category',
       message: 'Which category?',
-      choices: CATEGORY_SLUGS.map((s) => ({ title: CATEGORIES[s].name, value: s })),
+      choices: CATEGORY_SLUGS.map((s) => ({ 
+        title: CATEGORIES[s].name, 
+        description: CATEGORIES[s].hint,
+        value: s 
+      })),
     });
     category = result.category;
   }
+
+  if (!category) return;
 
   if (!difficulty) {
     const result = await prompts({
@@ -295,7 +300,18 @@ export async function run(args: string[]): Promise<void> {
     difficulty = result.difficulty;
   }
 
-  if (!category || !difficulty) return;
+  if (!difficulty) return;
 
-  await directMode(provider, parsed.topic, category, difficulty);
+  if (!topic) {
+    const result = await prompts({
+      type: 'text',
+      name: 'topic',
+      message: 'What topic do you want to practice?',
+    });
+    topic = result.topic;
+  }
+
+  if (!topic) return;
+
+  await directMode(provider, topic, category, difficulty);
 }
