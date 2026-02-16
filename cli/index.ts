@@ -39,15 +39,39 @@ ${chalk.bold('Examples:')}
 
   ace setup
   ace init
+  
+  ${chalk.dim('# Generate interactively (prompts for category, difficulty, topic)')}
+  ace generate
+  
+  ${chalk.dim('# Or pass flags to skip prompts')}
   ace generate --topic "debounce" --category js-ts --difficulty medium
+  
+  ${chalk.dim('# Brainstorm mode for design help')}
   ace generate --brainstorm
+  
+  ${chalk.dim('# List all questions')}
   ace list
   ace list --category js-ts --status solved
+  
+  ${chalk.dim('# Test interactively (shows question picker)')}
+  ace test
+  
+  ${chalk.dim('# Or test a specific question or all questions')}
   ace test debounce
-  ace test --watch
+  ace test --all
+  
+  ${chalk.dim('# Feedback, score, and reset also support interactive mode and --all')}
+  ace feedback
   ace feedback debounce
-  ace reset debounce
+  ace feedback --all
+  
+  ace score
   ace score debounce
+  ace score --all
+  
+  ace reset
+  ace reset debounce
+  ace reset --all
 `);
 }
 
