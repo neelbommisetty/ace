@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.1.2](https://github.com/neel/ace-interview-prep/compare/v0.1.1...v0.1.2) (2026-02-16)
+
+
+### Bug Fixes
+
+* remove provenance from publishConfig for local publishing ([9ecfe2a](https://github.com/neel/ace-interview-prep/commit/9ecfe2ae42954faeb2d7918a47924a2412ce99ca))
+
 ## 0.1.1 (2026-02-16)
 
 
