@@ -1,0 +1,72 @@
+{
+  "name": "ace-interview-prep",
+  "version": "0.1.0",
+  "description": "CLI tool for frontend interview preparation — scaffolds questions with tests, tracks progress, and provides LLM-powered feedback",
+  "type": "module",
+  "bin": {
+    "ace": "dist/index.js"
+  },
+  "files": [
+    "dist/",
+    "questions/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup && node scripts/postbuild.js",
+    "prepublishOnly": "npm run build",
+    "ace": "tsx cli/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "interview",
+    "frontend",
+    "practice",
+    "cli",
+    "typescript",
+    "react",
+    "leetcode",
+    "system-design",
+    "web-components"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/neel/ace-interview-prep.git"
+  },
+  "homepage": "https://github.com/neel/ace-interview-prep#readme",
+  "bugs": {
+    "url": "https://github.com/neel/ace-interview-prep/issues"
+  },
+  "author": "Neel",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.74.0",
+    "chalk": "^5.6.2",
+    "cli-table3": "^0.6.5",
+    "dotenv": "^17.3.1",
+    "handlebars": "^4.7.8",
+    "openai": "^6.22.0",
+    "prompts": "^2.4.2"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/prompts": "^2.4.9",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "happy-dom": "^20.6.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}

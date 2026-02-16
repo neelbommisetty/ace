@@ -1,0 +1,22 @@
+{{#if solutionCode}}
+{{{solutionCode}}}
+{{else}}
+{{#if signature}}
+{{{signature}}}
+{{else}}
+// TODO: implement your web component here
+
+export class MyComponent extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+  }
+
+  connectedCallback() {
+    // TODO: implement
+  }
+}
+
+// customElements.define('my-component', MyComponent);
+{{/if}}
+{{/if}}
