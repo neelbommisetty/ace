@@ -14,6 +14,7 @@ const COMMANDS: Record<string, () => Promise<{ run: (args: string[]) => Promise<
   feedback: () => import('./commands/feedback.js'),
   reset: () => import('./commands/reset.js'),
   score: () => import('./commands/score.js'),
+  dispute: () => import('./commands/dispute.js'),
 };
 
 function printHelp() {
@@ -34,6 +35,7 @@ ${chalk.bold('Question Commands:')}
   ${chalk.green('feedback')}   Get LLM code review or design review
   ${chalk.green('reset')}      Reset a question to unanswered state
   ${chalk.green('score')}      View scorecard for a question
+  ${chalk.green('dispute')}    Challenge a potentially incorrect test case
 
 ${chalk.bold('Examples:')}
 
@@ -72,6 +74,10 @@ ${chalk.bold('Examples:')}
   ace reset
   ace reset debounce
   ace reset --all
+  
+  ${chalk.dim('# Dispute a test you think is wrong')}
+  ace dispute
+  ace dispute debounce
 `);
 }
 

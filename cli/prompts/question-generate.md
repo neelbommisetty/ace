@@ -66,6 +66,24 @@ Return a JSON object with:
 - No `signature`, `testCode`, or `solutionCode`
 - The description must include a clear **Requirements** section that candidates can use to structure their design
 
+## Common Test Mistakes to Avoid
+
+Before finalizing `testCode`, mentally execute each test case against a correct implementation step-by-step. Verify that every expected value is accurate.
+
+- **Wrong expected values**: Double-check computed outputs (sorted arrays, mathematical results, string transformations) by tracing through the algorithm by hand
+- **Off-by-one errors**: Verify boundary indices, slice ranges, and loop counts in expected outputs
+- **Incorrect sort order**: Ensure expected output matches the exact sort direction (ascending vs descending) and sort key specified in the problem
+- **Async timing**: For debounce/throttle/timer tests, ensure timing assertions match the described delay behavior — account for whether the function fires on the leading edge, trailing edge, or both
+- **Floating point**: Use `toBeCloseTo` instead of `toBe` for floating point comparisons
+- **Reference vs value equality**: Use `toEqual` for deep object/array comparisons, not `toBe`
+- **Hardcoded magic values**: Never guess an expected value — derive it from the problem constraints and input
+
+If a test involves a computed result, add a brief inline comment explaining how the expected value was derived, e.g.:
+```
+// [1,2,3] -> sum = 6, mean = 6/3 = 2
+expect(mean([1, 2, 3])).toBe(2);
+```
+
 ## Quality Guidelines
 
 - Questions should be achievable within the suggested time for the category and difficulty
