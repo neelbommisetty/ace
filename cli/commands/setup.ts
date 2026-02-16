@@ -97,9 +97,9 @@ export async function run(args: string[]): Promise<void> {
 
   // Validate keys
   console.log(chalk.cyan('\n--- Validating API Keys ---\n'));
-  
+
   const final = loadAceConfig();
-  
+
   let openaiValid: boolean | null = null;
   let openaiError: string | undefined;
   if (final.OPENAI_API_KEY) {
@@ -122,7 +122,7 @@ export async function run(args: string[]): Promise<void> {
   console.log(chalk.cyan('\n╭─────────────────────────────────────────╮'));
   console.log(chalk.cyan('│') + chalk.bold('  ace status') + '                            ' + chalk.cyan('│'));
   console.log(chalk.cyan('├─────────────────────────────────────────┤'));
-  
+
   if (final.OPENAI_API_KEY) {
     const detail = openaiValid ? maskApiKey(final.OPENAI_API_KEY) : openaiError || 'validation failed';
     printStatusLine('OpenAI key', openaiValid, detail);
@@ -138,10 +138,10 @@ export async function run(args: string[]): Promise<void> {
   }
 
   console.log(chalk.cyan('├─────────────────────────────────────────┤'));
-  
+
   const ready = (openaiValid === true || anthropicValid === true);
   printStatusLine('Ready', ready, ready ? 'at least one provider configured' : 'no valid API keys');
-  
+
   console.log(chalk.cyan('╰─────────────────────────────────────────╯\n'));
 
   if (!ready && (openaiValid === false || anthropicValid === false)) {

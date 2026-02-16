@@ -93,25 +93,35 @@ export async function run(args: string[]): Promise<void> {
     fs.writeFileSync(packageJsonPath, JSON.stringify(PACKAGE_JSON_TEMPLATE, null, 2) + '\n', 'utf-8');
     changes.push('Created package.json');
   } else {
-    // Merge scripts into existing package.json
+    // Merge scripts and devDependencies into existing package.json
     try {
       const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-      pkg.scripts = pkg.scripts || {};
-      
       let updated = false;
+
+      // Merge scripts (don't overwrite existing)
+      pkg.scripts = pkg.scripts || {};
       for (const [key, value] of Object.entries(PACKAGE_JSON_TEMPLATE.scripts)) {
         if (!pkg.scripts[key]) {
           pkg.scripts[key] = value;
           updated = true;
         }
       }
-      
+
+      // Merge devDependencies (don't overwrite existing)
+      pkg.devDependencies = pkg.devDependencies || {};
+      for (const [key, value] of Object.entries(PACKAGE_JSON_TEMPLATE.devDependencies)) {
+        if (!pkg.devDependencies[key]) {
+          pkg.devDependencies[key] = value;
+          updated = true;
+        }
+      }
+
       if (updated) {
         fs.writeFileSync(packageJsonPath, JSON.stringify(pkg, null, 2) + '\n', 'utf-8');
-        changes.push('Updated package.json scripts');
+        changes.push('Updated package.json (scripts and devDependencies)');
       }
     } catch (err) {
-      console.warn(chalk.yellow('Warning: Could not update package.json scripts'));
+      console.warn(chalk.yellow('Warning: Could not update package.json'));
     }
   }
 
