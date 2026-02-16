@@ -61,7 +61,7 @@ async function callOpenAI(messages: LLMMessage[], jsonMode = false): Promise<str
   const client = new OpenAI({ apiKey: config.OPENAI_API_KEY });
 
   const response = await client.chat.completions.create({
-    model: 'gpt-4o',
+    model: 'gpt-5.2',
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
     temperature: 0.7,
     max_tokens: 4096,
@@ -79,7 +79,7 @@ async function callAnthropic(messages: LLMMessage[], _jsonMode = false): Promise
   const nonSystemMessages = messages.filter((m) => m.role !== 'system');
 
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-5-20250929',
     max_tokens: 4096,
     ...(systemMsg ? { system: systemMsg.content } : {}),
     messages: nonSystemMessages.map((m) => ({
@@ -109,7 +109,7 @@ async function streamOpenAI(messages: LLMMessage[]): Promise<AsyncIterable<strin
   const client = new OpenAI({ apiKey: config.OPENAI_API_KEY });
 
   const stream = await client.chat.completions.create({
-    model: 'gpt-4o',
+    model: 'gpt-5.2',
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
     temperature: 0.7,
     max_tokens: 4096,
@@ -134,7 +134,7 @@ async function streamAnthropic(messages: LLMMessage[]): Promise<AsyncIterable<st
   const nonSystemMessages = messages.filter((m) => m.role !== 'system');
 
   const stream = client.messages.stream({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-5-20250929',
     max_tokens: 4096,
     ...(systemMsg ? { system: systemMsg.content } : {}),
     messages: nonSystemMessages.map((m) => ({
@@ -180,7 +180,7 @@ export async function validateAnthropicKey(apiKey: string): Promise<{ valid: boo
   try {
     const client = new Anthropic({ apiKey });
     await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-5-20250929',
       max_tokens: 1,
       messages: [{ role: 'user', content: 'hi' }],
     });
