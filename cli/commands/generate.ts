@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import prompts from 'prompts';
 import chalk from 'chalk';
-import { CATEGORIES, CATEGORY_SLUGS, slugify } from '../lib/categories.js';
+import { CATEGORIES, CATEGORY_SLUGS, slugify, getPromptGroup } from '../lib/categories.js';
 import type { CategorySlug, Difficulty } from '../lib/categories.js';
 import { chat, chatStream, requireProvider } from '../lib/llm.js';
 import type { LLMMessage, LLMProvider } from '../lib/llm.js';
@@ -57,7 +57,7 @@ async function directMode(
   category: CategorySlug,
   difficulty: Difficulty,
 ): Promise<void> {
-  const systemPrompt = loadPrompt('question-generate.md');
+  const systemPrompt = loadPrompt(`generate/${getPromptGroup(category)}.md`);
   const categoryConfig = CATEGORIES[category];
 
   console.log(chalk.cyan(`\nGenerating ${categoryConfig.name} question: "${topic}" (${difficulty})...`));
@@ -187,14 +187,13 @@ async function brainstormMode(provider: LLMProvider): Promise<void> {
 
   if (!category || !difficulty) return;
 
-  // Use the generate prompt to create structured output
-  const generatePrompt = loadPrompt('question-generate.md');
+  // Use the group-specific generate prompt to create structured output
+  const categoryConfig = CATEGORIES[category as CategorySlug];
+  const generatePrompt = loadPrompt(`generate/${getPromptGroup(category as CategorySlug)}.md`);
   const brainstormSummary = messages
     .filter((m) => m.role !== 'system')
     .map((m) => `${m.role}: ${m.content}`)
     .join('\n\n');
-
-  const categoryConfig = CATEGORIES[category as CategorySlug];
 
   const response = await chat(
     provider,

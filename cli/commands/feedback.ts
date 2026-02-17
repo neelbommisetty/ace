@@ -3,7 +3,7 @@ import path from 'node:path';
 import prompts from 'prompts';
 import chalk from 'chalk';
 import { findQuestion, readScorecard, writeScorecard, getAllQuestions, promptForSlug } from '../lib/scorecard.js';
-import { CATEGORIES, isDesignCategory } from '../lib/categories.js';
+import { CATEGORIES, isDesignCategory, getPromptGroup } from '../lib/categories.js';
 import { chatStream, requireProvider } from '../lib/llm.js';
 import type { LLMMessage } from '../lib/llm.js';
 import { resolveWorkspaceRoot, isWorkspaceInitialized } from '../lib/paths.js';
@@ -51,7 +51,7 @@ async function runFeedbackForSlug(slug: string, provider: string): Promise<void>
   let userContent: string;
 
   if (isDesign) {
-    systemPrompt = loadPrompt('design-review.md');
+    systemPrompt = loadPrompt(`review/${getPromptGroup(question.category)}.md`);
     const notesPath = path.join(question.dir, 'notes.md');
     const notes = fs.existsSync(notesPath) ? fs.readFileSync(notesPath, 'utf-8') : '';
 
@@ -75,7 +75,7 @@ ${readme}
 ## Candidate's Design Notes
 ${notes}`;
   } else {
-    systemPrompt = loadPrompt('code-review.md');
+    systemPrompt = loadPrompt(`review/${getPromptGroup(question.category)}.md`);
 
     // Find the solution file
     const solutionFiles = config.solutionFiles;

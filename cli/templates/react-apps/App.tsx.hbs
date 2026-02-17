@@ -1,6 +1,9 @@
 {{#if solutionCode}}
 {{{solutionCode}}}
 {{else}}
+{{#if signature}}
+{{{signature}}}
+{{else}}
 import React from 'react';
 
 // TODO: implement your React app here
@@ -13,4 +16,5 @@ export default function App() {
     </div>
   );
 }
+{{/if}}
 {{/if}}
