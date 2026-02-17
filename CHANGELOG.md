@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.1.4](https://github.com/neel/ace-interview-prep/compare/v0.1.3...v0.1.4) (2026-02-17)
+
+
+### Features
+
+* **cli:** add `ace dispute` command and harden test generation prompt ([58673be](https://github.com/neel/ace-interview-prep/commit/58673becb6ee7bd3484e85774f9a3fc01b96922d))
+* **llm:** add configurable default model provider ([20a2895](https://github.com/neel/ace-interview-prep/commit/20a289575f9677642fc3f1c2073b100456bf6c49))
+
+
+### Bug Fixes
+
+* **dispute:** use spawnSync, exit codes, and defer provider requirement ([94f2df1](https://github.com/neel/ace-interview-prep/commit/94f2df1e27296875a6c8e721abfadf12a2231c3f))
+
 ## [0.1.3](https://github.com/neel/ace-interview-prep/compare/v0.1.2...v0.1.3) (2026-02-16)
 
 

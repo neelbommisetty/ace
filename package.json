@@ -1,6 +1,6 @@
 {
   "name": "ace-interview-prep",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "CLI tool for frontend interview preparation — scaffolds questions with tests, tracks progress, and provides LLM-powered feedback",
   "type": "module",
   "bin": {
