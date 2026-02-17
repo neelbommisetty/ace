@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import prompts from 'prompts';
 import chalk from 'chalk';
 import { findQuestion, readScorecard, writeScorecard, promptForSlug } from '../lib/scorecard.js';
@@ -39,21 +39,18 @@ function parseArgs(args: string[]): { slug?: string; provider?: string } {
   return { slug, provider };
 }
 
-function runTestsAndCapture(projectRoot: string, questionDir: string): string {
-  try {
-    return execSync(`npx vitest run ${questionDir}`, {
-      cwd: projectRoot,
-      encoding: 'utf-8',
-      stdio: ['inherit', 'pipe', 'pipe'],
-    });
-  } catch (err: unknown) {
-    if (err && typeof err === 'object' && 'stdout' in err && 'stderr' in err) {
-      const stdout = (err as { stdout: string }).stdout || '';
-      const stderr = (err as { stderr: string }).stderr || '';
-      return stdout + '\n' + stderr;
-    }
-    return '';
-  }
+function runTestsAndCapture(projectRoot: string, questionDir: string): { output: string; exitCode: number } {
+  const result = spawnSync('npx', ['vitest', 'run', questionDir], {
+    cwd: projectRoot,
+    encoding: 'utf-8',
+  });
+
+  const stdout = result.stdout || '';
+  const stderr = result.stderr || '';
+  const output = [stdout, stderr].filter(Boolean).join('\n');
+  const exitCode = typeof result.status === 'number' ? result.status : 1;
+
+  return { output, exitCode };
 }
 
 export async function run(args: string[]): Promise<void> {
@@ -65,7 +62,6 @@ export async function run(args: string[]): Promise<void> {
   }
 
   const parsed = parseArgs(args);
-  const provider = requireProvider(parsed.provider);
 
   // If no slug provided, show interactive picker
   let selectedSlug = parsed.slug;
@@ -129,12 +125,15 @@ export async function run(args: string[]): Promise<void> {
 
   // Run tests and capture output
   console.log(chalk.cyan(`\nRunning tests for "${selectedSlug}" to capture failures...\n`));
-  const testOutput = runTestsAndCapture(projectRoot, question.dir);
+  const initialRun = runTestsAndCapture(projectRoot, question.dir);
+  const testOutput = initialRun.output;
 
-  if (!testOutput.includes('fail') && !testOutput.includes('FAIL') && !testOutput.includes('failed')) {
+  if (initialRun.exitCode === 0) {
     console.log(chalk.green('All tests are passing — nothing to dispute.'));
     return;
   }
+
+  const provider = requireProvider(parsed.provider);
 
   console.log(chalk.yellow('\nFailing tests detected. Sending to LLM for analysis...\n'));
 
@@ -244,7 +243,8 @@ ${testOutput}
 
       // Re-run tests to verify the fix
       console.log(chalk.cyan('\nRe-running tests to verify...\n'));
-      const verifyOutput = runTestsAndCapture(projectRoot, question.dir);
+      const verifyRun = runTestsAndCapture(projectRoot, question.dir);
+      const verifyOutput = verifyRun.output;
       console.log(verifyOutput);
 
       // Update scorecard
