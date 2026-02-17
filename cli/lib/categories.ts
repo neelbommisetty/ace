@@ -14,12 +14,15 @@ export type QuestionStatus = 'untouched' | 'in-progress' | 'solved' | 'attempted
 
 export type QuestionType = 'coding' | 'design';
 
+export type CategoryGroup = 'react' | 'js-ts' | 'leetcode' | 'design';
+
 export interface CategoryConfig {
   slug: CategorySlug;
   name: string;
   shortName: string;
   hint: string;
   type: QuestionType;
+  group: CategoryGroup;
   suggestedTimes: Record<Difficulty, number>;
   solutionFiles: string[];
   testFiles: string[];
@@ -60,6 +63,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     shortName: 'JS/TS',
     hint: 'Closures, async patterns, type utilities',
     type: 'coding',
+    group: 'js-ts',
     suggestedTimes: { easy: 15, medium: 30, hard: 45 },
     solutionFiles: ['solution.ts'],
     testFiles: ['solution.test.ts'],
@@ -71,6 +75,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     shortName: 'React',
     hint: 'Props, events, composition, reusable UI',
     type: 'coding',
+    group: 'react',
     suggestedTimes: { easy: 20, medium: 35, hard: 50 },
     solutionFiles: ['Component.tsx'],
     testFiles: ['Component.test.tsx'],
@@ -82,6 +87,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     shortName: 'React',
     hint: 'Hooks, state, routing, full features',
     type: 'coding',
+    group: 'react',
     suggestedTimes: { easy: 25, medium: 45, hard: 60 },
     solutionFiles: ['App.tsx'],
     testFiles: ['App.test.tsx'],
@@ -93,6 +99,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     shortName: 'LC-DS',
     hint: 'Trees, graphs, heaps, hash maps',
     type: 'coding',
+    group: 'leetcode',
     suggestedTimes: { easy: 15, medium: 30, hard: 45 },
     solutionFiles: ['solution.ts'],
     testFiles: ['solution.test.ts'],
@@ -104,6 +111,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     shortName: 'LC-Algo',
     hint: 'DP, greedy, two pointers, sorting',
     type: 'coding',
+    group: 'leetcode',
     suggestedTimes: { easy: 15, medium: 30, hard: 45 },
     solutionFiles: ['solution.ts'],
     testFiles: ['solution.test.ts'],
@@ -115,6 +123,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     shortName: 'Design-FE',
     hint: 'Component architecture, state, rendering',
     type: 'design',
+    group: 'design',
     suggestedTimes: { easy: 25, medium: 40, hard: 55 },
     solutionFiles: ['notes.md'],
     testFiles: [],
@@ -126,6 +135,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     shortName: 'Design-BE',
     hint: 'APIs, databases, caching, queues',
     type: 'design',
+    group: 'design',
     suggestedTimes: { easy: 25, medium: 40, hard: 55 },
     solutionFiles: ['notes.md'],
     testFiles: [],
@@ -137,6 +147,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     shortName: 'Design-Full',
     hint: 'End-to-end systems, trade-offs',
     type: 'design',
+    group: 'design',
     suggestedTimes: { easy: 30, medium: 45, hard: 60 },
     solutionFiles: ['notes.md'],
     testFiles: [],
@@ -163,4 +174,8 @@ export function slugify(text: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '');
+}
+
+export function getPromptGroup(slug: CategorySlug): CategoryGroup {
+  return CATEGORIES[slug].group;
 }
