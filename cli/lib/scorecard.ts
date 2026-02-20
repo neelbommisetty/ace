@@ -139,7 +139,7 @@ export async function promptForSlug(): Promise<string | null> {
   const questions = getAllQuestions();
   
   if (questions.length === 0) {
-    console.log(chalk.yellow('No questions found. Create one first with `ace generate` or `ace add`.'));
+    console.log(chalk.yellow('No questions found. Create one first with `ace generate`.'));
     return null;
   }
 

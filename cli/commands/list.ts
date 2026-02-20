@@ -63,7 +63,7 @@ export async function run(args: string[]): Promise<void> {
 
   if (questions.length === 0) {
     console.log(chalk.yellow('\nNo questions found.'));
-    console.log(chalk.dim('Use `npm run ace generate` or `npm run ace add` to create one.'));
+    console.log(chalk.dim('Use `ace generate` to create one.'));
     return;
   }
 

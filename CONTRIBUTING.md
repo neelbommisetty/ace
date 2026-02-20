@@ -78,7 +78,7 @@ Each question lives in `questions/<category>/<slug>/` and contains:
 - Test file — comprehensive test suite
 - `scorecard.json` — must start with `"status": "untouched"` and empty `attempts`
 
-Use the `ace add` command to scaffold a new question interactively, then clean up
+Use the `ace generate` command to scaffold a new question, then clean up
 the generated files for use as a seed question.
 
 ## Commit Messages

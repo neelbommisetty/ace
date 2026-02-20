@@ -69,9 +69,6 @@ ace generate --topic "debounce" --category js-ts --difficulty medium
 # Interactive brainstorm mode
 ace generate --brainstorm
 
-# Manually add a question
-ace add
-
 # List all questions
 ace list
 ```

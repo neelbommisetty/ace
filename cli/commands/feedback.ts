@@ -162,7 +162,7 @@ export async function run(args: string[]): Promise<void> {
   if (parsed.all) {
     const questions = getAllQuestions();
     if (questions.length === 0) {
-      console.log(chalk.yellow('No questions found. Create one first with `ace generate` or `ace add`.'));
+      console.log(chalk.yellow('No questions found. Create one first with `ace generate`.'));
       return;
     }
 

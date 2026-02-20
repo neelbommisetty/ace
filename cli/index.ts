@@ -8,7 +8,6 @@ const COMMANDS: Record<string, () => Promise<{ run: (args: string[]) => Promise<
   setup: () => import('./commands/setup.js'),
   init: () => import('./commands/init.js'),
   generate: () => import('./commands/generate.js'),
-  add: () => import('./commands/add.js'),
   list: () => import('./commands/list.js'),
   test: () => import('./commands/test.js'),
   feedback: () => import('./commands/feedback.js'),
@@ -29,7 +28,6 @@ ${chalk.bold('Setup Commands:')}
 ${chalk.bold('Question Commands:')}
 
   ${chalk.green('generate')}   Generate a question using LLM (--brainstorm for interactive mode)
-  ${chalk.green('add')}        Manually add a question with interactive prompts
   ${chalk.green('list')}       List all questions with status and filters
   ${chalk.green('test')}       Run tests for a question (or all questions)
   ${chalk.green('feedback')}   Get LLM code review or design review

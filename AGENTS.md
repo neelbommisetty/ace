@@ -8,7 +8,7 @@ When using the published CLI (`npm install -g ace-interview-prep`), the typical 
 
 1. `ace setup` to store API keys in `~/.ace/config.json` (supports OpenAI and Anthropic; can set a default provider)
 2. `ace init` in a workspace folder to bootstrap `questions/` plus test/tooling config and run `npm install`
-3. Practice via `ace generate` / `ace add`, then `ace test`, `ace feedback`, `ace score`, `ace reset`
+3. Practice via `ace generate`, then `ace test`, `ace feedback`, `ace score`, `ace reset`
 4. Use `ace dispute` if a generated test assertion seems incorrect (can propose/apply a corrected test file)
 
 Notes:
@@ -47,8 +47,8 @@ Repo note: for seed-question maintenance in this repo, test updates are allowed 
 
 Adding new questions:
 
-- For end-users in a workspace: use `ace generate` or `ace add`
-- For this repo's seed questions: use `npm run ace add` to scaffold, then clean up the generated files for use as a seed question
+- For end-users in a workspace: use `ace generate`
+- For this repo's seed questions: use `npm run ace generate` to scaffold, then clean up the generated files for use as a seed question
 - Never create question folders manually
 
 ## Common Dev Commands (Repo)
