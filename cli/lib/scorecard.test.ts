@@ -108,6 +108,6 @@ describe('scorecard persistence', () => {
 
     const found = findQuestion('two-sum');
     expect(found?.category).toBe('js-ts');
-    expect(found?.dir).toBe(questionA);
+    expect(fs.realpathSync(found?.dir || '')).toBe(fs.realpathSync(questionA));
   });
 });

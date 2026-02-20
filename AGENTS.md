@@ -112,6 +112,10 @@ Adding a new command:
 
 Note: tests only run from `questions/**/*.test.{ts,tsx}` (vitest config scopes to this).
 
+## E2E Test Plan Maintenance
+
+- Keep `docs/e2e-test-plan.md` updated when code changes introduce new user flows, change CLI behavior, or add new testable functionality.
+
 ## Commits / Releases
 
 - Use Conventional Commits (used by automated releases via Release Please): `feat: ...`, `fix: ...`, `docs: ...`, `chore: ...`.

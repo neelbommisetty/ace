@@ -10,6 +10,54 @@ export interface LLMMessage {
   content: string;
 }
 
+const mockLlm =
+  process.env.ACE_E2E_MOCK_LLM === '1' || process.env.ACE_E2E_MOCK_LLM === 'true';
+
+function getMockResponse(): string {
+  const mode = process.env.ACE_MOCK_LLM_MODE || '';
+
+  if (mode === 'generate') {
+    return JSON.stringify(
+      {
+        title: 'Two Sum',
+        slug: 'two-sum',
+        description: 'Return indices of the two numbers such that they add up to target.',
+        signature: 'export function twoSum(nums: number[], target: number): number[]',
+      },
+      null,
+      2,
+    );
+  }
+
+  if (mode === 'dispute') {
+    return JSON.stringify(
+      {
+        verdict: 'test_incorrect',
+        summary: 'The expected output for one case does not match the problem statement.',
+        details: 'The failing assertion expects an index order that is not required by the spec.',
+        failingTests: [
+          {
+            testName: 'handles duplicate values',
+            verdict: 'test_incorrect',
+            explanation: 'Either index order is acceptable, but the test fixes one order.',
+            fixedAssertion: 'expect(result.sort()).toEqual([0, 1])',
+          },
+        ],
+        fixedTestCode:
+          "import { describe, it, expect } from 'vitest';\n\ndescribe('two sum', () => {\n  it('handles duplicate values', () => {\n    const result = [1, 0];\n    expect(result.sort()).toEqual([0, 1]);\n  });\n});\n",
+      },
+      null,
+      2,
+    );
+  }
+
+  if (mode === 'feedback') {
+    return 'Overall 4/5\n\nClear solution structure and correct approach. Add a brief complexity note.';
+  }
+
+  return 'OK';
+}
+
 // Load config once at module level
 let cachedConfig: AceConfig | null = null;
 
@@ -44,6 +92,13 @@ export function getDefaultProvider(): LLMProvider | null {
 }
 
 export function requireProvider(preferred?: string): LLMProvider {
+  if (mockLlm) {
+    if (preferred === 'openai' || preferred === 'anthropic') {
+      return preferred;
+    }
+    return 'openai';
+  }
+
   const config = getConfig();
   
   if (preferred === 'openai' || preferred === 'anthropic') {
@@ -108,6 +163,10 @@ export async function chat(
   messages: LLMMessage[],
   jsonMode = false,
 ): Promise<string> {
+  if (mockLlm) {
+    return getMockResponse();
+  }
+
   if (provider === 'openai') {
     return callOpenAI(messages, jsonMode);
   }
@@ -169,6 +228,15 @@ export async function chatStream(
   provider: LLMProvider,
   messages: LLMMessage[],
 ): Promise<AsyncIterable<string>> {
+  if (mockLlm) {
+    const response = getMockResponse();
+    return {
+      async *[Symbol.asyncIterator]() {
+        yield response;
+      },
+    };
+  }
+
   if (provider === 'openai') {
     return streamOpenAI(messages);
   }
@@ -176,6 +244,10 @@ export async function chatStream(
 }
 
 export async function validateOpenAIKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
+  if (mockLlm) {
+    return { valid: true };
+  }
+
   try {
     const client = new OpenAI({ apiKey });
     await client.models.list();
@@ -187,6 +259,10 @@ export async function validateOpenAIKey(apiKey: string): Promise<{ valid: boolea
 }
 
 export async function validateAnthropicKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
+  if (mockLlm) {
+    return { valid: true };
+  }
+
   try {
     const client = new Anthropic({ apiKey });
     await client.messages.create({

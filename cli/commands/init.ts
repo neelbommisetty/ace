@@ -4,9 +4,10 @@ import { execSync } from 'node:child_process';
 import chalk from 'chalk';
 import { getQuestionsDir, isWorkspaceInitialized } from '../lib/paths.js';
 
-function parseArgs(args: string[]): { force: boolean } {
+function parseArgs(args: string[]): { force: boolean; skipInstall: boolean } {
   return {
     force: args.includes('--force'),
+    skipInstall: args.includes('--skip-install'),
   };
 }
 
@@ -65,8 +66,10 @@ const TSCONFIG_TEMPLATE = {
 };
 
 export async function run(args: string[]): Promise<void> {
-  const { force } = parseArgs(args);
+  const { force, skipInstall } = parseArgs(args);
   const root = process.cwd();
+  const shouldSkipInstall =
+    skipInstall || process.env.ACE_SKIP_INSTALL === '1' || process.env.ACE_SKIP_INSTALL === 'true';
 
   console.log(chalk.cyan('\n--- Initialize Workspace ---'));
   console.log(chalk.dim(`Workspace: ${root}\n`));
@@ -163,11 +166,15 @@ export async function run(args: string[]): Promise<void> {
 
   // Install dependencies
   console.log(chalk.cyan('--- Installing dependencies ---'));
-  try {
-    execSync('npm install', { cwd: root, stdio: 'inherit' });
-    console.log(chalk.green('\n✓ Dependencies installed'));
-  } catch {
-    console.error(chalk.red('\n✗ npm install failed. Please run it manually.'));
+  if (shouldSkipInstall) {
+    console.log(chalk.yellow('Skipping npm install (set by --skip-install or ACE_SKIP_INSTALL).'));
+  } else {
+    try {
+      execSync('npm install', { cwd: root, stdio: 'inherit' });
+      console.log(chalk.green('\n✓ Dependencies installed'));
+    } catch {
+      console.error(chalk.red('\n✗ npm install failed. Please run it manually.'));
+    }
   }
 
   console.log();
