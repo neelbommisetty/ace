@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [0.2.0](https://github.com/neel/ace-interview-prep/compare/v0.1.4...v0.2.0) (2026-02-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* The
+Workspace not initialized. Running init...
+
+### Features
+
+* add cli e2e test harness ([4fb72b5](https://github.com/neel/ace-interview-prep/commit/4fb72b5ff13b1b7b30c91f5f7ebd68d75e4c6727))
+* **categories:** add CategoryGroup type and per-category group mapping ([ea60a91](https://github.com/neel/ace-interview-prep/commit/ea60a911995e3824a5abb30de96f8971d6e171f0))
+* **generate,feedback:** wire commands to group-specific prompts ([7141ecc](https://github.com/neel/ace-interview-prep/commit/7141eccd77a8afdfacb5ee72af69a53f94b4a1bc))
+* **prompts:** split monolithic prompts into per-category-group variants ([d39e10e](https://github.com/neel/ace-interview-prep/commit/d39e10e3e20c7402fb499ede3e40dc8f6991e654))
+* remove ace add command ([6c990c4](https://github.com/neel/ace-interview-prep/commit/6c990c4f0cb42064ec687cf99faf59c77c35536f))
+
+
+### Bug Fixes
+
+* prevent path resolution crash in commands ([309cdcd](https://github.com/neel/ace-interview-prep/commit/309cdcdb3ec206435d86396553a0792f4f7f4107))
+
 ## [0.1.4](https://github.com/neel/ace-interview-prep/compare/v0.1.3...v0.1.4) (2026-02-17)
 
 
