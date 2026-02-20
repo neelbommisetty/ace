@@ -8,8 +8,9 @@ import { chat, chatStream, requireProvider } from '../lib/llm.js';
 import type { LLMMessage, LLMProvider } from '../lib/llm.js';
 import { scaffoldQuestion } from '../lib/scaffold.js';
 import { resolveWorkspaceRoot, isWorkspaceInitialized } from '../lib/paths.js';
+import { getImportMetaDirname } from '../lib/import-meta.js';
 
-const PROMPTS_DIR = path.resolve(import.meta.dirname, '../prompts');
+const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
 
 function parseArgs(args: string[]): Record<string, string> {
   const result: Record<string, string> = {};

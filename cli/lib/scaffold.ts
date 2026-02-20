@@ -5,8 +5,9 @@ import type { CategorySlug, Difficulty } from './categories.js';
 import { getCategoryConfig, getSuggestedTime, isDesignCategory } from './categories.js';
 import { createScorecard, writeScorecard } from './scorecard.js';
 import { resolveWorkspaceRoot, getQuestionsDir as getQuestionsDirPath } from './paths.js';
+import { getImportMetaDirname } from './import-meta.js';
 
-const TEMPLATES_DIR = path.resolve(import.meta.dirname, '../templates');
+const TEMPLATES_DIR = path.resolve(getImportMetaDirname(import.meta), '../templates');
 
 interface ScaffoldOptions {
   title: string;

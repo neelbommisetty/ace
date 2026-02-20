@@ -8,8 +8,9 @@ import { CATEGORIES, isDesignCategory } from '../lib/categories.js';
 import { chat, requireProvider } from '../lib/llm.js';
 import type { LLMMessage } from '../lib/llm.js';
 import { resolveWorkspaceRoot, isWorkspaceInitialized } from '../lib/paths.js';
+import { getImportMetaDirname } from '../lib/import-meta.js';
 
-const PROMPTS_DIR = path.resolve(import.meta.dirname, '../prompts');
+const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
 
 function loadPrompt(name: string): string {
   return fs.readFileSync(path.join(PROMPTS_DIR, name), 'utf-8');

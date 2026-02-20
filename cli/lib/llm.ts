@@ -73,7 +73,8 @@ async function callOpenAI(messages: LLMMessage[], jsonMode = false): Promise<str
     model: 'gpt-5.2',
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
     temperature: 0.7,
-    max_tokens: 4096,
+    // Some newer OpenAI models reject `max_tokens` in Chat Completions and require `max_completion_tokens`.
+    ...( { max_completion_tokens: 4096 } as any ),
     ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
   });
 
@@ -121,7 +122,7 @@ async function streamOpenAI(messages: LLMMessage[]): Promise<AsyncIterable<strin
     model: 'gpt-5.2',
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
     temperature: 0.7,
-    max_tokens: 4096,
+    ...( { max_completion_tokens: 4096 } as any ),
     stream: true,
   });
 
