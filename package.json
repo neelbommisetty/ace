@@ -37,11 +37,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/neel/ace-interview-prep.git"
+    "url": "git+https://github.com/neelbommisetty/ace.git"
   },
-  "homepage": "https://github.com/neel/ace-interview-prep#readme",
+  "homepage": "https://github.com/neelbommisetty/ace#readme",
   "bugs": {
-    "url": "https://github.com/neel/ace-interview-prep/issues"
+    "url": "https://github.com/neelbommisetty/ace/issues"
   },
   "author": "Neel",
   "license": "MIT",
