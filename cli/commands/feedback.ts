@@ -34,6 +34,13 @@ function parseArgs(args: string[]): { slug?: string; provider?: string; all: boo
   return { slug, provider, all };
 }
 
+export function hasMeaningfulDesignNotes(notes: string): boolean {
+  return notes
+    .split('\n')
+    .map((line) => line.trim())
+    .some((line) => line.length > 0 && !line.startsWith('#') && !line.startsWith('<!--'));
+}
+
 async function runFeedbackForSlug(slug: string, provider: string): Promise<void> {
   const question = findQuestion(slug);
   if (!question) {
@@ -56,7 +63,7 @@ async function runFeedbackForSlug(slug: string, provider: string): Promise<void>
     const notesPath = path.join(question.dir, 'notes.md');
     const notes = fs.existsSync(notesPath) ? fs.readFileSync(notesPath, 'utf-8') : '';
 
-    if (!notes.trim() || notes.includes('<!-- List the core features')) {
+    if (!hasMeaningfulDesignNotes(notes)) {
       console.error(chalk.yellow('Notes file appears to be empty. Write your design notes first!'));
       console.error(chalk.dim(`Edit: questions/${question.category}/${slug}/notes.md`));
       return;
