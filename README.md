@@ -3,123 +3,19 @@
 [![npm version](https://img.shields.io/npm/v/ace-interview-prep.svg)](https://www.npmjs.com/package/ace-interview-prep)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A CLI tool for interview prep focusing on frontend. Scaffolds questions with test cases, tracks progress with scorecards, and provides LLM-powered feedback.
+A local-first CLI for frontend interview practice. `ace` bootstraps a workspace, scaffolds coding and system design questions, runs local tests, tracks progress in `scorecard.json`, and uses OpenAI or Anthropic for question generation, review, brainstorming, and test-dispute analysis.
 
-## Install
+## Overview
 
-```bash
-npm install -g ace-interview-prep
-```
+The project is built around a file-based workflow instead of a hosted service. A practice workspace lives on disk under `questions/`, question state is stored alongside each prompt, and LLM features are layered on top of standard TypeScript and Vitest tooling rather than replacing it. The result is a CLI that can generate interview exercises, evaluate implementations, and keep attempt history without requiring a backend.
 
-## Quick Start
+## Core Capabilities
 
-### 1. Configure API Keys
-
-```bash
-ace setup
-```
-
-Stores your OpenAI / Anthropic API keys in `~/.ace/config.json` (one-time, works across all workspaces).
-If both keys are valid, `ace setup` prompts you to choose a default provider (`openai` or `anthropic`).
-
-```bash
-# Non-interactive
-ace setup --openai-key sk-... --anthropic-key sk-ant-...
-
-# Set default provider explicitly when both keys are configured
-ace setup --openai-key sk-... --anthropic-key sk-ant-... --default-provider anthropic
-```
-
-### 2. Initialize a Workspace
-
-Navigate to any folder where you want to practice, then run:
-
-```bash
-ace init
-```
-
-`ace init` bootstraps the workspace and installs dependencies for you. It:
-
-```bash
-# Creates/updates workspace files
-# - questions/
-# - package.json (adds test scripts + devDependencies if missing)
-# - tsconfig.json
-# - vitest.config.ts
-# - vitest.setup.ts
-#
-# Installs dependencies automatically via npm install
-```
-
-If you need to regenerate workspace files:
-
-```bash
-ace init --force
-```
-
-### 3. Practice
-
-```bash
-# Generate a question interactively (prompts for category, difficulty, topic)
-ace generate
-
-# Or pass flags to skip prompts
-ace generate --topic "debounce" --category js-ts --difficulty medium
-
-# Interactive brainstorm mode
-ace generate --brainstorm
-
-# List all questions
-ace list
-```
-
-### 4. Test, Review, Track
-
-All commands below work in three modes:
-
-- **Interactive** — run with no arguments to pick from a selectable list
-- **Direct** — pass a slug to target a specific question
-- **All** — pass `--all` to operate on every question
-
-```bash
-# Run tests
-ace test              # pick from list
-ace test debounce     # specific question
-ace test --all        # run all tests
-ace test --watch      # watch mode (with --all)
-
-# Get LLM feedback on your solution
-ace feedback          # pick from list
-ace feedback debounce # specific question
-ace feedback --all    # review all questions (confirms each one)
-
-# View scorecard
-ace score             # pick from list
-ace score debounce    # specific question
-ace score --all       # show all scorecards
-
-# Reset a question to its stub
-ace reset             # pick from list
-ace reset debounce    # specific question
-ace reset --all       # reset everything (with confirmation)
-```
-
-### 5. Dispute Potentially Incorrect Tests
-
-Use this when your implementation appears correct but a generated test assertion might be wrong.
-
-```bash
-# Dispute interactively (pick a question)
-ace dispute
-
-# Dispute a specific question
-ace dispute debounce
-
-# Optional: force a provider for dispute analysis
-ace dispute debounce --provider anthropic
-```
-
-If the verdict says the test is incorrect (or ambiguous), ace can apply a corrected test file and re-run tests.
+- `ace setup` stores and validates OpenAI and Anthropic keys in `~/.ace/config.json`, with support for a saved default provider.
+- `ace init` bootstraps `questions/`, `package.json`, `tsconfig.json`, `vitest.config.ts`, and `vitest.setup.ts`, then runs `npm install` unless `--skip-install` is used.
+- `ace generate` supports interactive prompts, direct flags, and `--brainstorm`, then scaffolds a question folder from category-specific prompt and template assets.
+- `ace list`, `ace test`, `ace feedback`, `ace score`, and `ace reset` work against a local question workspace and support interactive slug selection; several also support `--all`.
+- `ace dispute` analyzes failing generated tests against the problem statement, solution code, and Vitest output, then can apply a corrected test file and re-run verification.
 
 ## Question Categories
 
@@ -134,41 +30,105 @@ If the verdict says the test is incorrect (or ambiguous), ace can apply a correc
 | System Design — Backend | `design-be` | Design | APIs, databases, caching, queues |
 | System Design — Full Stack | `design-full` | Design | End-to-end systems, trade-offs |
 
-## How It Works
+## Architecture
 
-1. **Generate a question** — run `ace generate` and follow the prompts (category, difficulty, topic), or use `ace generate --brainstorm` for an interactive design session.
-2. **Open the question folder** — read `README.md` for the problem statement.
-3. **Write your solution** in the solution file (`solution.ts`, `App.tsx`, `Component.tsx`, or `notes.md`).
-4. **Run tests** with `ace test` to pick a question and check your work.
-5. **Get feedback** with `ace feedback` for an LLM-powered code or design review.
-6. **Track progress** with `ace score` and `ace list`.
+`ace` is a single-package TypeScript CLI. [`cli/index.ts`](cli/index.ts) is a thin command router that lazy-loads one module per subcommand. Each file in [`cli/commands/`](cli/commands) owns one workflow such as setup, generation, testing, scoring, or dispute handling.
+
+Shared behavior lives in [`cli/lib/`](cli/lib). That layer handles category metadata, workspace discovery, global config loading, provider selection, streaming and non-streaming LLM calls, Handlebars-based scaffolding, and scorecard persistence. Prompt files under [`cli/prompts/`](cli/prompts) separate question authoring, review, brainstorming, and dispute analysis by domain. Templates under [`cli/templates/`](cli/templates) define the generated `README.md`, solution stub, test file, and design notes structure for each category.
+
+Execution stays file-based from end to end. `ace generate` creates `questions/<category>/<slug>/` with a problem statement, solution stub, test file when applicable, and `scorecard.json`. `ace test` runs Vitest against a question and records pass counts. `ace feedback` streams a category-specific review and stores it on the scorecard. `ace reset` restores the template stub, and `ace dispute` re-runs failing tests, asks the LLM to compare spec versus assertions, and can patch the test file in place.
+
+Global configuration lives under `~/.ace/`, while per-question state stays inside each generated folder. That split keeps provider credentials out of the workspace and makes each practice question self-contained.
+
+## Technical Highlights
+
+- Multi-provider LLM integration is centralized in [`cli/lib/llm.ts`](cli/lib/llm.ts), including both direct responses and streamed output exposed through `AsyncIterable<string>`.
+- Config loading uses explicit precedence: `~/.ace/config.json`, then `~/.ace/.env`, then process environment variables.
+- Workspace resolution walks upward to the nearest `questions/` directory, so commands still work from nested paths inside a practice workspace.
+- `ace init` merges missing scripts and dev dependencies into an existing `package.json` instead of assuming a blank directory.
+- Prompt logic is organized by domain across JS/TS, React, LeetCode, and system design for both generation and review flows.
+- Progress tracking is file-backed through `scorecard.json`, including status, attempts, test counts, and saved LLM feedback.
+- The test suite combines unit coverage for shared helpers with mock-driven E2E runs that create temp workspaces and execute the CLI end to end.
+- The build uses non-bundled ESM via `tsup`, followed by a postbuild step that copies prompt/template assets into `dist/` and prepends a Node shebang to the CLI entry point.
+
+## Tech Stack
+
+- TypeScript, Node.js 18+, ESM
+- OpenAI SDK, Anthropic SDK
+- Handlebars, prompts, chalk, cli-table3
+- Vitest, happy-dom, Testing Library
+- tsx, tsup, Husky, commitlint
+
+## Getting Started
+
+### Use the published CLI
+
+```bash
+npm install -g ace-interview-prep
+ace setup
+mkdir practice && cd practice
+ace init
+ace generate --topic "debounce" --category js-ts --difficulty medium
+ace test debounce
+ace feedback debounce
+ace score debounce
+```
+
+`ace setup` stores provider credentials in `~/.ace/config.json`. If both providers are valid, it also records a default provider.
+
+Useful setup variants:
+
+```bash
+ace setup --openai-key sk-... --anthropic-key sk-ant-...
+ace setup --openai-key sk-... --anthropic-key sk-ant-... --default-provider anthropic
+```
+
+### Develop locally
+
+```bash
+git clone https://github.com/neelbommisetty/ace.git
+cd ace
+npm install
+npm run ace help
+npm test
+npm run build
+node dist/index.js help
+```
+
+During local development, `npm run ace <command>` runs the CLI through `tsx`.
+
+## Project Structure
+
+- `cli/commands/` — one file per CLI command
+- `cli/lib/` — shared config, path, LLM, scaffolding, and scorecard logic
+- `cli/prompts/` — Markdown prompts for generation, review, brainstorming, and dispute analysis
+- `cli/templates/` — Handlebars templates used to scaffold question files
+- `cli/e2e/` — temp-workspace end-to-end tests for the CLI workflow
+- `docs/` — repository documentation, including the E2E test plan
+- `questions/` — workspace root for generated question folders
+- `dist/` — compiled ESM output plus copied runtime assets
 
 ## Configuration
 
-**Global** (`~/.ace/`) — API keys stored once, shared across all workspaces.
+Global configuration is stored under `~/.ace/` and shared across workspaces.
 
-- `~/.ace/config.json` — primary config (created by `ace setup`)
-- `~/.ace/.env` — fallback (dotenv format)
-- Environment variables — final fallback
+- `~/.ace/config.json` — primary config written by `ace setup`
+- `~/.ace/.env` — dotenv-style fallback
+- environment variables — final fallback
 
-Typical `~/.ace/config.json` keys:
+Supported keys include:
 
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
-- `default_provider` (set automatically or via `ace setup --default-provider ...`)
+- `default_provider`
 
-**Workspace** — each workspace gets its own `questions/` directory and test config.
+## Current Status
 
-## Development
+- Core CLI workflows are functional and covered by unit and E2E tests.
+- The project is still early-stage and organized as a single package.
+- Generated question quality depends on LLM output, which is why `ace dispute` exists as a corrective workflow.
 
-```bash
-git clone https://github.com/neel/ace-interview-prep.git
-cd ace-interview-prep
-npm install
-npm run ace help
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for repo-specific development notes.
 
 ## License
 
