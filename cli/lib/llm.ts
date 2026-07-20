@@ -1,6 +1,8 @@
-import OpenAI from 'openai';
-import Anthropic from '@anthropic-ai/sdk';
+import { generateObject, streamText, type LanguageModel } from 'ai';
+import { createOpenAI } from '@ai-sdk/openai';
+import { createAnthropic } from '@ai-sdk/anthropic';
 import chalk from 'chalk';
+import type { z } from 'zod';
 import { loadAceConfig, type AceConfig } from './config.js';
 
 export type LLMProvider = 'openai' | 'anthropic';
@@ -80,12 +82,12 @@ export function getDefaultProvider(): LLMProvider | null {
   const config = getConfig();
   const available = getAvailableProviders();
   if (available.length === 0) return null;
-  
+
   // Respect saved preference if that provider is available
   if (config.default_provider && available.includes(config.default_provider as LLMProvider)) {
     return config.default_provider as LLMProvider;
   }
-  
+
   // Default to openai if available, otherwise first available
   if (available.includes('openai')) return 'openai';
   return available[0];
@@ -100,7 +102,7 @@ export function requireProvider(preferred?: string): LLMProvider {
   }
 
   const config = getConfig();
-  
+
   if (preferred === 'openai' || preferred === 'anthropic') {
     const key = preferred === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY';
     if (!config[key]) {
@@ -120,107 +122,34 @@ export function requireProvider(preferred?: string): LLMProvider {
   return provider;
 }
 
-async function callOpenAI(messages: LLMMessage[], jsonMode = false): Promise<string> {
+const OPENAI_MODEL = 'gpt-5.2';
+const ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929';
+
+function getModel(provider: LLMProvider): LanguageModel {
   const config = getConfig();
-  const client = new OpenAI({ apiKey: config.OPENAI_API_KEY });
-
-  const response = await client.chat.completions.create({
-    model: 'gpt-5.2',
-    messages: messages.map((m) => ({ role: m.role, content: m.content })),
-    temperature: 0.7,
-    // Some newer OpenAI models reject `max_tokens` in Chat Completions and require `max_completion_tokens`.
-    ...( { max_completion_tokens: 4096 } as any ),
-    ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
-  });
-
-  return response.choices[0]?.message?.content ?? '';
-}
-
-async function callAnthropic(messages: LLMMessage[], _jsonMode = false): Promise<string> {
-  const config = getConfig();
-  const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
-
-  const systemMsg = messages.find((m) => m.role === 'system');
-  const nonSystemMessages = messages.filter((m) => m.role !== 'system');
-
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-5-20250929',
-    max_tokens: 4096,
-    ...(systemMsg ? { system: systemMsg.content } : {}),
-    messages: nonSystemMessages.map((m) => ({
-      role: m.role as 'user' | 'assistant',
-      content: m.content,
-    })),
-  });
-
-  const block = response.content[0];
-  if (block.type === 'text') return block.text;
-  return '';
-}
-
-export async function chat(
-  provider: LLMProvider,
-  messages: LLMMessage[],
-  jsonMode = false,
-): Promise<string> {
-  if (mockLlm) {
-    return getMockResponse();
-  }
-
   if (provider === 'openai') {
-    return callOpenAI(messages, jsonMode);
+    // .chat() pins the Chat Completions API rather than the Responses API.
+    return createOpenAI({ apiKey: config.OPENAI_API_KEY }).chat(OPENAI_MODEL);
   }
-  return callAnthropic(messages, jsonMode);
+  return createAnthropic({ apiKey: config.ANTHROPIC_API_KEY })(ANTHROPIC_MODEL);
 }
 
-async function streamOpenAI(messages: LLMMessage[]): Promise<AsyncIterable<string>> {
-  const config = getConfig();
-  const client = new OpenAI({ apiKey: config.OPENAI_API_KEY });
-
-  const stream = await client.chat.completions.create({
-    model: 'gpt-5.2',
-    messages: messages.map((m) => ({ role: m.role, content: m.content })),
-    temperature: 0.7,
-    ...( { max_completion_tokens: 4096 } as any ),
-    stream: true,
-  });
-
-  return {
-    async *[Symbol.asyncIterator]() {
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta?.content;
-        if (delta) yield delta;
-      }
-    },
-  };
-}
-
-async function streamAnthropic(messages: LLMMessage[]): Promise<AsyncIterable<string>> {
-  const config = getConfig();
-  const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
-
+function toCallInput(messages: LLMMessage[]): {
+  instructions?: string;
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  maxOutputTokens: number;
+} {
+  // AI SDK 7 rejects system-role messages inside `messages`; the system
+  // prompt must go through the top-level `instructions` param.
   const systemMsg = messages.find((m) => m.role === 'system');
-  const nonSystemMessages = messages.filter((m) => m.role !== 'system');
-
-  const stream = client.messages.stream({
-    model: 'claude-sonnet-4-5-20250929',
-    max_tokens: 4096,
-    ...(systemMsg ? { system: systemMsg.content } : {}),
-    messages: nonSystemMessages.map((m) => ({
-      role: m.role as 'user' | 'assistant',
-      content: m.content,
-    })),
-  });
+  const nonSystemMessages = messages
+    .filter((m) => m.role !== 'system')
+    .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
   return {
-    async *[Symbol.asyncIterator]() {
-      for await (const event of stream) {
-        if (event.type === 'content_block_delta') {
-          const delta = event.delta;
-          if ('text' in delta) yield delta.text;
-        }
-      }
-    },
+    ...(systemMsg ? { instructions: systemMsg.content } : {}),
+    messages: nonSystemMessages,
+    maxOutputTokens: 4096,
   };
 }
 
@@ -237,10 +166,30 @@ export async function chatStream(
     };
   }
 
-  if (provider === 'openai') {
-    return streamOpenAI(messages);
+  const result = streamText({
+    model: getModel(provider),
+    ...toCallInput(messages),
+  });
+  return result.textStream;
+}
+
+export async function chatObject<T>(
+  provider: LLMProvider,
+  messages: LLMMessage[],
+  schema: z.ZodType<T>,
+): Promise<T> {
+  if (mockLlm) {
+    return schema.parse(JSON.parse(getMockResponse()));
   }
-  return streamAnthropic(messages);
+
+  const result = await generateObject({
+    model: getModel(provider),
+    ...toCallInput(messages),
+    schema,
+    // OpenAI strict mode rejects optional schema properties.
+    providerOptions: { openai: { strictJsonSchema: false } },
+  });
+  return result.object;
 }
 
 export async function validateOpenAIKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
@@ -249,8 +198,12 @@ export async function validateOpenAIKey(apiKey: string): Promise<{ valid: boolea
   }
 
   try {
-    const client = new OpenAI({ apiKey });
-    await client.models.list();
+    const response = await fetch('https://api.openai.com/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!response.ok) {
+      return { valid: false, error: `${response.status} ${response.statusText}` };
+    }
     return { valid: true };
   } catch (err: any) {
     const message = err?.message || 'Unknown error';
@@ -264,17 +217,20 @@ export async function validateAnthropicKey(apiKey: string): Promise<{ valid: boo
   }
 
   try {
-    const client = new Anthropic({ apiKey });
-    await client.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 1,
-      messages: [{ role: 'user', content: 'hi' }],
+    const response = await fetch('https://api.anthropic.com/v1/models', {
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
     });
-    return { valid: true };
-  } catch (err: any) {
-    if (err?.status === 401) {
+    if (response.status === 401) {
       return { valid: false, error: 'Invalid API key (401 Unauthorized)' };
     }
+    if (!response.ok) {
+      return { valid: false, error: `${response.status} ${response.statusText}` };
+    }
+    return { valid: true };
+  } catch (err: any) {
     const message = err?.message || 'Unknown error';
     return { valid: false, error: message };
   }

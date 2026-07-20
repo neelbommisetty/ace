@@ -3,9 +3,11 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import prompts from 'prompts';
 import chalk from 'chalk';
+import { z } from 'zod';
+import { NoObjectGeneratedError } from 'ai';
 import { findQuestion, readScorecard, writeScorecard, promptForSlug } from '../lib/scorecard.js';
 import { CATEGORIES, isDesignCategory } from '../lib/categories.js';
-import { chat, requireProvider } from '../lib/llm.js';
+import { chatObject, requireProvider } from '../lib/llm.js';
 import type { LLMMessage } from '../lib/llm.js';
 import { resolveWorkspaceRoot, isWorkspaceInitialized } from '../lib/paths.js';
 import { getImportMetaDirname } from '../lib/import-meta.js';
@@ -16,13 +18,23 @@ function loadPrompt(name: string): string {
   return fs.readFileSync(path.join(PROMPTS_DIR, name), 'utf-8');
 }
 
-function extractJSON(text: string): string {
-  const match = text.match(/```json\s*([\s\S]*?)```/);
-  if (match) return match[1].trim();
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (jsonMatch) return jsonMatch[0];
-  return text;
-}
+const TestVerdictSchema = z.enum(['test_incorrect', 'solution_incorrect', 'ambiguous']);
+
+const DisputeResultSchema = z.object({
+  verdict: TestVerdictSchema,
+  summary: z.string(),
+  details: z.string(),
+  failingTests: z.array(
+    z.object({
+      testName: z.string(),
+      verdict: TestVerdictSchema,
+      explanation: z.string(),
+      fixedAssertion: z.string().nullish(),
+    }),
+  ),
+  fixedTestCode: z.string().nullish(),
+  hint: z.string().nullish(),
+});
 
 function parseArgs(args: string[]): { slug?: string; provider?: string } {
   let slug: string | undefined;
@@ -165,34 +177,20 @@ ${testOutput}
     process.stdout.write(`\r${chalk.cyan(spinner[spinIdx++ % spinner.length])} Analyzing...`);
   }, 120);
 
-  let response: string;
+  let result: z.infer<typeof DisputeResultSchema> | undefined;
+  let chatError: unknown;
   try {
-    response = await chat(provider, messages, true);
+    result = await chatObject(provider, messages, DisputeResultSchema);
+  } catch (err) {
+    chatError = err;
   } finally {
     clearInterval(interval);
     process.stdout.write('\r' + ' '.repeat(30) + '\r');
   }
 
-  // Parse the response
-  let result: {
-    verdict: string;
-    summary: string;
-    details: string;
-    failingTests: Array<{
-      testName: string;
-      verdict: string;
-      explanation: string;
-      fixedAssertion?: string;
-    }>;
-    fixedTestCode?: string;
-    hint?: string;
-  };
-
-  try {
-    result = JSON.parse(extractJSON(response));
-  } catch {
+  if (!result) {
     console.error(chalk.red('Failed to parse LLM response.'));
-    console.log(chalk.dim(response));
+    console.log(chalk.dim(String(NoObjectGeneratedError.isInstance(chatError) ? chatError.text : chatError)));
     return;
   }
 

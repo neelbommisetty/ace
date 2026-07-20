@@ -2,9 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import prompts from 'prompts';
 import chalk from 'chalk';
+import { z } from 'zod';
+import { NoObjectGeneratedError } from 'ai';
 import { CATEGORIES, CATEGORY_SLUGS, slugify, getPromptGroup } from '../lib/categories.js';
 import type { CategorySlug, Difficulty } from '../lib/categories.js';
-import { chat, chatStream, requireProvider } from '../lib/llm.js';
+import { chatObject, chatStream, requireProvider } from '../lib/llm.js';
 import type { LLMMessage, LLMProvider } from '../lib/llm.js';
 import { scaffoldQuestion } from '../lib/scaffold.js';
 import { resolveWorkspaceRoot, isWorkspaceInitialized } from '../lib/paths.js';
@@ -34,23 +36,16 @@ function loadPrompt(name: string): string {
   return fs.readFileSync(path.join(PROMPTS_DIR, name), 'utf-8');
 }
 
-interface GeneratedQuestion {
-  title: string;
-  slug: string;
-  description: string;
-  signature?: string;
-  testCode?: string;
-  solutionCode?: string;
-}
+const GeneratedQuestionSchema = z.object({
+  title: z.string(),
+  slug: z.string().nullish(),
+  description: z.string().nullish(),
+  signature: z.string().nullish(),
+  testCode: z.string().nullish(),
+  solutionCode: z.string().nullish(),
+});
 
-function extractJSON(text: string): string {
-  const match = text.match(/```json\s*([\s\S]*?)```/);
-  if (match) return match[1].trim();
-  // Try to find raw JSON
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (jsonMatch) return jsonMatch[0];
-  return text;
-}
+type GeneratedQuestion = z.infer<typeof GeneratedQuestionSchema>;
 
 async function directMode(
   provider: LLMProvider,
@@ -68,17 +63,15 @@ async function directMode(
 Category slug: ${category}
 Question type: ${categoryConfig.type}`;
 
-  const response = await chat(provider, [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: userMessage },
-  ], true);
-
   let parsed: GeneratedQuestion;
   try {
-    parsed = JSON.parse(extractJSON(response));
-  } catch {
+    parsed = await chatObject(provider, [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage },
+    ], GeneratedQuestionSchema);
+  } catch (err) {
     console.error(chalk.red('Failed to parse LLM response as JSON. Raw response:'));
-    console.error(response);
+    console.error(NoObjectGeneratedError.isInstance(err) ? err.text : err);
     return;
   }
 
@@ -96,8 +89,8 @@ Question type: ${categoryConfig.type}`;
     category,
     difficulty,
     description: parsed.description || '',
-    signature: parsed.signature,
-    testCode: parsed.testCode,
+    signature: parsed.signature ?? undefined,
+    testCode: parsed.testCode ?? undefined,
   });
 
   console.log(chalk.green(`\nCreated: questions/${category}/${slug}/`));
@@ -196,30 +189,28 @@ async function brainstormMode(provider: LLMProvider): Promise<void> {
     .map((m) => `${m.role}: ${m.content}`)
     .join('\n\n');
 
-  const response = await chat(
-    provider,
-    [
-      { role: 'system', content: generatePrompt },
-      {
-        role: 'user',
-        content: `Based on the following brainstorm conversation, generate a structured ${difficulty} ${categoryConfig.name} interview question.
+  let parsed: GeneratedQuestion;
+  try {
+    parsed = await chatObject(
+      provider,
+      [
+        { role: 'system', content: generatePrompt },
+        {
+          role: 'user',
+          content: `Based on the following brainstorm conversation, generate a structured ${difficulty} ${categoryConfig.name} interview question.
 
 Category slug: ${category}
 Question type: ${categoryConfig.type}
 
 Brainstorm conversation:
 ${brainstormSummary}`,
-      },
-    ],
-    true,
-  );
-
-  let parsed: GeneratedQuestion;
-  try {
-    parsed = JSON.parse(extractJSON(response));
-  } catch {
+        },
+      ],
+      GeneratedQuestionSchema,
+    );
+  } catch (err) {
     console.error(chalk.red('Failed to parse LLM response. Raw:'));
-    console.error(response);
+    console.error(NoObjectGeneratedError.isInstance(err) ? err.text : err);
     return;
   }
 
@@ -236,8 +227,8 @@ ${brainstormSummary}`,
     category: category as CategorySlug,
     difficulty: difficulty as Difficulty,
     description: parsed.description || '',
-    signature: parsed.signature,
-    testCode: parsed.testCode,
+    signature: parsed.signature ?? undefined,
+    testCode: parsed.testCode ?? undefined,
   });
 
   console.log(chalk.green(`\nCreated: questions/${category}/${slug}/`));

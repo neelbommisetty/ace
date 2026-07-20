@@ -11,7 +11,7 @@ You will receive:
 
 ## Output Format
 
-**IMPORTANT**: Your response MUST be valid JSON wrapped in ```json code fences. No other text before or after.
+**IMPORTANT**: Respond with a single JSON object matching this shape — no code fences, no surrounding text.
 
 Return a JSON object with:
 
