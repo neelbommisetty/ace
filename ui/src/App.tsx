@@ -1,0 +1,140 @@
+import { useEffect, useState } from 'react';
+import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom';
+import { getToken, setUnauthorizedHandler } from './api';
+import { Library } from './screens/Library';
+import { NotFound } from './screens/NotFound';
+import { Room } from './screens/Room';
+
+export function App() {
+  const [authFailed, setAuthFailed] = useState(false);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => setAuthFailed(true));
+    return () => setUnauthorizedHandler(() => {});
+  }, []);
+
+  if (getToken() == null || authFailed) {
+    return <TokenNotice expired={authFailed} />;
+  }
+
+  return (
+    <BrowserRouter>
+      <div className="app-shell">
+        <IconRail />
+        <div className="app-main">
+          <Routes>
+            <Route path="/" element={<Library />} />
+            <Route path="/q/:category/:slug" element={<Room />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </div>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+function TokenNotice({ expired }: { expired: boolean }) {
+  return (
+    <div className="token-screen">
+      <div className="token-card">
+        <div className="rail-logo">A</div>
+        <h1>{expired ? 'Token expired' : 'Token missing'}</h1>
+        <p>
+          This page needs the access token printed by the CLI. Relaunch with{' '}
+          <code>ace ui</code> and open the URL it prints (it carries <code>?t=…</code>).
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function IconRail() {
+  const location = useLocation();
+  const inRoom = location.pathname.startsWith('/q/');
+  const lastRoom = sessionStorage.getItem('ace-last-room');
+
+  return (
+    <nav className="rail">
+      <div className="rail-logo" title="ACE">
+        A
+      </div>
+      <Link
+        className={`rail-icon ${!inRoom && location.pathname === '/' ? 'active' : ''}`}
+        to="/"
+        title="Library"
+      >
+        <HomeIcon />
+      </Link>
+      {inRoom || lastRoom != null ? (
+        <Link
+          className={`rail-icon ${inRoom ? 'active' : ''}`}
+          to={inRoom ? location.pathname : (lastRoom ?? '/')}
+          title="Room"
+        >
+          <CodeIcon />
+        </Link>
+      ) : (
+        <span className="rail-icon rail-icon-dim" title="Room — open a question from the library">
+          <CodeIcon />
+        </span>
+      )}
+      <div className="rail-spacer" />
+      <span className="rail-icon rail-icon-dim" title="History — coming in M2+">
+        <ClockIcon />
+      </span>
+      <span className="rail-icon rail-icon-dim" title="Stats — coming in M2+">
+        <ChartIcon />
+      </span>
+      <span className="rail-icon rail-icon-dim" title="Settings — coming in M2+">
+        <GearIcon />
+      </span>
+    </nav>
+  );
+}
+
+function HomeIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 10.5 12 3l9 7.5" />
+      <path d="M5 9.5V21h5v-6h4v6h5V9.5" />
+    </svg>
+  );
+}
+
+function CodeIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m8 6-6 6 6 6" />
+      <path d="m16 6 6 6-6 6" />
+    </svg>
+  );
+}
+
+function ClockIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 3" />
+    </svg>
+  );
+}
+
+function ChartIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 20V10" />
+      <path d="M10 20V4" />
+      <path d="M16 20v-8" />
+      <path d="M22 20H2" />
+    </svg>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.08a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.08a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1.03Z" />
+    </svg>
+  );
+}

@@ -7,6 +7,7 @@ const [, , command, ...args] = process.argv;
 const COMMANDS: Record<string, () => Promise<{ run: (args: string[]) => Promise<void> }>> = {
   setup: () => import('./commands/setup.js'),
   init: () => import('./commands/init.js'),
+  ui: () => import('./commands/ui.js'),
   generate: () => import('./commands/generate.js'),
   list: () => import('./commands/list.js'),
   test: () => import('./commands/test.js'),
@@ -24,6 +25,7 @@ ${chalk.bold('Setup Commands:')}
 
   ${chalk.green('setup')}      Configure API keys (stored in ~/.ace)
   ${chalk.green('init')}       Initialize workspace with questions/ and test config
+  ${chalk.green('ui')}         Launch the ACE web app
 
 ${chalk.bold('Question Commands:')}
 

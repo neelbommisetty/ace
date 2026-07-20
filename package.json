@@ -14,10 +14,12 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "scripts": {
-    "build": "tsup && node scripts/postbuild.js",
+    "build": "tsup && npm run build:ui && node scripts/postbuild.js",
+    "build:ui": "vite build --config ui/vite.config.ts",
+    "ui:dev": "vite --config ui/vite.config.ts",
     "prepublishOnly": "npm run build",
     "ace": "tsx cli/index.ts",
     "test": "vitest run",
@@ -52,29 +54,39 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^4",
     "@ai-sdk/openai": "^4",
+    "@hono/node-server": "^2.0.10",
     "ai": "^7",
     "chalk": "^5.6.2",
+    "chokidar": "^5.0.0",
     "cli-table3": "^0.6.5",
     "dotenv": "^17.4.2",
     "handlebars": "^4.7.9",
+    "hono": "^4.12.31",
     "prompts": "^2.4.2",
     "zod": "^4"
   },
   "devDependencies": {
     "@commitlint/cli": "^21.2.1",
     "@commitlint/config-conventional": "^21.2.0",
+    "@monaco-editor/react": "^4.7.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/prompts": "^2.4.9",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
     "happy-dom": "^20.11.0",
     "husky": "^9.1.7",
+    "monaco-editor": "^0.55.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.18.1",
+    "remark-gfm": "^4.0.1",
     "tsup": "^8.5.1",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2",
+    "vite": "^8.1.5",
     "vitest": "^4.1.10"
   },
   "allowScripts": {
