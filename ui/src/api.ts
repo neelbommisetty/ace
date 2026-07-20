@@ -2,11 +2,15 @@ import type {
   AttemptEventRow,
   AttemptEventType,
   AttemptRow,
+  DisputeRow,
+  HistoryItem,
   ImportPreviewItem,
   ImportResult,
   QuestionDetail,
   QuestionRow,
   QuestionWithStats,
+  ReviewRow,
+  SettingsInfo,
   TestRunRow,
   TestRunTrigger,
   WorkspaceInfo,
@@ -188,4 +192,84 @@ export function getImportPreview(): Promise<{ items: ImportPreviewItem[] }> {
 
 export function runImport(): Promise<ImportResult> {
   return request('/api/import/run', { method: 'POST' });
+}
+
+// ---- M2: reviews / disputes / history / settings ---------------------------
+
+export function startReview(category: string, slug: string): Promise<{ jobId: string }> {
+  return request(
+    `/api/questions/${encodeURIComponent(category)}/${encodeURIComponent(slug)}/reviews`,
+    { method: 'POST', body: JSON.stringify({}) },
+  );
+}
+
+export function getReviews(category: string, slug: string): Promise<ReviewRow[]> {
+  return request(
+    `/api/questions/${encodeURIComponent(category)}/${encodeURIComponent(slug)}/reviews`,
+  );
+}
+
+/** snapshotContent is present when the reviewed-code blob still exists on disk. */
+export function getReview(id: string): Promise<ReviewRow & { snapshotContent?: string | null }> {
+  return request(`/api/reviews/${encodeURIComponent(id)}`);
+}
+
+export function startDispute(
+  runId: string,
+  argument?: string,
+): Promise<{ disputeJobId: string }> {
+  return request(`/api/test-runs/${encodeURIComponent(runId)}/disputes`, {
+    method: 'POST',
+    body: JSON.stringify(argument ? { argument } : {}),
+  });
+}
+
+export function getDisputes(category: string, slug: string): Promise<DisputeRow[]> {
+  return request(
+    `/api/questions/${encodeURIComponent(category)}/${encodeURIComponent(slug)}/disputes`,
+  );
+}
+
+export function applyDispute(id: string): Promise<{ dispute: DisputeRow }> {
+  return request(`/api/disputes/${encodeURIComponent(id)}/apply`, { method: 'POST' });
+}
+
+export function startFreshAttempt(
+  attemptId: string,
+  resetToStub: boolean,
+): Promise<{ attempt: AttemptRow }> {
+  return request(`/api/attempts/${encodeURIComponent(attemptId)}/fresh`, {
+    method: 'POST',
+    body: JSON.stringify({ resetToStub }),
+  });
+}
+
+export function getHistory(opts: {
+  q?: string;
+  category?: string;
+  type?: 'review' | 'dispute';
+  /** "<category>/<slug>" — server-side single-question filter */
+  question?: string;
+  limit?: number;
+}): Promise<{ items: HistoryItem[] }> {
+  const qs = new URLSearchParams();
+  if (opts.q) qs.set('q', opts.q);
+  if (opts.category) qs.set('category', opts.category);
+  if (opts.type) qs.set('type', opts.type);
+  if (opts.question) qs.set('question', opts.question);
+  if (opts.limit != null) qs.set('limit', String(opts.limit));
+  const s = qs.toString();
+  return request(`/api/history${s ? `?${s}` : ''}`);
+}
+
+export function getSettings(): Promise<SettingsInfo> {
+  return request('/api/settings');
+}
+
+export function putSettings(body: {
+  openaiKey?: string;
+  anthropicKey?: string;
+  defaultProvider?: 'openai' | 'anthropic';
+}): Promise<SettingsInfo> {
+  return request('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
 }

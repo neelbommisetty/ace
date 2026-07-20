@@ -5,14 +5,21 @@ import {
   ApiError,
   createOrResumeAttempt,
   flushFileSave,
+  getDisputes,
   getFile,
   getQuestionDetail,
+  getReviews,
   getTestRuns,
   postAttemptEvent,
   putFile,
+  startFreshAttempt,
+  startReview,
   startTestRun,
 } from '../api';
+import { AiPanel, type ReviewNotice, type ReviewStream } from '../components/AiPanel';
+import { DisputeModal } from '../components/DisputeModal';
 import { EditorPane, type FileState } from '../components/EditorPane';
+import { FreshAttemptDialog } from '../components/FreshAttemptDialog';
 import { ProblemPane } from '../components/ProblemPane';
 import { TestConsole, type RunDisplay } from '../components/TestConsole';
 import { TopBar } from '../components/TopBar';
@@ -20,7 +27,9 @@ import { useActiveTimer } from '../hooks/useActiveTimer';
 import { useSseConnected, useSseEvent } from '../sse';
 import type {
   AttemptRow,
+  DisputeRow,
   QuestionDetail,
+  ReviewRow,
   TestRunRow,
   TestRunTrigger,
 } from '../types';
@@ -38,6 +47,8 @@ export function Room() {
   );
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // bumped after a fresh attempt: refetches detail + attempt, remounts RoomInner
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     sessionStorage.setItem('ace-last-room', location.pathname);
@@ -64,7 +75,7 @@ export function Room() {
     return () => {
       cancelled = true;
     };
-  }, [category, slug]);
+  }, [category, slug, reloadKey]);
 
   if (notFound) {
     return <NotFound message={`No question at ${category}/${slug}.`} />;
@@ -84,6 +95,7 @@ export function Room() {
       key={`${loaded.detail.question.id}:${loaded.attempt.id}`}
       detail={loaded.detail}
       attempt={loaded.attempt}
+      onReload={() => setReloadKey((k) => k + 1)}
     />
   );
 }
@@ -130,7 +142,15 @@ function appendCapped(prev: string, chunk: string): string {
   return lines.slice(lines.length - OUTPUT_MAX_LINES).join('\n');
 }
 
-function RoomInner({ detail, attempt }: { detail: QuestionDetail; attempt: AttemptRow }) {
+function RoomInner({
+  detail,
+  attempt,
+  onReload,
+}: {
+  detail: QuestionDetail;
+  attempt: AttemptRow;
+  onReload: () => void;
+}) {
   const question = detail.question;
   const questionId = question.id;
   const connected = useSseConnected();
@@ -527,10 +547,173 @@ function RoomInner({ detail, attempt }: { detail: QuestionDetail; attempt: Attem
     editor.focus();
   }, []);
 
+  // ---- reviews (AI panel) -------------------------------------------------
+  const [reviews, setReviews] = useState<ReviewRow[] | null>(null);
+  const [disputes, setDisputes] = useState<DisputeRow[]>([]);
+  const [reviewStream, setReviewStream] = useState<ReviewStream | null>(null);
+  const [reviewNotice, setReviewNotice] = useState<ReviewNotice | null>(null);
+  const [justDoneId, setJustDoneId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getReviews(question.category, question.slug)
+      .then((rows) => {
+        if (!cancelled) setReviews(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setReviews([]);
+      });
+    getDisputes(question.category, question.slug)
+      .then((rows) => {
+        if (!cancelled) setDisputes(rows);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [question.category, question.slug]);
+
+  const requestReview = useCallback(() => {
+    setReviewNotice(null);
+    void (async () => {
+      try {
+        // the review reads files from disk — flush dirty buffers first
+        await flushSavesRef.current();
+        await startReview(question.category, question.slug);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 503) {
+          setReviewNotice({ kind: 'no-key', message: e.message });
+        } else {
+          setReviewNotice({
+            kind: 'error',
+            message: e instanceof Error ? e.message : 'Failed to start the review',
+          });
+        }
+      }
+    })();
+  }, [question.category, question.slug]);
+
+  const reviewStreamRef = useRef<ReviewStream | null>(null);
+  useEffect(() => {
+    reviewStreamRef.current = reviewStream;
+  }, [reviewStream]);
+  const streamStartedAtRef = useRef('');
+
+  useSseEvent('review-started', (p) => {
+    if (p.questionId !== questionId) return;
+    streamStartedAtRef.current = new Date().toISOString();
+    setReviewStream({ jobId: p.jobId, text: '', error: null });
+    setReviewNotice(null);
+  });
+
+  // SSE reconnected: a review-done may have been missed while offline —
+  // reconcile so the panel can't be stuck on "reviewing…" with the result
+  // already persisted server-side.
+  useSseEvent('hello', () => {
+    if (reviewStreamRef.current == null) return;
+    getReviews(question.category, question.slug)
+      .then((rows) => {
+        setReviews(rows);
+        const newest = rows[0];
+        if (newest != null && newest.at >= streamStartedAtRef.current) {
+          setReviewStream(null);
+          setJustDoneId(newest.id);
+        }
+      })
+      .catch(() => {});
+  });
+
+  useSseEvent('review-chunk', (p) => {
+    setReviewStream((cur) =>
+      cur != null && cur.jobId === p.jobId ? { ...cur, text: cur.text + p.chunk } : cur,
+    );
+  });
+
+  useSseEvent('review-done', (p) => {
+    if (p.questionId !== questionId) return;
+    setReviewStream(null);
+    setJustDoneId(p.review.id);
+    setReviews((cur) => [p.review, ...(cur ?? []).filter((r) => r.id !== p.review.id)]);
+  });
+
+  useSseEvent('review-error', (p) => {
+    if (p.questionId !== questionId) return;
+    // keep the partial text under the amber banner; nothing was persisted
+    setReviewStream((cur) =>
+      cur != null && cur.jobId === p.jobId
+        ? { ...cur, error: p.message }
+        : { jobId: p.jobId, text: '', error: p.message },
+    );
+  });
+
+  // ---- disputes -----------------------------------------------------------
+  const [disputeModal, setDisputeModal] = useState<{ runId: string; testName: string } | null>(
+    null,
+  );
+
+  useSseEvent('dispute-done', (p) => {
+    if (p.questionId !== questionId) return;
+    setDisputes((cur) => [p.dispute, ...cur.filter((d) => d.id !== p.dispute.id)]);
+  });
+
+  const handleDisputeApplied = useCallback(() => {
+    setDisputeModal(null);
+    getDisputes(question.category, question.slug).then(setDisputes).catch(() => {});
+    // The server's own write is echo-suppressed — no file-changed event will
+    // arrive. Reload the test buffers explicitly, then rerun.
+    const reloads = editorFiles
+      .filter((f) => f.kind === 'test')
+      .map((info) =>
+        getFile(info.relPath)
+          .then(({ content, hash }) => {
+            updateFile(info.relPath, {
+              buffer: content,
+              savedContent: content,
+              savedHash: hash,
+              saveState: 'saved',
+              conflict: false,
+              loaded: true,
+              loadError: null,
+            });
+          })
+          .catch(() => {}),
+      );
+    void Promise.all(reloads).then(() => startRunRef.current('manual'));
+  }, [question.category, question.slug, editorFiles, updateFile]);
+
+  // ---- fresh attempt ------------------------------------------------------
+  const [freshOpen, setFreshOpen] = useState(false);
+  const [freshBusy, setFreshBusy] = useState(false);
+  const [freshError, setFreshError] = useState<string | null>(null);
+
+  const confirmFresh = useCallback(
+    (resetToStub: boolean) => {
+      setFreshBusy(true);
+      setFreshError(null);
+      void (async () => {
+        try {
+          // the snapshot must capture what's on screen, not stale disk state
+          await flushSavesRef.current();
+          await startFreshAttempt(attempt.id, resetToStub);
+          onReload();
+        } catch (e) {
+          setFreshBusy(false);
+          setFreshError(e instanceof Error ? e.message : 'Failed to start a new attempt');
+        }
+      })();
+    },
+    [attempt.id, onReload],
+  );
+
   // ---- timer + layout -----------------------------------------------------
   const timer = useActiveTimer(attempt.id, attempt.activeSeconds);
   const [problemOpen, setProblemOpen] = useState(true);
   const [consoleOpen, setConsoleOpen] = useState(true);
+  const [aiOpen, setAiOpen] = useState(() => localStorage.getItem('ace-ai-open') !== 'false');
+  const toggleAi = useCallback((open: boolean) => {
+    setAiOpen(open);
+    localStorage.setItem('ace-ai-open', open ? 'true' : 'false');
+  }, []);
 
   return (
     <div className="room">
@@ -540,6 +723,10 @@ function RoomInner({ detail, attempt }: { detail: QuestionDetail; attempt: Attem
         timerActive={timer.active}
         running={running != null}
         onRun={hasTests ? () => startRun('manual') : undefined}
+        onFreshAttempt={() => {
+          setFreshError(null);
+          setFreshOpen(true);
+        }}
       />
       {!connected && <div className="sse-strip">reconnecting…</div>}
       <div className="room-body">
@@ -549,6 +736,7 @@ function RoomInner({ detail, attempt }: { detail: QuestionDetail; attempt: Attem
             attemptId={attempt.id}
             attemptNumber={attempt.number}
             history={history}
+            disputes={disputes}
             onCollapse={() => setProblemOpen(false)}
           />
         ) : (
@@ -583,6 +771,9 @@ function RoomInner({ detail, attempt }: { detail: QuestionDetail; attempt: Attem
                 onToggleAutorun={() => setAutorun((v) => !v)}
                 onRun={() => startRun('manual')}
                 onCollapse={() => setConsoleOpen(false)}
+                onDispute={(testName) => {
+                  if (lastRun != null) setDisputeModal({ runId: lastRun.runId, testName });
+                }}
               />
             ) : (
               <button
@@ -600,7 +791,46 @@ function RoomInner({ detail, attempt }: { detail: QuestionDetail; attempt: Attem
               </button>
             ))}
         </div>
+        {aiOpen ? (
+          <AiPanel
+            question={question}
+            reviews={reviews}
+            stream={reviewStream}
+            notice={reviewNotice}
+            justDoneId={justDoneId}
+            onRequest={requestReview}
+            onCollapse={() => toggleAi(false)}
+          />
+        ) : (
+          <button
+            className="pane-expander pane-expander-right"
+            onClick={() => toggleAi(true)}
+            title="Show AI review panel"
+          >
+            ◂
+          </button>
+        )}
       </div>
+      {disputeModal != null && (
+        <DisputeModal
+          runId={disputeModal.runId}
+          questionId={questionId}
+          testName={disputeModal.testName}
+          onClose={() => setDisputeModal(null)}
+          onApplied={handleDisputeApplied}
+        />
+      )}
+      {freshOpen && (
+        <FreshAttemptDialog
+          nextNumber={attempt.number + 1}
+          busy={freshBusy}
+          error={freshError}
+          onConfirm={confirmFresh}
+          onCancel={() => {
+            if (!freshBusy) setFreshOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }

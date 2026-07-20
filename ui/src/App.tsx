@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom';
 import { getToken, setUnauthorizedHandler } from './api';
+import { History } from './screens/History';
 import { Library } from './screens/Library';
 import { NotFound } from './screens/NotFound';
 import { Room } from './screens/Room';
+import { Settings } from './screens/Settings';
 
 export function App() {
   const [authFailed, setAuthFailed] = useState(false);
@@ -25,6 +27,8 @@ export function App() {
           <Routes>
             <Route path="/" element={<Library />} />
             <Route path="/q/:category/:slug" element={<Room />} />
+            <Route path="/history" element={<History />} />
+            <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </div>
@@ -79,15 +83,23 @@ function IconRail() {
         </span>
       )}
       <div className="rail-spacer" />
-      <span className="rail-icon rail-icon-dim" title="History — coming in M2+">
+      <Link
+        className={`rail-icon ${location.pathname.startsWith('/history') ? 'active' : ''}`}
+        to="/history"
+        title="History"
+      >
         <ClockIcon />
-      </span>
-      <span className="rail-icon rail-icon-dim" title="Stats — coming in M2+">
+      </Link>
+      <span className="rail-icon rail-icon-dim" title="Stats — coming in M3">
         <ChartIcon />
       </span>
-      <span className="rail-icon rail-icon-dim" title="Settings — coming in M2+">
+      <Link
+        className={`rail-icon ${location.pathname.startsWith('/settings') ? 'active' : ''}`}
+        to="/settings"
+        title="Settings"
+      >
         <GearIcon />
-      </span>
+      </Link>
     </nav>
   );
 }

@@ -8,6 +8,7 @@ export function TopBar({
   timerActive,
   running,
   onRun,
+  onFreshAttempt,
 }: {
   question: QuestionRow;
   seconds: number;
@@ -15,6 +16,7 @@ export function TopBar({
   running: boolean;
   /** Absent for design categories (no test files → no run). */
   onRun?: () => void;
+  onFreshAttempt?: () => void;
 }) {
   return (
     <header className="topbar">
@@ -29,6 +31,15 @@ export function TopBar({
         </span>
       </div>
       <div className="topbar-right">
+        {onFreshAttempt && (
+          <button
+            className="btn btn-small"
+            onClick={onFreshAttempt}
+            title="End this attempt and start a fresh one (code is snapshotted)"
+          >
+            ↺ New attempt
+          </button>
+        )}
         <span
           className={`timer ${timerActive ? '' : 'timer-paused'}`}
           title={timerActive ? 'Active time this attempt' : 'Paused — idle or tab hidden'}

@@ -139,6 +139,55 @@ export interface ImportResult {
   skipped: number;
 }
 
+export interface ReviewRow {
+  id: string;
+  questionId: string;
+  attemptId: string | null;
+  version: number;
+  at: string;
+  model: string | null;
+  verdict: string | null;
+  score: number | null;
+  dimensions: Record<string, number> | null;
+  bodyMd: string;
+  snapshotHash: string | null;
+  source: 'user' | 'import';
+}
+
+export type DisputeVerdict = 'test_incorrect' | 'solution_incorrect' | 'ambiguous';
+
+export interface DisputeRow {
+  id: string;
+  questionId: string;
+  attemptId: string | null;
+  testRunId: string;
+  at: string;
+  argument: string | null;
+  verdict: DisputeVerdict;
+  summary: string;
+  detailsMd: string;
+  fixedTestCode: string | null;
+  testRelPath: string;
+  hint: string | null;
+  appliedAt: string | null;
+}
+
+export interface ProviderSettings {
+  configured: boolean;
+  masked: string | null;
+}
+
+export interface SettingsInfo {
+  openai: ProviderSettings;
+  anthropic: ProviderSettings;
+  defaultProvider: 'openai' | 'anthropic' | null;
+  mockMode: boolean;
+}
+
+export type HistoryItem =
+  | { type: 'review'; at: string; question: QuestionRow; review: ReviewRow }
+  | { type: 'dispute'; at: string; question: QuestionRow; dispute: DisputeRow };
+
 export interface SseEventMap {
   hello: { version: string; workspaceRoot: string };
   'file-changed': { relPath: string; hash: string };
@@ -158,6 +207,13 @@ export interface SseEventMap {
     results: TestCaseResult[] | null;
     errorMessage: string | null;
   };
+  'review-started': { jobId: string; questionId: string; kind: 'code' | 'design' };
+  'review-chunk': { jobId: string; chunk: string };
+  'review-done': { jobId: string; questionId: string; review: ReviewRow };
+  'review-error': { jobId: string; questionId: string; message: string };
+  'dispute-started': { disputeJobId: string; questionId: string; testRunId: string };
+  'dispute-done': { disputeJobId: string; questionId: string; dispute: DisputeRow };
+  'dispute-error': { disputeJobId: string; questionId: string; message: string };
 }
 
 export type SseEventName = keyof SseEventMap;

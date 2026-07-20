@@ -70,6 +70,15 @@ function getConfig(): AceConfig {
   return cachedConfig;
 }
 
+/** Long-running processes (ace ui) must call this after writing ~/.ace/config.json. */
+export function clearConfigCache(): void {
+  cachedConfig = null;
+}
+
+export function isMockLlm(): boolean {
+  return mockLlm;
+}
+
 function getAvailableProviders(): LLMProvider[] {
   const config = getConfig();
   const providers: LLMProvider[] = [];
@@ -156,6 +165,7 @@ function toCallInput(messages: LLMMessage[]): {
 export async function chatStream(
   provider: LLMProvider,
   messages: LLMMessage[],
+  opts?: { abortSignal?: AbortSignal },
 ): Promise<AsyncIterable<string>> {
   if (mockLlm) {
     const response = getMockResponse();
@@ -169,6 +179,7 @@ export async function chatStream(
   const result = streamText({
     model: getModel(provider),
     ...toCallInput(messages),
+    abortSignal: opts?.abortSignal,
   });
   return result.textStream;
 }
@@ -177,6 +188,7 @@ export async function chatObject<T>(
   provider: LLMProvider,
   messages: LLMMessage[],
   schema: z.ZodType<T>,
+  opts?: { abortSignal?: AbortSignal },
 ): Promise<T> {
   if (mockLlm) {
     return schema.parse(JSON.parse(getMockResponse()));
@@ -186,6 +198,7 @@ export async function chatObject<T>(
     model: getModel(provider),
     ...toCallInput(messages),
     schema,
+    abortSignal: opts?.abortSignal,
     // OpenAI strict mode rejects optional schema properties.
     providerOptions: { openai: { strictJsonSchema: false } },
   });

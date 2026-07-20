@@ -53,7 +53,7 @@ describe('openDb', () => {
   it('creates .ace and .ace/tmp and tracks schema_version', () => {
     expect(fs.existsSync(path.join(tempRoot, '.ace', 'ace.db'))).toBe(true);
     expect(fs.statSync(path.join(tempRoot, '.ace', 'tmp')).isDirectory()).toBe(true);
-    expect(db.getMeta('schema_version')).toBe('1');
+    expect(db.getMeta('schema_version')).toBe('2');
   });
 
   it('reopens an existing db without re-running migrations', () => {
@@ -62,7 +62,7 @@ describe('openDb', () => {
     db.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('1');
+    expect(db.getMeta('schema_version')).toBe('2');
     expect(db.getMeta('custom')).toBe('kept');
     expect(db.getQuestionById(q.id)?.slug).toBe('debounce');
   });
@@ -406,5 +406,177 @@ describe('reviews and meta', () => {
     ).toThrow('boom');
     expect(db.listQuestions().find((x) => x.slug === 'txn-rollback')?.stats.attemptCount).toBe(0);
     expect(db.getMeta('txn-key')).toBeNull();
+  });
+});
+
+describe('reviews (M2 extensions)', () => {
+  it('round-trips score, dimensions and snapshotHash', () => {
+    const q = makeQuestion();
+    const dimensions = { Requirements: 4, 'Trade-offs': 3 };
+    const hash = 'a'.repeat(40);
+    const created = db.createReview({
+      questionId: q.id,
+      attemptId: null,
+      bodyMd: 'Overall 4/5 — solid work.',
+      score: 4,
+      dimensions,
+      snapshotHash: hash,
+      model: 'gpt-5.2',
+      source: 'user',
+    });
+    expect(created.score).toBe(4);
+    expect(created.dimensions).toEqual(dimensions);
+    expect(created.snapshotHash).toBe(hash);
+    expect(created.model).toBe('gpt-5.2');
+
+    const fetched = db.getReview(created.id);
+    expect(fetched).toEqual(created);
+  });
+
+  it('defaults the new fields to null', () => {
+    const q = makeQuestion();
+    const review = db.createReview({
+      questionId: q.id,
+      attemptId: null,
+      bodyMd: 'plain',
+      source: 'import',
+    });
+    expect(review.score).toBeNull();
+    expect(review.dimensions).toBeNull();
+    expect(review.snapshotHash).toBeNull();
+  });
+
+  it('getReview returns null for unknown ids', () => {
+    expect(db.getReview('nope')).toBeNull();
+  });
+
+  it('listReviews returns all versions for the question, newest first', () => {
+    const qa = makeQuestion({ slug: 'a' });
+    const qb = makeQuestion({ slug: 'b' });
+    const v1 = db.createReview({ questionId: qa.id, attemptId: null, bodyMd: 'v1', source: 'user' });
+    const v2 = db.createReview({ questionId: qa.id, attemptId: null, bodyMd: 'v2', source: 'user' });
+    db.createReview({ questionId: qb.id, attemptId: null, bodyMd: 'other', source: 'user' });
+
+    const listed = db.listReviews(qa.id);
+    expect(listed.map((r) => r.id)).toEqual([v2.id, v1.id]);
+    expect(listed.map((r) => r.version)).toEqual([2, 1]);
+    expect(db.listReviews('nope')).toEqual([]);
+  });
+});
+
+describe('disputes', () => {
+  function makeDispute(questionId: string, overrides: Partial<Parameters<AceDb['createDispute']>[0]> = {}) {
+    const run = db.createTestRun({ questionId, attemptId: null, trigger: 'manual' });
+    return db.createDispute({
+      questionId,
+      attemptId: null,
+      testRunId: run.id,
+      argument: null,
+      verdict: 'test_incorrect',
+      summary: 'The test asserts the wrong value',
+      detailsMd: '### Per-test\n\n- rounds: wrong expectation',
+      fixedTestCode: 'expect(round(1.5)).toBe(2)',
+      testRelPath: 'questions/js-ts/debounce/solution.test.ts',
+      hint: null,
+      ...overrides,
+    });
+  }
+
+  it('round-trips a dispute', () => {
+    const q = makeQuestion();
+    const attempt = db.createAttempt(q.id);
+    const run = db.createTestRun({ questionId: q.id, attemptId: attempt.id, trigger: 'manual' });
+    const dispute = db.createDispute({
+      questionId: q.id,
+      attemptId: attempt.id,
+      testRunId: run.id,
+      argument: 'my rounding is banker-style on purpose',
+      verdict: 'ambiguous',
+      summary: 'Spec does not pin the rounding mode',
+      detailsMd: 'Both behaviors are defensible.',
+      fixedTestCode: null,
+      testRelPath: 'questions/js-ts/debounce/solution.test.ts',
+      hint: 'consider Math.round semantics',
+    });
+
+    expect(dispute.questionId).toBe(q.id);
+    expect(dispute.attemptId).toBe(attempt.id);
+    expect(dispute.testRunId).toBe(run.id);
+    expect(dispute.argument).toBe('my rounding is banker-style on purpose');
+    expect(dispute.verdict).toBe('ambiguous');
+    expect(dispute.summary).toBe('Spec does not pin the rounding mode');
+    expect(dispute.detailsMd).toBe('Both behaviors are defensible.');
+    expect(dispute.fixedTestCode).toBeNull();
+    expect(dispute.testRelPath).toBe('questions/js-ts/debounce/solution.test.ts');
+    expect(dispute.hint).toBe('consider Math.round semantics');
+    expect(dispute.appliedAt).toBeNull();
+    expect(dispute.at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    expect(db.getDispute(dispute.id)).toEqual(dispute);
+    expect(db.getDispute('nope')).toBeNull();
+  });
+
+  it('lists disputes per question, newest first', () => {
+    const qa = makeQuestion({ slug: 'a' });
+    const qb = makeQuestion({ slug: 'b' });
+    const d1 = makeDispute(qa.id);
+    const d2 = makeDispute(qa.id);
+    makeDispute(qb.id);
+
+    expect(db.listDisputes(qa.id).map((d) => d.id)).toEqual([d2.id, d1.id]);
+    expect(db.listDisputes('nope')).toEqual([]);
+  });
+
+  it('markDisputeApplied sets applied_at once and keeps the first value', () => {
+    const q = makeQuestion();
+    const dispute = makeDispute(q.id);
+
+    const applied = db.markDisputeApplied(dispute.id);
+    expect(applied.appliedAt).not.toBeNull();
+
+    const again = db.markDisputeApplied(dispute.id);
+    expect(again.appliedAt).toBe(applied.appliedAt);
+    expect(() => db.markDisputeApplied('nope')).toThrow(/unknown dispute/);
+  });
+});
+
+describe('snapshots', () => {
+  it('round-trips a snapshot', () => {
+    const q = makeQuestion();
+    const attempt = db.createAttempt(q.id);
+    const snap = db.addSnapshot({
+      questionId: q.id,
+      attemptId: attempt.id,
+      relPath: 'questions/js-ts/debounce/solution.ts',
+      hash: 'b'.repeat(40),
+      trigger: 'review',
+    });
+    expect(snap.questionId).toBe(q.id);
+    expect(snap.attemptId).toBe(attempt.id);
+    expect(snap.relPath).toBe('questions/js-ts/debounce/solution.ts');
+    expect(snap.hash).toBe('b'.repeat(40));
+    expect(snap.trigger).toBe('review');
+    expect(snap.at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('getLatestSnapshot is scoped to question + relPath and prefers the newest', () => {
+    const q = makeQuestion();
+    const rel = 'questions/js-ts/debounce/solution.ts';
+    expect(db.getLatestSnapshot(q.id, rel)).toBeNull();
+
+    db.addSnapshot({ questionId: q.id, attemptId: null, relPath: rel, hash: '1'.repeat(40), trigger: 'save' });
+    const latest = db.addSnapshot({ questionId: q.id, attemptId: null, relPath: rel, hash: '2'.repeat(40), trigger: 'save' });
+    db.addSnapshot({
+      questionId: q.id,
+      attemptId: null,
+      relPath: 'questions/js-ts/debounce/notes.md',
+      hash: '3'.repeat(40),
+      trigger: 'reset',
+    });
+
+    expect(db.getLatestSnapshot(q.id, rel)?.id).toBe(latest.id);
+    expect(db.getLatestSnapshot(q.id, rel)?.hash).toBe('2'.repeat(40));
+    expect(db.getLatestSnapshot(q.id, 'questions/js-ts/debounce/nope.ts')).toBeNull();
+    expect(db.getLatestSnapshot('nope', rel)).toBeNull();
   });
 });

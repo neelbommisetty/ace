@@ -80,4 +80,40 @@ CREATE INDEX idx_attempts_question_id ON attempts (question_id);
 CREATE INDEX idx_attempt_events_attempt_id ON attempt_events (attempt_id);
 CREATE INDEX idx_test_runs_question_at ON test_runs (question_id, at);
 `,
+  // Migration 2 (M2 "The Corpus"): review scoring + snapshots + disputes.
+  // Pure ALTER/CREATE only — the reviews_fts virtual table is created at openDb
+  // (never here) so node:sqlite builds without FTS5 don't brick the db.
+  `
+ALTER TABLE reviews ADD COLUMN score REAL;
+ALTER TABLE reviews ADD COLUMN snapshot_hash TEXT;
+
+CREATE TABLE disputes (
+  id TEXT PRIMARY KEY,
+  question_id TEXT NOT NULL REFERENCES questions (id),
+  attempt_id TEXT,
+  test_run_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  argument TEXT,
+  verdict TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  details_md TEXT NOT NULL,
+  fixed_test_code TEXT,
+  test_rel_path TEXT NOT NULL,
+  hint TEXT,
+  applied_at TEXT
+);
+
+CREATE TABLE snapshots (
+  id TEXT PRIMARY KEY,
+  question_id TEXT NOT NULL REFERENCES questions (id),
+  attempt_id TEXT,
+  rel_path TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  at TEXT NOT NULL,
+  "trigger" TEXT NOT NULL
+);
+
+CREATE INDEX idx_disputes_question_id ON disputes (question_id);
+CREATE INDEX idx_snapshots_question_rel_path_at ON snapshots (question_id, rel_path, at);
+`,
 ];

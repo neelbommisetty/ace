@@ -8,12 +8,17 @@ import type {
   AttemptEventType,
   AttemptRow,
   Difficulty,
+  DisputeRow,
+  DisputeVerdict,
+  HistoryItem,
   QuestionRow,
   QuestionSource,
   QuestionStats,
   QuestionStatus,
   QuestionWithStats,
   ReviewRow,
+  SnapshotRow,
+  SnapshotTrigger,
   TestCaseResult,
   TestRunRow,
   TestRunStatus,
@@ -104,13 +109,59 @@ function rowToReview(r: SqlRow): ReviewRow {
     at: r.at as string,
     model: (r.model as string | null) ?? null,
     verdict: (r.verdict as string | null) ?? null,
+    score: (r.score as number | null) ?? null,
     dimensions:
       r.dimensions_json == null
         ? null
         : (JSON.parse(r.dimensions_json as string) as Record<string, number>),
     bodyMd: r.body_md as string,
+    snapshotHash: (r.snapshot_hash as string | null) ?? null,
     source: r.source as 'user' | 'import',
   };
+}
+
+function rowToDispute(r: SqlRow): DisputeRow {
+  return {
+    id: r.id as string,
+    questionId: r.question_id as string,
+    attemptId: (r.attempt_id as string | null) ?? null,
+    testRunId: r.test_run_id as string,
+    at: r.at as string,
+    argument: (r.argument as string | null) ?? null,
+    verdict: r.verdict as DisputeVerdict,
+    summary: r.summary as string,
+    detailsMd: r.details_md as string,
+    fixedTestCode: (r.fixed_test_code as string | null) ?? null,
+    testRelPath: r.test_rel_path as string,
+    hint: (r.hint as string | null) ?? null,
+    appliedAt: (r.applied_at as string | null) ?? null,
+  };
+}
+
+function rowToSnapshot(r: SqlRow): SnapshotRow {
+  return {
+    id: r.id as string,
+    questionId: r.question_id as string,
+    attemptId: (r.attempt_id as string | null) ?? null,
+    relPath: r.rel_path as string,
+    hash: r.hash as string,
+    at: r.at as string,
+    trigger: r.trigger as SnapshotTrigger,
+  };
+}
+
+/**
+ * Turns raw user input into a safe FTS5 MATCH expression: each
+ * whitespace-separated term becomes a quoted phrase (embedded double quotes
+ * doubled), so operators like AND/OR/NEAR are matched literally, never parsed.
+ * Terms are implicitly ANDed. Returns '' when no terms survive.
+ */
+function toFtsMatchQuery(q: string): string {
+  return q
+    .split(/\s+/)
+    .filter((term) => term.length > 0)
+    .map((term) => `"${term.replaceAll('"', '""')}"`)
+    .join(' ');
 }
 
 function runMigrations(db: DatabaseSync): void {
@@ -143,10 +194,12 @@ function runMigrations(db: DatabaseSync): void {
 class SqliteAceDb implements AceDb {
   readonly workspaceRoot: string;
   private db: DatabaseSync;
+  private ftsAvailable: boolean;
 
-  constructor(workspaceRoot: string, db: DatabaseSync) {
+  constructor(workspaceRoot: string, db: DatabaseSync, ftsAvailable: boolean) {
     this.workspaceRoot = workspaceRoot;
     this.db = db;
+    this.ftsAvailable = ftsAvailable;
   }
 
   // -- questions ------------------------------------------------------------
@@ -489,6 +542,9 @@ class SqliteAceDb implements AceDb {
     attemptId: string | null;
     bodyMd: string;
     verdict?: string | null;
+    score?: number | null;
+    dimensions?: Record<string, number> | null;
+    snapshotHash?: string | null;
     model?: string | null;
     source: 'user' | 'import';
     at?: string;
@@ -500,8 +556,10 @@ class SqliteAceDb implements AceDb {
     const id = uuidv7();
     this.db
       .prepare(
-        `INSERT INTO reviews (id, question_id, attempt_id, version, at, model, verdict, body_md, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO reviews
+          (id, question_id, attempt_id, version, at, model, verdict, score,
+           dimensions_json, body_md, snapshot_hash, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -511,11 +569,259 @@ class SqliteAceDb implements AceDb {
         r.at ?? nowIso(),
         r.model ?? null,
         r.verdict ?? null,
+        r.score ?? null,
+        r.dimensions ? JSON.stringify(r.dimensions) : null,
         r.bodyMd,
+        r.snapshotHash ?? null,
         r.source,
       );
+    if (this.ftsAvailable) {
+      // Kept in sync on insert only (reviews are immutable); a boot-time count
+      // check rebuilds the index if this ever drifts.
+      this.db
+        .prepare('INSERT INTO reviews_fts (review_id, body_md) VALUES (?, ?)')
+        .run(id, r.bodyMd);
+    }
     const row = this.db.prepare('SELECT * FROM reviews WHERE id = ?').get(id) as SqlRow;
     return rowToReview(row);
+  }
+
+  getReview(id: string): ReviewRow | null {
+    const r = this.db.prepare('SELECT * FROM reviews WHERE id = ?').get(id) as
+      | SqlRow
+      | undefined;
+    return r ? rowToReview(r) : null;
+  }
+
+  listReviews(questionId: string): ReviewRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM reviews WHERE question_id = ? ORDER BY version DESC')
+      .all(questionId) as SqlRow[];
+    return rows.map(rowToReview);
+  }
+
+  // -- disputes -------------------------------------------------------------
+
+  createDispute(d: {
+    questionId: string;
+    attemptId: string | null;
+    testRunId: string;
+    argument: string | null;
+    verdict: DisputeVerdict;
+    summary: string;
+    detailsMd: string;
+    fixedTestCode: string | null;
+    testRelPath: string;
+    hint: string | null;
+  }): DisputeRow {
+    const id = uuidv7();
+    this.db
+      .prepare(
+        `INSERT INTO disputes
+          (id, question_id, attempt_id, test_run_id, at, argument, verdict,
+           summary, details_md, fixed_test_code, test_rel_path, hint)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        d.questionId,
+        d.attemptId,
+        d.testRunId,
+        nowIso(),
+        d.argument,
+        d.verdict,
+        d.summary,
+        d.detailsMd,
+        d.fixedTestCode,
+        d.testRelPath,
+        d.hint,
+      );
+    const row = this.getDispute(id);
+    if (!row) throw new Error(`createDispute failed for question ${d.questionId}`);
+    return row;
+  }
+
+  getDispute(id: string): DisputeRow | null {
+    const r = this.db.prepare('SELECT * FROM disputes WHERE id = ?').get(id) as
+      | SqlRow
+      | undefined;
+    return r ? rowToDispute(r) : null;
+  }
+
+  listDisputes(questionId: string): DisputeRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM disputes WHERE question_id = ? ORDER BY at DESC, id DESC')
+      .all(questionId) as SqlRow[];
+    return rows.map(rowToDispute);
+  }
+
+  markDisputeApplied(id: string): DisputeRow {
+    const existing = this.getDispute(id);
+    if (!existing) throw new Error(`unknown dispute: ${id}`);
+    // applying is one-way: the first applied_at sticks
+    if (existing.appliedAt == null) {
+      this.db.prepare('UPDATE disputes SET applied_at = ? WHERE id = ?').run(nowIso(), id);
+    }
+    const row = this.getDispute(id);
+    if (!row) throw new Error(`unknown dispute: ${id}`);
+    return row;
+  }
+
+  // -- snapshots ------------------------------------------------------------
+
+  addSnapshot(s: {
+    questionId: string;
+    attemptId: string | null;
+    relPath: string;
+    hash: string;
+    trigger: SnapshotTrigger;
+  }): SnapshotRow {
+    const id = uuidv7();
+    this.db
+      .prepare(
+        `INSERT INTO snapshots (id, question_id, attempt_id, rel_path, hash, at, "trigger")
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, s.questionId, s.attemptId, s.relPath, s.hash, nowIso(), s.trigger);
+    const r = this.db.prepare('SELECT * FROM snapshots WHERE id = ?').get(id) as SqlRow;
+    return rowToSnapshot(r);
+  }
+
+  getLatestSnapshot(
+    questionId: string,
+    relPath: string,
+    trigger?: SnapshotTrigger,
+  ): SnapshotRow | null {
+    const r = this.db
+      .prepare(
+        `SELECT * FROM snapshots WHERE question_id = ? AND rel_path = ?
+         ${trigger ? 'AND "trigger" = ?' : ''}
+         ORDER BY at DESC, id DESC LIMIT 1`,
+      )
+      .get(...(trigger ? [questionId, relPath, trigger] : [questionId, relPath])) as
+      | SqlRow
+      | undefined;
+    return r ? rowToSnapshot(r) : null;
+  }
+
+  getFirstSnapshot(
+    questionId: string,
+    relPath: string,
+    trigger?: SnapshotTrigger,
+  ): SnapshotRow | null {
+    const r = this.db
+      .prepare(
+        `SELECT * FROM snapshots WHERE question_id = ? AND rel_path = ?
+         ${trigger ? 'AND "trigger" = ?' : ''}
+         ORDER BY at ASC, id ASC LIMIT 1`,
+      )
+      .get(...(trigger ? [questionId, relPath, trigger] : [questionId, relPath])) as
+      | SqlRow
+      | undefined;
+    return r ? rowToSnapshot(r) : null;
+  }
+
+  // -- history search -------------------------------------------------------
+
+  searchHistory(opts: {
+    q?: string;
+    category?: string;
+    type?: 'review' | 'dispute';
+    questionId?: string;
+    limit?: number;
+  }): HistoryItem[] {
+    const q = (opts.q ?? '').trim();
+    const limit = opts.limit ?? 100;
+
+    const questionCache = new Map<string, QuestionRow | null>();
+    const questionFor = (id: string): QuestionRow | null => {
+      let question = questionCache.get(id);
+      if (question === undefined) {
+        question = this.getQuestionById(id);
+        questionCache.set(id, question);
+      }
+      return question;
+    };
+
+    const items: HistoryItem[] = [];
+    if (opts.type !== 'dispute') {
+      for (const review of this.searchReviews(q)) {
+        if (opts.questionId && review.questionId !== opts.questionId) continue;
+        const question = questionFor(review.questionId);
+        if (!question) continue;
+        if (opts.category && question.category !== opts.category) continue;
+        items.push({ type: 'review', at: review.at, question, review });
+      }
+    }
+    if (opts.type !== 'review') {
+      for (const dispute of this.searchDisputes(q)) {
+        if (opts.questionId && dispute.questionId !== opts.questionId) continue;
+        const question = questionFor(dispute.questionId);
+        if (!question) continue;
+        if (opts.category && question.category !== opts.category) continue;
+        items.push({ type: 'dispute', at: dispute.at, question, dispute });
+      }
+    }
+
+    // Newest first; uuidv7 ids break same-millisecond ties by creation order.
+    items.sort((a, b) => {
+      if (a.at !== b.at) return a.at < b.at ? 1 : -1;
+      const aId = a.type === 'review' ? a.review.id : a.dispute.id;
+      const bId = b.type === 'review' ? b.review.id : b.dispute.id;
+      return aId < bId ? 1 : aId > bId ? -1 : 0;
+    });
+    return items.slice(0, limit);
+  }
+
+  private searchReviews(q: string): ReviewRow[] {
+    if (q === '') {
+      const rows = this.db
+        .prepare('SELECT * FROM reviews ORDER BY at DESC, id DESC')
+        .all() as SqlRow[];
+      return rows.map(rowToReview);
+    }
+    if (this.ftsAvailable) {
+      const match = toFtsMatchQuery(q);
+      if (match !== '') {
+        try {
+          const rows = this.db
+            .prepare(
+              `SELECT * FROM reviews
+               WHERE id IN (SELECT review_id FROM reviews_fts WHERE reviews_fts MATCH ?)
+               ORDER BY at DESC, id DESC`,
+            )
+            .all(match) as SqlRow[];
+          return rows.map(rowToReview);
+        } catch {
+          // hostile input the term-quoting couldn't neutralize — LIKE fallback
+        }
+      }
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM reviews WHERE body_md LIKE ? COLLATE NOCASE
+         ORDER BY at DESC, id DESC`,
+      )
+      .all(`%${q}%`) as SqlRow[];
+    return rows.map(rowToReview);
+  }
+
+  private searchDisputes(q: string): DisputeRow[] {
+    if (q === '') {
+      const rows = this.db
+        .prepare('SELECT * FROM disputes ORDER BY at DESC, id DESC')
+        .all() as SqlRow[];
+      return rows.map(rowToDispute);
+    }
+    const pattern = `%${q}%`;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM disputes
+         WHERE summary LIKE ? COLLATE NOCASE OR details_md LIKE ? COLLATE NOCASE
+         ORDER BY at DESC, id DESC`,
+      )
+      .all(pattern, pattern) as SqlRow[];
+    return rows.map(rowToDispute);
   }
 
   // -- meta -----------------------------------------------------------------
@@ -554,7 +860,37 @@ class SqliteAceDb implements AceDb {
   }
 }
 
-export function openDb(workspaceRoot: string): AceDb {
+/**
+ * reviews_fts is created outside numbered migrations so node:sqlite builds
+ * without FTS5 keep working (search falls back to LIKE). When available, a
+ * count mismatch with reviews (rows written by an FTS-less build, or a fresh
+ * virtual table) triggers a full rebuild. Returns whether FTS is usable.
+ */
+function ensureReviewsFts(db: DatabaseSync): boolean {
+  try {
+    db.exec(
+      'CREATE VIRTUAL TABLE IF NOT EXISTS reviews_fts USING fts5(review_id UNINDEXED, body_md)',
+    );
+    const reviews = db.prepare('SELECT COUNT(*) AS n FROM reviews').get() as SqlRow;
+    const indexed = db.prepare('SELECT COUNT(*) AS n FROM reviews_fts').get() as SqlRow;
+    if (reviews.n !== indexed.n) {
+      db.exec('BEGIN');
+      try {
+        db.exec('DELETE FROM reviews_fts');
+        db.exec('INSERT INTO reviews_fts (review_id, body_md) SELECT id, body_md FROM reviews');
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function openDb(workspaceRoot: string, opts?: { disableFts?: boolean }): AceDb {
   const aceDir = path.join(workspaceRoot, '.ace');
   fs.mkdirSync(path.join(aceDir, 'tmp'), { recursive: true });
   const db = new DatabaseSync(path.join(aceDir, 'ace.db'));
@@ -562,5 +898,7 @@ export function openDb(workspaceRoot: string): AceDb {
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('PRAGMA busy_timeout = 5000');
   runMigrations(db);
-  return new SqliteAceDb(workspaceRoot, db);
+  // disableFts exists for tests exercising the LIKE fallback path.
+  const ftsAvailable = opts?.disableFts ? false : ensureReviewsFts(db);
+  return new SqliteAceDb(workspaceRoot, db, ftsAvailable);
 }

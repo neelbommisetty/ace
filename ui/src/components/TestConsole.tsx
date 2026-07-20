@@ -21,6 +21,7 @@ export function TestConsole({
   onToggleAutorun,
   onRun,
   onCollapse,
+  onDispute,
 }: {
   running: { runId: string; trigger: TestRunTrigger } | null;
   lastRun: RunDisplay | null;
@@ -31,6 +32,8 @@ export function TestConsole({
   onToggleAutorun: () => void;
   onRun: () => void;
   onCollapse: () => void;
+  /** Present when the shown run's failures can be disputed (status 'done'). */
+  onDispute?: (testName: string) => void;
 }) {
   const [tab, setTab] = useState<'results' | 'output'>('results');
   const outputRef = useRef<HTMLPreElement>(null);
@@ -86,7 +89,12 @@ export function TestConsole({
       </div>
       <div className="console-body">
         {tab === 'results' ? (
-          <ResultsTab running={running} lastRun={lastRun} runError={runError} />
+          <ResultsTab
+            running={running}
+            lastRun={lastRun}
+            runError={runError}
+            onDispute={onDispute}
+          />
         ) : (
           <div className="output-tab">
             {lastRun?.status === 'error' && !running && (
@@ -109,10 +117,12 @@ function ResultsTab({
   running,
   lastRun,
   runError,
+  onDispute,
 }: {
   running: { runId: string; trigger: TestRunTrigger } | null;
   lastRun: RunDisplay | null;
   runError: string | null;
+  onDispute?: (testName: string) => void;
 }) {
   if (runError && !running) {
     return <div className="results-banner results-banner-error">{runError}</div>;
@@ -156,7 +166,11 @@ function ResultsTab({
             </div>
           )}
           {lastRun.results && lastRun.results.length > 0 && (
-            <CaseList key={lastRun.runId} results={lastRun.results} />
+            <CaseList
+              key={lastRun.runId}
+              results={lastRun.results}
+              onDispute={!running && lastRun.status === 'done' ? onDispute : undefined}
+            />
           )}
         </>
       )}
@@ -164,7 +178,13 @@ function ResultsTab({
   );
 }
 
-function CaseList({ results }: { results: TestCaseResult[] }) {
+function CaseList({
+  results,
+  onDispute,
+}: {
+  results: TestCaseResult[];
+  onDispute?: (testName: string) => void;
+}) {
   // failures start expanded; every failing row toggles
   const [collapsedOverride, setCollapsedOverride] = useState<Record<number, boolean>>({});
 
@@ -179,24 +199,64 @@ function CaseList({ results }: { results: TestCaseResult[] }) {
             : undefined;
         return (
           <li key={i} className={`case-row case-${r.status}`}>
-            <button
-              className={`case-line ${toggle ? 'case-line-toggle' : ''}`}
-              onClick={toggle}
-              disabled={!toggle}
-            >
-              <span className="case-glyph">
-                {r.status === 'passed' ? '✓' : r.status === 'failed' ? '✕' : '○'}
-              </span>
-              <span className="case-name">
-                {r.suite && <span className="case-suite">{r.suite} › </span>}
-                {r.name}
-              </span>
-              <span className="case-duration mono">{formatDuration(r.durationMs)}</span>
-            </button>
+            <div className="case-line-wrap">
+              <button
+                className={`case-line ${toggle ? 'case-line-toggle' : ''}`}
+                onClick={toggle}
+                disabled={!toggle}
+              >
+                <span className="case-glyph">
+                  {r.status === 'passed' ? '✓' : r.status === 'failed' ? '✕' : '○'}
+                </span>
+                <span className="case-name">
+                  {r.suite && <span className="case-suite">{r.suite} › </span>}
+                  {r.name}
+                </span>
+                <span className="case-duration mono">{formatDuration(r.durationMs)}</span>
+              </button>
+              {r.status === 'failed' && onDispute != null && (
+                <CaseKebab onDispute={() => onDispute(r.suite ? `${r.suite} › ${r.name}` : r.name)} />
+              )}
+            </div>
             {expanded && <pre className="case-error">{r.error}</pre>}
           </li>
         );
       })}
     </ul>
+  );
+}
+
+function CaseKebab({ onDispute }: { onDispute: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current != null && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  return (
+    <div className="kebab" ref={ref}>
+      <button className="icon-btn kebab-btn" onClick={() => setOpen((v) => !v)} title="Test actions">
+        ⋮
+      </button>
+      {open && (
+        <div className="kebab-menu">
+          <button
+            className="kebab-item"
+            onClick={() => {
+              setOpen(false);
+              onDispute();
+            }}
+          >
+            Dispute this failure…
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

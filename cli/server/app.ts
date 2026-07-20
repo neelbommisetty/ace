@@ -3,8 +3,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { CATEGORIES, type CategoryConfig } from '../lib/categories.js';
+import { CATEGORIES, type CategoryConfig, type CategorySlug } from '../lib/categories.js';
 import { getQuestionsDir } from '../lib/paths.js';
+import { getStubContent } from '../lib/scaffold.js';
+import { readBlob, saveBlob } from './blobs.js';
+import {
+  applyDispute,
+  DisputeApplyError,
+  getDisputeGuardError,
+  type DisputeEngine,
+} from './disputes.js';
 import {
   ScopeError,
   readWorkspaceFile,
@@ -12,7 +20,15 @@ import {
   toWorkspaceRelPath,
   writeWorkspaceFile,
 } from './files.js';
+import { getReviewGuardError, type ReviewEngine } from './reviews.js';
 import type { Runner } from './runner.js';
+import {
+  getSettingsInfo,
+  resolveProvider,
+  SettingsValidationError,
+  updateSettings,
+  type SettingsPatch,
+} from './settings.js';
 import type { Bus } from './sse.js';
 import type {
   AceDb,
@@ -22,6 +38,7 @@ import type {
   ImportResult,
   QuestionDetail,
   QuestionFileInfo,
+  QuestionRow,
   TestRunTrigger,
   WorkspaceInfo,
 } from './types.js';
@@ -40,6 +57,8 @@ export interface CreateAppOptions {
   version: string;
   runner: Runner;
   importer: ImporterApi;
+  reviews: ReviewEngine;
+  disputes: DisputeEngine;
   /** Latest reconcile's skipped dirs (dirs under unknown categories). */
   getSkippedDirs?: () => string[];
 }
@@ -84,7 +103,8 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 export function createApp(opts: CreateAppOptions): Hono {
-  const { db, bus, workspaceRoot, token, uiDir, version, runner, importer } = opts;
+  const { db, bus, workspaceRoot, token, uiDir, version, runner, importer, reviews, disputes } =
+    opts;
   const getSkippedDirs = opts.getSkippedDirs ?? (() => []);
   const app = new Hono();
 
@@ -210,6 +230,34 @@ export function createApp(opts: CreateAppOptions): Hono {
     return c.json(detail);
   });
 
+  /**
+   * On a question's FIRST-ever attempt, record its files as 'scaffold'
+   * snapshots — the pristine baseline the review guard and fresh-attempt
+   * reset compare against / restore from.
+   */
+  function captureScaffoldBaseline(question: QuestionRow): void {
+    const config = (CATEGORIES as Record<string, CategoryConfig | undefined>)[question.category];
+    if (!config) return;
+    for (const name of [...config.solutionFiles, ...config.testFiles]) {
+      const abs = path.join(question.dirPath, name);
+      const rel = toWorkspaceRelPath(workspaceRoot, abs);
+      try {
+        if (db.getLatestSnapshot(question.id, rel) != null) continue;
+        const content = fs.readFileSync(abs, 'utf8');
+        const hash = saveBlob(workspaceRoot, content);
+        db.addSnapshot({
+          questionId: question.id,
+          attemptId: null,
+          relPath: rel,
+          hash,
+          trigger: 'scaffold',
+        });
+      } catch {
+        // missing file or blob failure — baseline is best-effort
+      }
+    }
+  }
+
   app.post('/api/questions/:category/:slug/attempts', (c) => {
     const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
     if (!question) return c.json({ error: 'question not found' }, 404);
@@ -219,6 +267,9 @@ export function createApp(opts: CreateAppOptions): Hono {
 
     const attempt = db.createAttempt(question.id);
     db.addAttemptEvent(attempt.id, 'reveal');
+    // number 1 = first-ever attempt (imported history counts, so a legacy
+    // question's own solved code is never mistaken for a scaffold).
+    if (attempt.number === 1) captureScaffoldBaseline(question);
     return c.json({ attempt });
   });
 
@@ -301,6 +352,31 @@ export function createApp(opts: CreateAppOptions): Hono {
     return c.json({ path: toWorkspaceRelPath(workspaceRoot, abs), ...file });
   });
 
+  /** Records a 'save' snapshot when the written content is new for that file. */
+  function snapshotOnWrite(relPath: string, content: string, hash: string): void {
+    // relPath shape: questions/<category>/<slug>/<file...>
+    const segments = relPath.split('/');
+    if (segments.length < 4 || segments[0] !== 'questions') return;
+    const question = db.getQuestion(segments[1], segments[2]);
+    if (!question) return;
+    try {
+      const latest = db.getLatestSnapshot(question.id, relPath);
+      if (latest && latest.hash === hash) return;
+      saveBlob(workspaceRoot, content);
+      db.addSnapshot({
+        questionId: question.id,
+        attemptId: db.getActiveAttempt(question.id)?.id ?? null,
+        relPath,
+        hash,
+        trigger: 'save',
+      });
+    } catch (err) {
+      // Snapshot bookkeeping must never fail the save itself — the file is
+      // already safely on disk.
+      console.error('[ace] snapshot-on-write failed:', err);
+    }
+  }
+
   app.put('/api/file', async (c) => {
     const body = await readJsonBody(c);
     if (!body) return c.json({ error: 'invalid JSON body' }, 400);
@@ -308,7 +384,9 @@ export function createApp(opts: CreateAppOptions): Hono {
     if (typeof rel !== 'string' || typeof content !== 'string') {
       return c.json({ error: 'path and content must be strings' }, 400);
     }
-    const hash = writeWorkspaceFile(workspaceRoot, rel, content); // throws ScopeError → 400
+    const abs = resolveWorkspacePath(workspaceRoot, rel); // throws ScopeError → 400
+    const hash = writeWorkspaceFile(workspaceRoot, rel, content);
+    snapshotOnWrite(toWorkspaceRelPath(workspaceRoot, abs), content, hash);
     return c.json({ hash });
   });
 
@@ -350,6 +428,258 @@ export function createApp(opts: CreateAppOptions): Hono {
   );
 
   app.post('/api/import/run', (c) => c.json(importer.runImport(db, workspaceRoot)));
+
+  // -------------------------------------------------------------------------
+  // Reviews
+  // -------------------------------------------------------------------------
+
+  app.post('/api/questions/:category/:slug/reviews', (c) => {
+    const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
+    if (!question) return c.json({ error: 'question not found' }, 404);
+
+    if (reviews.isRunning(question.id)) {
+      return c.json({ error: 'a review is already running for this question' }, 409);
+    }
+    const guardError = getReviewGuardError(question, db);
+    if (guardError) return c.json({ error: guardError }, 400);
+    if (!resolveProvider()) {
+      return c.json({ error: 'no LLM API key configured — add one in Settings' }, 503);
+    }
+
+    const attempt = db.getActiveAttempt(question.id);
+    const { jobId } = reviews.start(question, attempt?.id ?? null);
+    return c.json({ jobId }, 202);
+  });
+
+  app.get('/api/questions/:category/:slug/reviews', (c) => {
+    const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
+    if (!question) return c.json({ error: 'question not found' }, 404);
+    return c.json(db.listReviews(question.id));
+  });
+
+  app.get('/api/reviews/:id', (c) => {
+    const review = db.getReview(c.req.param('id'));
+    if (!review) return c.json({ error: 'review not found' }, 404);
+    const snapshotContent = review.snapshotHash
+      ? readBlob(workspaceRoot, review.snapshotHash)
+      : null;
+    return c.json({ ...review, snapshotContent });
+  });
+
+  // -------------------------------------------------------------------------
+  // Disputes
+  // -------------------------------------------------------------------------
+
+  app.post('/api/test-runs/:runId/disputes', async (c) => {
+    const run = db.getTestRun(c.req.param('runId'));
+    if (!run) return c.json({ error: 'test run not found' }, 404);
+    const question = db.getQuestionById(run.questionId);
+    if (!question) return c.json({ error: 'question not found for test run' }, 404);
+
+    const body = await readJsonBody(c);
+    if (!body) return c.json({ error: 'invalid JSON body' }, 400);
+    if (body.argument !== undefined && typeof body.argument !== 'string') {
+      return c.json({ error: 'argument must be a string' }, 400);
+    }
+    const argument =
+      typeof body.argument === 'string' && body.argument.trim().length > 0
+        ? body.argument.trim()
+        : null;
+
+    const guardError = getDisputeGuardError(question, run);
+    if (guardError) return c.json({ error: guardError }, 400);
+    if (disputes.isRunning(question.id)) {
+      return c.json({ error: 'a dispute analysis is already running for this question' }, 409);
+    }
+    if (!resolveProvider()) {
+      return c.json({ error: 'no LLM API key configured — add one in Settings' }, 503);
+    }
+
+    const { disputeJobId } = disputes.start(question, run, argument);
+    return c.json({ disputeJobId }, 202);
+  });
+
+  app.get('/api/questions/:category/:slug/disputes', (c) => {
+    const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
+    if (!question) return c.json({ error: 'question not found' }, 404);
+    return c.json(db.listDisputes(question.id));
+  });
+
+  app.post('/api/disputes/:id/apply', (c) => {
+    const dispute = db.getDispute(c.req.param('id'));
+    if (!dispute) return c.json({ error: 'dispute not found' }, 404);
+    try {
+      return c.json({ dispute: applyDispute({ db, workspaceRoot, dispute }) });
+    } catch (err) {
+      if (err instanceof DisputeApplyError) return c.json({ error: err.message }, err.status);
+      throw err;
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Fresh attempt
+  // -------------------------------------------------------------------------
+
+  app.post('/api/attempts/:id/fresh', async (c) => {
+    const attempt = db.getAttempt(c.req.param('id'));
+    if (!attempt) return c.json({ error: 'attempt not found' }, 404);
+
+    const body = await readJsonBody(c);
+    if (!body) return c.json({ error: 'invalid JSON body' }, 400);
+    if (typeof body.resetToStub !== 'boolean') {
+      return c.json({ error: 'resetToStub must be a boolean' }, 400);
+    }
+
+    const question = db.getQuestionById(attempt.questionId);
+    if (!question) return c.json({ error: 'question not found for attempt' }, 404);
+    const config = (CATEGORIES as Record<string, CategoryConfig | undefined>)[question.category];
+    if (!config) return c.json({ error: `unknown category "${question.category}"` }, 400);
+
+    if (!attempt.endedAt) {
+      db.patchAttempt(attempt.id, { end: { reason: 'abandoned' } });
+    }
+
+    // Snapshot every solution file BEFORE any stub write. A snapshot failure
+    // aborts the whole request (500) so the reset can never lose code.
+    for (const name of config.solutionFiles) {
+      const abs = path.join(question.dirPath, name);
+      let content: string;
+      try {
+        content = fs.readFileSync(abs, 'utf8');
+      } catch {
+        continue; // file never created — nothing to preserve
+      }
+      const hash = saveBlob(workspaceRoot, content);
+      db.addSnapshot({
+        questionId: question.id,
+        attemptId: attempt.id,
+        relPath: toWorkspaceRelPath(workspaceRoot, abs),
+        hash,
+        trigger: 'reset',
+      });
+    }
+
+    if (body.resetToStub) {
+      for (const name of config.solutionFiles) {
+        const rel = toWorkspaceRelPath(workspaceRoot, path.join(question.dirPath, name));
+        // Restore the ORIGINAL scaffold (with its real signature/title) when we
+        // have it — getStubContent renders with empty placeholders and would
+        // drop the exported signature the test file imports.
+        const baseline = db.getFirstSnapshot(question.id, rel, 'scaffold');
+        const original = baseline ? readBlob(workspaceRoot, baseline.hash) : null;
+        const stubContent =
+          original ?? getStubContent(question.category as CategorySlug, name);
+        writeWorkspaceFile(workspaceRoot, rel, stubContent);
+        // What we just wrote is the new pristine baseline for the guard.
+        try {
+          const h = saveBlob(workspaceRoot, stubContent);
+          db.addSnapshot({
+            questionId: question.id,
+            attemptId: null,
+            relPath: rel,
+            hash: h,
+            trigger: 'scaffold',
+          });
+        } catch {
+          // non-fatal: guard falls back to its heuristics
+        }
+      }
+    }
+
+    const fresh = db.createAttempt(question.id);
+    db.addAttemptEvent(fresh.id, 'reveal');
+    return c.json({ attempt: fresh });
+  });
+
+  // -------------------------------------------------------------------------
+  // History
+  // -------------------------------------------------------------------------
+
+  app.get('/api/history', (c) => {
+    const q = c.req.query('q');
+    const category = c.req.query('category');
+
+    // Optional "<category>/<slug>" filter so a question's full history is
+    // server-side, not a client-side slice of the newest page.
+    const rawQuestion = c.req.query('question');
+    let questionId: string | undefined;
+    if (rawQuestion !== undefined && rawQuestion !== '') {
+      const slash = rawQuestion.indexOf('/');
+      const qrow =
+        slash > 0
+          ? db.getQuestion(rawQuestion.slice(0, slash), rawQuestion.slice(slash + 1))
+          : null;
+      if (!qrow) return c.json({ items: [] });
+      questionId = qrow.id;
+    }
+
+    const rawType = c.req.query('type');
+    let type: 'review' | 'dispute' | undefined;
+    if (rawType !== undefined && rawType !== '') {
+      if (rawType !== 'review' && rawType !== 'dispute') {
+        return c.json({ error: 'type must be "review" or "dispute"' }, 400);
+      }
+      type = rawType;
+    }
+
+    const rawLimit = c.req.query('limit');
+    let limit: number | undefined;
+    if (rawLimit !== undefined && rawLimit !== '') {
+      const parsed = Number.parseInt(rawLimit, 10);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return c.json({ error: 'limit must be a positive integer' }, 400);
+      }
+      limit = Math.min(parsed, 500);
+    }
+
+    return c.json({
+      items: db.searchHistory({
+        q: q || undefined,
+        category: category || undefined,
+        type,
+        questionId,
+        limit,
+      }),
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Settings
+  // -------------------------------------------------------------------------
+
+  app.get('/api/settings', (c) => c.json(getSettingsInfo()));
+
+  app.put('/api/settings', async (c) => {
+    const body = await readJsonBody(c);
+    if (!body) return c.json({ error: 'invalid JSON body' }, 400);
+
+    const patch: SettingsPatch = {};
+    if (body.openaiKey !== undefined) {
+      if (typeof body.openaiKey !== 'string' || body.openaiKey.trim().length === 0) {
+        return c.json({ error: 'openaiKey must be a non-empty string' }, 400);
+      }
+      patch.openaiKey = body.openaiKey.trim();
+    }
+    if (body.anthropicKey !== undefined) {
+      if (typeof body.anthropicKey !== 'string' || body.anthropicKey.trim().length === 0) {
+        return c.json({ error: 'anthropicKey must be a non-empty string' }, 400);
+      }
+      patch.anthropicKey = body.anthropicKey.trim();
+    }
+    if (body.defaultProvider !== undefined) {
+      if (body.defaultProvider !== 'openai' && body.defaultProvider !== 'anthropic') {
+        return c.json({ error: 'defaultProvider must be "openai" or "anthropic"' }, 400);
+      }
+      patch.defaultProvider = body.defaultProvider;
+    }
+
+    try {
+      return c.json(await updateSettings(patch));
+    } catch (err) {
+      if (err instanceof SettingsValidationError) return c.json({ error: err.message }, 400);
+      throw err;
+    }
+  });
 
   // -------------------------------------------------------------------------
   // SSE

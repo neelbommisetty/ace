@@ -3,8 +3,10 @@ import path from 'node:path';
 import { serve, type ServerType } from '@hono/node-server';
 import { createApp } from './app.js';
 import { openDb } from './db.js';
+import { createDisputeEngine } from './disputes.js';
 import { previewImport, runImport } from './importer.js';
 import { reconcile } from './reconciler.js';
+import { createReviewEngine } from './reviews.js';
 import { createRunner } from './runner.js';
 import { createBus } from './sse.js';
 import { startWatcher } from './watcher.js';
@@ -62,11 +64,15 @@ export async function startAceServer(opts: StartAceServerOptions): Promise<AceSe
 
   let watcher: { close(): Promise<void> } | null = null;
   let runner: ReturnType<typeof createRunner> | null = null;
+  let reviews: ReturnType<typeof createReviewEngine> | null = null;
+  let disputes: ReturnType<typeof createDisputeEngine> | null = null;
   try {
     doReconcile();
 
     const bus = createBus();
     runner = createRunner({ db, bus, workspaceRoot });
+    reviews = createReviewEngine({ db, bus, workspaceRoot });
+    disputes = createDisputeEngine({ db, bus, workspaceRoot });
     watcher = startWatcher({ workspaceRoot, bus, onQuestionsChanged: doReconcile });
 
     const app = createApp({
@@ -78,6 +84,8 @@ export async function startAceServer(opts: StartAceServerOptions): Promise<AceSe
       version: readPackageVersion(),
       runner,
       importer: { previewImport, runImport },
+      reviews,
+      disputes,
       getSkippedDirs: () => skippedDirs,
     });
 
@@ -91,12 +99,16 @@ export async function startAceServer(opts: StartAceServerOptions): Promise<AceSe
 
     const activeRunner = runner;
     const activeWatcher = watcher;
+    const activeReviews = reviews;
+    const activeDisputes = disputes;
     return {
       url: `http://127.0.0.1:${port}`,
       port,
       async close() {
         await activeWatcher.close();
         activeRunner.dispose();
+        activeReviews.dispose();
+        activeDisputes.dispose();
         await new Promise<void>((resolve, reject) => {
           server.close((err) => (err ? reject(err) : resolve()));
           // Open SSE connections would keep close() waiting forever.
@@ -110,6 +122,8 @@ export async function startAceServer(opts: StartAceServerOptions): Promise<AceSe
     // Listen (or boot) failed — release everything so the caller can retry.
     if (watcher) await watcher.close().catch(() => {});
     if (runner) runner.dispose();
+    if (reviews) reviews.dispose();
+    if (disputes) disputes.dispose();
     try {
       db.close();
     } catch {

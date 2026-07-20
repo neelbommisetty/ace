@@ -96,11 +96,59 @@ export interface ReviewRow {
   version: number;
   at: string;
   model: string | null;
-  verdict: string | null;
-  dimensions: Record<string, number> | null;
+  verdict: string | null; // design rubric: 'Strong Hire' | 'Hire' | 'Lean Hire' | 'No Hire'
+  score: number | null; // code reviews: parsed "Overall N/5"
+  dimensions: Record<string, number> | null; // design rubric dimension → 1..5
   bodyMd: string;
+  snapshotHash: string | null; // blob hash of the primary solution file at request time
   source: 'user' | 'import';
 }
+
+export type DisputeVerdict = 'test_incorrect' | 'solution_incorrect' | 'ambiguous';
+
+export interface DisputeRow {
+  id: string;
+  questionId: string;
+  attemptId: string | null;
+  testRunId: string;
+  at: string;
+  argument: string | null; // the user's case, optional
+  verdict: DisputeVerdict;
+  summary: string;
+  detailsMd: string;
+  fixedTestCode: string | null; // full corrected test file when verdict allows applying
+  testRelPath: string; // workspace-relative path of the disputed test file
+  hint: string | null; // spoiler-free hint when solution_incorrect
+  appliedAt: string | null;
+}
+
+export type SnapshotTrigger = 'scaffold' | 'save' | 'review' | 'dispute-apply' | 'reset';
+
+export interface SnapshotRow {
+  id: string;
+  questionId: string;
+  attemptId: string | null;
+  relPath: string;
+  hash: string; // sha1, content stored at .ace/blobs/<hash>
+  at: string;
+  trigger: SnapshotTrigger;
+}
+
+export interface ProviderSettings {
+  configured: boolean;
+  masked: string | null; // '...abcd'
+}
+
+export interface SettingsInfo {
+  openai: ProviderSettings;
+  anthropic: ProviderSettings;
+  defaultProvider: 'openai' | 'anthropic' | null;
+  mockMode: boolean;
+}
+
+export type HistoryItem =
+  | { type: 'review'; at: string; question: QuestionRow; review: ReviewRow }
+  | { type: 'dispute'; at: string; question: QuestionRow; dispute: DisputeRow };
 
 export interface QuestionFileInfo {
   name: string;
@@ -181,6 +229,13 @@ export interface SseEventMap {
     results: TestCaseResult[] | null;
     errorMessage: string | null;
   };
+  'review-started': { jobId: string; questionId: string; kind: 'code' | 'design' };
+  'review-chunk': { jobId: string; chunk: string };
+  'review-done': { jobId: string; questionId: string; review: ReviewRow };
+  'review-error': { jobId: string; questionId: string; message: string };
+  'dispute-started': { disputeJobId: string; questionId: string; testRunId: string };
+  'dispute-done': { disputeJobId: string; questionId: string; dispute: DisputeRow };
+  'dispute-error': { disputeJobId: string; questionId: string; message: string };
 }
 
 export type SseEventName = keyof SseEventMap;
@@ -250,10 +305,55 @@ export interface AceDb {
     attemptId: string | null;
     bodyMd: string;
     verdict?: string | null;
+    score?: number | null;
+    dimensions?: Record<string, number> | null;
+    snapshotHash?: string | null;
     model?: string | null;
     source: 'user' | 'import';
     at?: string;
   }): ReviewRow;
+  getReview(id: string): ReviewRow | null;
+  /** All versions for a question, newest first. */
+  listReviews(questionId: string): ReviewRow[];
+
+  createDispute(d: {
+    questionId: string;
+    attemptId: string | null;
+    testRunId: string;
+    argument: string | null;
+    verdict: DisputeVerdict;
+    summary: string;
+    detailsMd: string;
+    fixedTestCode: string | null;
+    testRelPath: string;
+    hint: string | null;
+  }): DisputeRow;
+  getDispute(id: string): DisputeRow | null;
+  listDisputes(questionId: string): DisputeRow[];
+  markDisputeApplied(id: string): DisputeRow;
+
+  addSnapshot(s: {
+    questionId: string;
+    attemptId: string | null;
+    relPath: string;
+    hash: string;
+    trigger: SnapshotTrigger;
+  }): SnapshotRow;
+  getLatestSnapshot(questionId: string, relPath: string, trigger?: SnapshotTrigger): SnapshotRow | null;
+  /** Oldest snapshot for a path (optionally by trigger) — the pristine scaffold baseline. */
+  getFirstSnapshot(questionId: string, relPath: string, trigger?: SnapshotTrigger): SnapshotRow | null;
+
+  /**
+   * Search reviews + disputes, newest first. `q` uses FTS5 over review bodies
+   * when available (LIKE fallback otherwise); empty q returns everything.
+   */
+  searchHistory(opts: {
+    q?: string;
+    category?: string;
+    type?: 'review' | 'dispute';
+    questionId?: string;
+    limit?: number;
+  }): HistoryItem[];
 
   getMeta(key: string): string | null;
   setMeta(key: string, value: string): void;

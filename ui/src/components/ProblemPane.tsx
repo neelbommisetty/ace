@@ -3,7 +3,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getAttempt } from '../api';
 import { formatDuration, relTime } from '../lib/format';
-import type { AttemptEventRow, AttemptEventType, TestRunRow } from '../types';
+import { DISPUTE_VERDICT_LABELS } from '../lib/review';
+import type { AttemptEventRow, AttemptEventType, DisputeRow, TestRunRow } from '../types';
 
 const EVENT_LABELS: Record<AttemptEventType, string> = {
   reveal: 'question revealed',
@@ -19,12 +20,14 @@ export function ProblemPane({
   attemptId,
   attemptNumber,
   history,
+  disputes,
   onCollapse,
 }: {
   readme: string;
   attemptId: string;
   attemptNumber: number;
   history: TestRunRow[];
+  disputes: DisputeRow[];
   onCollapse: () => void;
 }) {
   const [tab, setTab] = useState<'problem' | 'activity'>('problem');
@@ -60,7 +63,12 @@ export function ProblemPane({
             <div className="pane-empty">No README for this question.</div>
           )
         ) : (
-          <ActivityTab attemptId={attemptId} attemptNumber={attemptNumber} history={history} />
+          <ActivityTab
+            attemptId={attemptId}
+            attemptNumber={attemptNumber}
+            history={history}
+            disputes={disputes}
+          />
         )}
       </div>
     </aside>
@@ -71,10 +79,12 @@ function ActivityTab({
   attemptId,
   attemptNumber,
   history,
+  disputes,
 }: {
   attemptId: string;
   attemptNumber: number;
   history: TestRunRow[];
+  disputes: DisputeRow[];
 }) {
   const [events, setEvents] = useState<AttemptEventRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -112,6 +122,27 @@ function ActivityTab({
             </li>
           ))}
         </ul>
+      )}
+      {disputes.length > 0 && (
+        <>
+          <h3 className="activity-heading">Disputes</h3>
+          <ul className="activity-list">
+            {disputes.map((d) => (
+              <li key={d.id} className="activity-item activity-dispute">
+                <span className="activity-dispute-main">
+                  <span className={`dispute-tag dv-${d.verdict}`}>
+                    {DISPUTE_VERDICT_LABELS[d.verdict]}
+                  </span>
+                  {d.appliedAt != null && <span className="chip chip-applied">applied</span>}
+                  <span className="activity-dispute-summary" title={d.summary}>
+                    {d.summary}
+                  </span>
+                </span>
+                <span className="activity-when">{relTime(d.at)}</span>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
       <h3 className="activity-heading">Past runs</h3>
       {history.length === 0 ? (
