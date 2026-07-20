@@ -3,6 +3,7 @@
   "version": "0.2.1",
   "description": "CLI tool for frontend interview preparation — scaffolds questions with tests, tracks progress, and provides LLM-powered feedback",
   "type": "module",
+  "packageManager": "npm@12.0.1",
   "bin": {
     "ace": "dist/index.js"
   },
@@ -52,26 +53,31 @@
     "@anthropic-ai/sdk": "^0.74.0",
     "chalk": "^5.6.2",
     "cli-table3": "^0.6.5",
-    "dotenv": "^17.3.1",
-    "handlebars": "^4.7.8",
+    "dotenv": "^17.4.2",
+    "handlebars": "^4.7.9",
     "openai": "^6.22.0",
     "prompts": "^2.4.2"
   },
   "devDependencies": {
-    "@commitlint/cli": "^20.4.1",
-    "@commitlint/config-conventional": "^20.4.1",
+    "@commitlint/cli": "^21.2.1",
+    "@commitlint/config-conventional": "^21.2.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/prompts": "^2.4.9",
-    "@types/react": "^19.2.14",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "happy-dom": "^20.6.1",
+    "happy-dom": "^20.11.0",
     "husky": "^9.1.7",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "tsup": "^8.5.1",
-    "tsx": "^4.21.0",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "allowScripts": {
+    "esbuild@0.27.3": true,
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true
   }
 }
