@@ -2274,6 +2274,18 @@ code {
   font-size: 12px;
 }
 
+.generating-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  border-color: rgba(255, 178, 36, 0.4);
+}
+
+.empty-state .btn {
+  margin-top: 14px;
+}
+
 .toast {
   position: fixed;
   bottom: 20px;

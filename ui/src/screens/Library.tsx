@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { getQuestions, getWorkspace } from '../api';
+import { Link } from 'react-router-dom';
+import { getGenerationJobs, getQuestions, getWorkspace } from '../api';
 import { ImportBanner } from '../components/ImportBanner';
 import { QuestionTable } from '../components/QuestionTable';
 import { ResumeCard } from '../components/ResumeCard';
@@ -15,6 +16,7 @@ export function Library() {
   const [error, setError] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [generatingCount, setGeneratingCount] = useState(0);
 
   const refetch = useCallback(() => {
     Promise.all([getWorkspace(), getQuestions()])
@@ -32,7 +34,26 @@ export function Library() {
     refetch();
   }, [refetch]);
 
+  useEffect(() => {
+    getGenerationJobs()
+      .then((res) => {
+        const active = res.jobs.filter(
+          (j) => j.status === 'running' || j.status === 'llm_done',
+        ).length;
+        setGeneratingCount(active);
+      })
+      .catch(() => {
+        // best-effort seed; SSE keeps the pill live even if this fails
+      });
+  }, []);
+
   useSseEvent('questions-changed', refetch);
+
+  // No per-event fetch: the pill is a running count driven purely by the
+  // start/finish SSE events, seeded once above from the server.
+  useSseEvent('generation-started', () => setGeneratingCount((c) => c + 1));
+  useSseEvent('generation-done', () => setGeneratingCount((c) => Math.max(0, c - 1)));
+  useSseEvent('generation-error', () => setGeneratingCount((c) => Math.max(0, c - 1)));
 
   const visible = useMemo(() => {
     if (questions == null) return [];
@@ -61,6 +82,15 @@ export function Library() {
           )}
         </div>
         <div className="topbar-right">
+          {generatingCount > 0 && (
+            <span className="chip generating-pill">
+              <span className="pulse-dot" aria-hidden="true" />
+              {generatingCount} generating…
+            </span>
+          )}
+          <Link className="btn btn-accent btn-small" to="/new">
+            New question
+          </Link>
           {workspace != null && (
             <span className="workspace-root mono" title="Workspace root">
               {workspace.root}
@@ -126,9 +156,11 @@ export function Library() {
               <div className="empty-state">
                 <p className="empty-title">No questions yet</p>
                 <p className="empty-hint">
-                  Generate one from the terminal with <code>ace generate</code>, then it shows up
-                  here.
+                  Describe what you want to practice and ACE will generate it for you.
                 </p>
+                <Link className="btn btn-accent" to="/new">
+                  Create your first question
+                </Link>
               </div>
             ) : visible.length === 0 ? (
               <div className="empty-state">

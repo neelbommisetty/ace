@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom';
 import { getToken, setUnauthorizedHandler } from './api';
+import { Toast } from './components/Toast';
 import { consumeSuppressForReset, isSuppressArmed } from './lib/resetSuppress';
 import { History } from './screens/History';
 import { Library } from './screens/Library';
@@ -80,6 +81,7 @@ export function App() {
           </Routes>
         </div>
       </div>
+      <Toast />
     </BrowserRouter>
   );
 }

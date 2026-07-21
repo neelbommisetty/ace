@@ -53,6 +53,7 @@ vi.mock('./api', async (importOriginal) => {
     ...actual,
     getWorkspace: vi.fn().mockResolvedValue(WORKSPACE_INFO),
     getQuestions: vi.fn().mockResolvedValue([]),
+    getGenerationJobs: vi.fn().mockResolvedValue({ jobs: [] }),
   };
 });
 
