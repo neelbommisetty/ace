@@ -7,6 +7,9 @@ import type {
   AttemptEventRow,
   AttemptEventType,
   AttemptRow,
+  BrainstormSessionRow,
+  BrainstormSessionStatus,
+  BrainstormTurn,
   Difficulty,
   DisputeRow,
   DisputeVerdict,
@@ -172,6 +175,28 @@ function rowToGenerationJob(r: SqlRow): GenerationJobRow {
     createdAt: r.created_at as string,
     finishedAt: (r.finished_at as string | null) ?? null,
   };
+}
+
+function rowToBrainstormSession(r: SqlRow): BrainstormSessionRow {
+  return {
+    id: r.id as string,
+    status: r.status as BrainstormSessionStatus,
+    title: r.title as string,
+    messages: JSON.parse(r.messages_json as string) as BrainstormTurn[],
+    errorMessage: (r.error_message as string | null) ?? null,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  };
+}
+
+const BRAINSTORM_TITLE_MAX = 80;
+
+/** Collapses whitespace and truncates to `BRAINSTORM_TITLE_MAX` chars with an ellipsis. */
+function truncateBrainstormTitle(message: string): string {
+  const collapsed = message.trim().replace(/\s+/g, ' ');
+  return collapsed.length > BRAINSTORM_TITLE_MAX
+    ? `${collapsed.slice(0, BRAINSTORM_TITLE_MAX - 1).trimEnd()}…`
+    : collapsed;
 }
 
 /**
@@ -836,6 +861,100 @@ class SqliteAceDb implements AceDb {
 
   setQuestionSource(id: string, source: QuestionSource): void {
     this.db.prepare('UPDATE questions SET source = ? WHERE id = ?').run(source, id);
+  }
+
+  // -- brainstorm sessions ----------------------------------------------------
+
+  createBrainstormSession(firstMessage: string): BrainstormSessionRow {
+    const id = uuidv7();
+    const now = nowIso();
+    const messages: BrainstormTurn[] = [{ role: 'user', content: firstMessage }];
+    this.db
+      .prepare(
+        `INSERT INTO brainstorm_sessions
+          (id, status, title, messages_json, created_at, updated_at)
+         VALUES (?, 'thinking', ?, ?, ?, ?)`,
+      )
+      .run(id, truncateBrainstormTitle(firstMessage), JSON.stringify(messages), now, now);
+    const row = this.getBrainstormSession(id);
+    if (!row) throw new Error(`createBrainstormSession failed`);
+    return row;
+  }
+
+  getBrainstormSession(id: string): BrainstormSessionRow | null {
+    const r = this.db.prepare('SELECT * FROM brainstorm_sessions WHERE id = ?').get(id) as
+      | SqlRow
+      | undefined;
+    return r ? rowToBrainstormSession(r) : null;
+  }
+
+  listBrainstormSessions(limit = 20): BrainstormSessionRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM brainstorm_sessions ORDER BY updated_at DESC, id DESC LIMIT ?')
+      .all(limit) as SqlRow[];
+    return rows.map(rowToBrainstormSession);
+  }
+
+  appendBrainstormTurn(
+    id: string,
+    turn: BrainstormTurn,
+    status: BrainstormSessionStatus,
+  ): BrainstormSessionRow {
+    return this.transaction(() => {
+      const existing = this.getBrainstormSession(id);
+      if (!existing) throw new Error(`unknown brainstorm session: ${id}`);
+      const messages = [...existing.messages, turn];
+      this.db
+        .prepare(
+          `UPDATE brainstorm_sessions SET messages_json = ?, status = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(JSON.stringify(messages), status, nowIso(), id);
+      const row = this.getBrainstormSession(id);
+      if (!row) throw new Error(`unknown brainstorm session: ${id}`);
+      return row;
+    });
+  }
+
+  setBrainstormStatus(
+    id: string,
+    status: BrainstormSessionStatus,
+    errorMessage: string | null = null,
+  ): BrainstormSessionRow {
+    const existing = this.getBrainstormSession(id);
+    if (!existing) throw new Error(`unknown brainstorm session: ${id}`);
+    this.db
+      .prepare('UPDATE brainstorm_sessions SET status = ?, error_message = ?, updated_at = ? WHERE id = ?')
+      .run(status, errorMessage, nowIso(), id);
+    const row = this.getBrainstormSession(id);
+    if (!row) throw new Error(`unknown brainstorm session: ${id}`);
+    return row;
+  }
+
+  // -- interrupted-state sweep ------------------------------------------------
+
+  sweepInterruptedGenerationState(): void {
+    this.transaction(() => {
+      const now = nowIso();
+      this.db
+        .prepare(
+          `UPDATE generation_jobs SET status = 'error', error_message = ?, finished_at = ?
+           WHERE status = 'running'`,
+        )
+        .run('interrupted by a server restart — retry', now);
+      this.db
+        .prepare(
+          `UPDATE generation_jobs SET status = 'error', error_message = ?, finished_at = ?
+           WHERE status = 'llm_done'`,
+        )
+        .run('interrupted by a server restart — retry (no new LLM call)', now);
+      this.db
+        .prepare(
+          `UPDATE brainstorm_sessions SET status = 'error', error_message = ?, updated_at = ?
+           WHERE status = 'thinking'`,
+        )
+        .run('interrupted by a server restart', now);
+    });
   }
 
   // -- history search -------------------------------------------------------

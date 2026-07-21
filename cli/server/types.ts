@@ -450,6 +450,49 @@ export interface AceDb {
   setQuestionSource(id: string, source: QuestionSource): void;
 
   /**
+   * Creates a brainstorm session seeded with the first user message: status
+   * starts 'thinking' (a reply is about to be generated for it), `title` is
+   * `firstMessage` truncated, and `messages` is a single user turn.
+   */
+  createBrainstormSession(firstMessage: string): BrainstormSessionRow;
+  getBrainstormSession(id: string): BrainstormSessionRow | null;
+  /** Newest first (by `updatedAt`). */
+  listBrainstormSessions(limit?: number): BrainstormSessionRow[];
+  /**
+   * Transactional read-modify-write: appends `turn` to `messages` and sets
+   * `status` + bumps `updatedAt`, all inside one transaction, so a mid-write
+   * failure (e.g. a constraint violation) leaves `messages` byte-for-byte
+   * unchanged rather than partially applied. Throws on an unknown id.
+   */
+  appendBrainstormTurn(
+    id: string,
+    turn: BrainstormTurn,
+    status: BrainstormSessionStatus,
+  ): BrainstormSessionRow;
+  /**
+   * Sets `status` (and `errorMessage`, cleared to null when omitted) without
+   * touching `messages` — for transitions that have no turn to persist (e.g.
+   * a hard LLM failure with nothing salvageable). Throws on an unknown id.
+   */
+  setBrainstormStatus(
+    id: string,
+    status: BrainstormSessionStatus,
+    errorMessage?: string | null,
+  ): BrainstormSessionRow;
+
+  /**
+   * Run once at session build, before anything else touches these tables.
+   * Flips every non-terminal in-flight row left behind by an unclean
+   * shutdown: 'running' generation jobs -> 'error' ("interrupted by a server
+   * restart — retry"); 'llm_done' generation jobs -> 'error' ("interrupted by
+   * a server restart — retry (no new LLM call)"), preserving `result`/`title`/
+   * `slug`/`rawText` so retry is scaffold-only with no re-spend; 'thinking'
+   * brainstorm sessions -> 'error' ("interrupted by a server restart").
+   * Terminal job rows ('done', 'error') and 'idle' sessions are untouched.
+   */
+  sweepInterruptedGenerationState(): void;
+
+  /**
    * Search reviews + disputes, newest first. `q` uses FTS5 over review bodies
    * when available (LIKE fallback otherwise); empty q returns everything.
    */
