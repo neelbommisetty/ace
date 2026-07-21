@@ -177,9 +177,11 @@ describe('POST /api/workspace/reset — happy path', () => {
     const harness = makeHarness(session);
     const app = buildApp(bus, harness, engines);
 
-    const events: Array<{ mode: string; archivedTo: string }> = [];
+    const events: Array<{ mode: string; archivedTo: string; requestId: string }> = [];
     bus.subscribe((name, data) => {
-      if (name === 'workspace-reset') events.push(data as { mode: string; archivedTo: string });
+      if (name === 'workspace-reset') {
+        events.push(data as { mode: string; archivedTo: string; requestId: string });
+      }
     });
 
     const res = await postReset(app, { mode: 'progress', confirm: path.basename(tempRoot) });
@@ -204,8 +206,12 @@ describe('POST /api/workspace/reset — happy path', () => {
     expect(body.workspace.counts.attempts).toBe(0);
     expect(body.restored).toEqual({ questions: 0, files: 0 });
 
-    // Exactly one workspace-reset SSE event, emitted after the swap.
-    expect(events).toEqual([{ mode: 'progress', archivedTo: body.archivedTo }]);
+    // Exactly one workspace-reset SSE event, emitted after the swap. No
+    // `requestId` was sent in the request body, so the server minted a
+    // fallback one itself.
+    expect(events).toEqual([
+      { mode: 'progress', archivedTo: body.archivedTo, requestId: expect.any(String) },
+    ]);
 
     // New session is live with a fresh epoch and an attached watcher.
     const newSession = harness.getSession();
@@ -214,6 +220,33 @@ describe('POST /api/workspace/reset — happy path', () => {
     expect(harness.isResetting()).toBe(false);
 
     await closeWorkspaceSession(newSession);
+  });
+
+  it('echoes a client-supplied requestId back verbatim in the workspace-reset broadcast', async () => {
+    const bus = createBus();
+    const flags: BusyFlags = { runner: false, reviews: false, disputes: false };
+    const engines = fakeEngines(flags);
+    const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
+    const harness = makeHarness(session);
+    const app = buildApp(bus, harness, engines);
+
+    const events: Array<{ mode: string; archivedTo: string; requestId: string }> = [];
+    bus.subscribe((name, data) => {
+      if (name === 'workspace-reset') {
+        events.push(data as { mode: string; archivedTo: string; requestId: string });
+      }
+    });
+
+    const res = await postReset(app, {
+      mode: 'progress',
+      confirm: path.basename(tempRoot),
+      requestId: 'client-generated-id-123',
+    });
+    expect(res.status).toBe(200);
+    expect(events).toHaveLength(1);
+    expect(events[0].requestId).toBe('client-generated-id-123');
+
+    await closeWorkspaceSession(harness.getSession());
   });
 
   it('full mode: restores solution files to the scaffold baseline, leaves test files untouched, snapshots old code into the archive', async () => {

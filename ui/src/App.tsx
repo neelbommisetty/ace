@@ -1,11 +1,29 @@
 import { useEffect, useState } from 'react';
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom';
 import { getToken, setUnauthorizedHandler } from './api';
+import { consumeSuppressForReset, isSuppressArmed } from './lib/resetSuppress';
 import { History } from './screens/History';
 import { Library } from './screens/Library';
 import { NotFound } from './screens/NotFound';
 import { Room } from './screens/Room';
 import { Settings } from './screens/Settings';
+import { useSseEvent } from './sse';
+
+// Epoch of the first `hello` seen since page load. A later `hello` (i.e.
+// after an SSE reconnect) carrying a different epoch means a workspace
+// reset happened while this tab was disconnected and missed the one-shot
+// `workspace-reset` broadcast entirely — treated identically to receiving
+// that event directly. The epoch itself is persisted in the server's db
+// (see session.ts's `resolveEpoch`), so it only ever changes when a reset
+// genuinely swaps in a new db — a plain server restart reopens the same db
+// and reports the same epoch, so it does NOT trip this fallback.
+let lastHelloEpoch: string | null = null;
+
+/** Sends this tab back to a fresh Library — used for every reset signal this tab did not itself initiate. */
+function forceReloadToLibrary(): void {
+  sessionStorage.removeItem('ace-last-room');
+  location.replace('/');
+}
 
 export function App() {
   const [authFailed, setAuthFailed] = useState(false);
@@ -14,6 +32,33 @@ export function App() {
     setUnauthorizedHandler(() => setAuthFailed(true));
     return () => setUnauthorizedHandler(() => {});
   }, []);
+
+  useSseEvent('workspace-reset', ({ requestId }) => {
+    // The tab that initiated this exact reset armed a matching id (see
+    // lib/resetSuppress.ts) so its dialog can show the "done" state instead
+    // of being reloaded out from under itself. A broadcast for a DIFFERENT
+    // tab's reset (requestId won't match, possibly because it never armed
+    // one at all) falls through to the normal reload, same as any other
+    // passive tab.
+    if (consumeSuppressForReset(requestId)) return;
+    forceReloadToLibrary();
+  });
+
+  useSseEvent('hello', ({ epoch }) => {
+    if (lastHelloEpoch == null) {
+      lastHelloEpoch = epoch;
+      return;
+    }
+    if (epoch !== lastHelloEpoch) {
+      lastHelloEpoch = epoch;
+      // No per-request id travels on `hello`, so this can't be matched to a
+      // specific in-flight request the way `workspace-reset` broadcasts are
+      // — "something is armed" (this tab itself has a reset in flight) is
+      // used as a proxy instead. See lib/resetSuppress.ts.
+      if (isSuppressArmed()) return;
+      forceReloadToLibrary();
+    }
+  });
 
   if (getToken() == null || authFailed) {
     return <TokenNotice expired={authFailed} />;

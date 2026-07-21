@@ -261,6 +261,17 @@ code {
   filter: brightness(1.06);
 }
 
+.btn-danger {
+  background: var(--crit-text);
+  color: #1a0a0a;
+  border-color: var(--crit-text);
+  font-weight: 600;
+}
+
+.btn-danger:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
 .btn-small {
   padding: 3px 10px;
   font-size: 12px;
@@ -672,6 +683,16 @@ code {
   margin: 0;
   padding-left: 18px;
   color: var(--dim);
+}
+
+.reset-consequences {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--dim);
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 /* ---- room ---------------------------------------------------------------- */
@@ -2139,4 +2160,26 @@ code {
   font-size: 12px;
   margin: 0;
   line-height: 1.5;
+}
+
+.settings-danger-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.settings-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--crit-text);
+  margin: 0;
+}
+
+.settings-card-danger {
+  border-color: var(--crit-text);
+}
+
+.settings-card-danger .settings-card-title {
+  color: var(--crit-text);
 }

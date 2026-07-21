@@ -17,9 +17,17 @@ import { startWatcher } from './watcher.js';
  */
 export interface WorkspaceSession {
   /**
-   * Unique per-session id, minted fresh on every createWorkspaceSession call.
-   * Surfaced in the SSE `hello` payload so reconnecting tabs can detect that
-   * a reset happened while they were disconnected.
+   * Id of the underlying `.ace/ace.db`, persisted in that db's own `meta`
+   * table (see `resolveEpoch` below) rather than minted fresh on every
+   * `createWorkspaceSession` call. Surfaced in the SSE `hello` payload so
+   * reconnecting tabs can detect that a reset happened while they were
+   * disconnected: a genuine reset (`workspace-reset`) always opens a brand
+   * new db (the old one is archived away), so its epoch is guaranteed to
+   * differ from the previous session's. A plain server restart, or the
+   * failure-recovery paths in the reset orchestrator that rebuild a session
+   * over the *same*, un-archived db, reopen that same db file and therefore
+   * read back the same persisted epoch — so those cases must NOT be treated
+   * as a reset by epoch-watching clients.
    */
   epoch: string;
   db: AceDb;
@@ -60,6 +68,25 @@ export interface CreateWorkspaceSessionOptions {
 // just the session). Not part of the public WorkspaceSession shape.
 const sessionBus = new WeakMap<WorkspaceSession, Bus>();
 
+const EPOCH_META_KEY = 'session_epoch';
+
+/**
+ * Reads the db-persisted epoch, minting and storing one on first open (a
+ * brand new db — either the workspace's very first boot, or a fresh db
+ * created right after a reset archived the old `.ace` away — has no
+ * `session_epoch` row yet). Reopening the same db file on a later boot (a
+ * plain restart, or session-rebuild-over-the-same-db failure-recovery path)
+ * finds the row already there and returns it unchanged, so the epoch only
+ * ever changes when a reset genuinely swaps in a new db.
+ */
+function resolveEpoch(db: AceDb): string {
+  const existing = db.getMeta(EPOCH_META_KEY);
+  if (existing != null) return existing;
+  const fresh = crypto.randomUUID();
+  db.setMeta(EPOCH_META_KEY, fresh);
+  return fresh;
+}
+
 /**
  * Builds a fresh WorkspaceSession: opens the db, reconciles questions/ into
  * it, creates the engines, and (unless `watch: false`) attaches the chokidar
@@ -74,7 +101,7 @@ export function createWorkspaceSession(opts: CreateWorkspaceSessionOptions): Wor
   const db = openDb(workspaceRoot);
 
   const session: WorkspaceSession = {
-    epoch: crypto.randomUUID(),
+    epoch: resolveEpoch(db),
     db,
     runner: engines.createRunner({ db, bus, workspaceRoot }),
     reviews: engines.createReviewEngine({ db, bus, workspaceRoot }),

@@ -185,6 +185,16 @@ export interface WorkspaceInfo {
   skippedDirs: string[]; // question dirs under unknown categories
   legacyImport: { available: boolean; questionCount: number };
   activeAttempt: { attempt: AttemptRow; question: QuestionRow } | null;
+  /**
+   * `path.basename(root)` as computed by the server — the exact string
+   * `POST /api/workspace/reset` requires in `confirm`. Clients must use this
+   * verbatim instead of re-deriving a basename themselves: `path.basename`'s
+   * separator handling is platform-dependent (POSIX treats `\` as an
+   * ordinary filename character; Windows treats it as a separator), so a
+   * browser-side re-derivation can disagree with the server for roots
+   * containing the "wrong" platform's separator character.
+   */
+  confirmName: string;
 }
 
 export interface ImportPreviewItem {
@@ -245,8 +255,16 @@ export interface SseEventMap {
   'dispute-started': { disputeJobId: string; questionId: string; testRunId: string };
   'dispute-done': { disputeJobId: string; questionId: string; dispute: DisputeRow };
   'dispute-error': { disputeJobId: string; questionId: string; message: string };
-  /** Emitted once, after the new session is live, at the end of a workspace reset. */
-  'workspace-reset': { mode: WorkspaceResetMode; archivedTo: string };
+  /**
+   * Emitted once, after the new session is live, at the end of a workspace
+   * reset. `requestId` echoes back whatever the initiating
+   * `POST /api/workspace/reset` request sent (or a server-minted fallback if
+   * it sent none) — clients use it to recognize "this is the broadcast for
+   * MY request" and distinguish it from a reset some other tab triggered,
+   * which matters because the SSE broadcast and the POST's own HTTP response
+   * race independently and can arrive in either order.
+   */
+  'workspace-reset': { mode: WorkspaceResetMode; archivedTo: string; requestId: string };
 }
 
 export type SseEventName = keyof SseEventMap;

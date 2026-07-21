@@ -79,7 +79,13 @@ describe('createWorkspaceSession', () => {
     session.db.close();
   });
 
-  it('two sessions over the same workspace get different epoch values', () => {
+  it('two sessions reopening the same underlying db get the SAME epoch (plain restart is not a reset)', () => {
+    // The epoch is persisted in the db's own meta table (not minted fresh in
+    // memory per session), specifically so that reopening the same db file —
+    // a plain server restart, or the reset orchestrator's pre-rename
+    // failure-recovery path, both of which rebuild a session over the same,
+    // un-archived db — reads back the same epoch instead of manufacturing a
+    // spurious "reset" signal for SSE clients watching for epoch changes.
     writeQuestion('js-ts', 'x');
     const bus = createBus();
 
@@ -87,11 +93,22 @@ describe('createWorkspaceSession', () => {
     s1.db.close();
     const s2 = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines: fakeEngines() });
 
-    expect(s1.epoch).not.toBe(s2.epoch);
+    expect(s2.epoch).toBe(s1.epoch);
     expect(s1.epoch).toMatch(/^[0-9a-f-]{36}$/);
-    expect(s2.epoch).toMatch(/^[0-9a-f-]{36}$/);
 
     s2.db.close();
+  });
+
+  it('a fresh db (no prior session_epoch row) gets a newly minted epoch', () => {
+    writeQuestion('js-ts', 'x');
+    const bus = createBus();
+
+    const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines: fakeEngines() });
+
+    expect(session.epoch).toMatch(/^[0-9a-f-]{36}$/);
+    expect(session.db.getMeta('session_epoch')).toBe(session.epoch);
+
+    session.db.close();
   });
 
   it('watch: false leaves watcher null; startSessionWatcher attaches a real one', async () => {
