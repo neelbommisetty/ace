@@ -16,7 +16,8 @@ import {
   writeWorkspaceFile,
 } from './files.js';
 import { getReviewGuardError } from './reviews.js';
-import type { WorkspaceSession } from './session.js';
+import { performWorkspaceReset } from './reset-orchestrator.js';
+import type { EngineFactories, WorkspaceSession } from './session.js';
 import {
   getSettingsInfo,
   resolveProvider,
@@ -36,6 +37,7 @@ import type {
   QuestionRow,
   TestRunTrigger,
   WorkspaceInfo,
+  WorkspaceResetMode,
 } from './types.js';
 
 export interface ImporterApi {
@@ -54,6 +56,12 @@ export interface CreateAppOptions {
   getSession: () => WorkspaceSession;
   /** True while a workspace reset is in flight. Defaults to always false. */
   isResetting?: () => boolean;
+  /** Swaps the live session — called by POST /api/workspace/reset after a successful reset. */
+  swapSession?: (session: WorkspaceSession) => void;
+  /** Flips the resetting flag; read by both the mid-reset 503 gate and this route's own guard. */
+  setResetting?: (resetting: boolean) => void;
+  /** Defaults to the real engine factories; tests inject fakes for the reset route too. */
+  engines?: EngineFactories;
 }
 
 const HOST_RE = /^(127\.0\.0\.1|localhost)(:\d+)?$/;
@@ -96,8 +104,10 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 export function createApp(opts: CreateAppOptions): Hono {
-  const { bus, workspaceRoot, token, uiDir, version, importer, getSession } = opts;
+  const { bus, workspaceRoot, token, uiDir, version, importer, getSession, engines } = opts;
   const isResetting = opts.isResetting ?? (() => false);
+  const swapSession = opts.swapSession ?? (() => {});
+  const setResetting = opts.setResetting ?? (() => {});
   const app = new Hono();
 
   app.onError((err, c) => {
@@ -162,7 +172,8 @@ export function createApp(opts: CreateAppOptions): Hono {
 
   app.get('/api/health', (c) => c.json({ ok: true, version }));
 
-  app.get('/api/workspace', (c) => {
+  /** Shared by GET /api/workspace and the reset route's 200 response. */
+  function computeWorkspaceInfo(): WorkspaceInfo {
     const { db, skippedDirs } = getSession();
     const questions = db.listQuestions();
     let attempts = 0;
@@ -182,7 +193,7 @@ export function createApp(opts: CreateAppOptions): Hono {
       // a broken legacy tree must not take down the workspace endpoint
     }
 
-    const info: WorkspaceInfo = {
+    return {
       root: workspaceRoot,
       questionsDir: getQuestionsDir(workspaceRoot),
       version,
@@ -191,8 +202,9 @@ export function createApp(opts: CreateAppOptions): Hono {
       legacyImport,
       activeAttempt: db.getLatestActiveAttempt(),
     };
-    return c.json(info);
-  });
+  }
+
+  app.get('/api/workspace', (c) => c.json(computeWorkspaceInfo()));
 
   app.get('/api/questions', (c) => c.json(getSession().db.listQuestions()));
 
@@ -704,6 +716,80 @@ export function createApp(opts: CreateAppOptions): Hono {
     } catch (err) {
       if (err instanceof SettingsValidationError) return c.json({ error: err.message }, 400);
       throw err;
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Workspace reset (NEE-165 — "clear workspace")
+  // -------------------------------------------------------------------------
+
+  const VALID_RESET_MODES: ReadonlySet<string> = new Set<WorkspaceResetMode>(['progress', 'full']);
+
+  app.post('/api/workspace/reset', async (c) => {
+    const body = await readJsonBody(c);
+    if (!body) return c.json({ error: 'invalid JSON body' }, 400);
+
+    const rawMode = body.mode;
+    if (typeof rawMode !== 'string' || !VALID_RESET_MODES.has(rawMode)) {
+      return c.json({ error: 'mode must be "progress" or "full"' }, 400);
+    }
+    const mode = rawMode as WorkspaceResetMode;
+
+    const expectedConfirm = path.basename(workspaceRoot);
+    const confirm = body.confirm;
+    if (typeof confirm !== 'string' || confirm !== expectedConfirm) {
+      return c.json(
+        { error: `type the workspace folder name "${expectedConfirm}" to confirm` },
+        400,
+      );
+    }
+
+    // Checked at route entry — reachable only because this route is exempt
+    // from the mid-reset 503 gate above (a concurrent reset POST answers
+    // from here, not the gate).
+    if (isResetting()) {
+      return c.json({ error: 'a workspace reset is already in progress' }, 409);
+    }
+
+    const { runner, reviews, disputes } = getSession();
+    if (runner.isBusy()) {
+      return c.json(
+        { error: 'a test run is in progress — wait for it to finish and try again' },
+        409,
+      );
+    }
+    if (reviews.isAnyRunning()) {
+      return c.json(
+        { error: 'a review is streaming — wait for it to finish and try again' },
+        409,
+      );
+    }
+    if (disputes.isAnyRunning()) {
+      return c.json(
+        { error: 'a dispute analysis is in progress — wait for it to finish and try again' },
+        409,
+      );
+    }
+
+    try {
+      const result = await performWorkspaceReset({
+        workspaceRoot,
+        bus,
+        getSession,
+        swapSession,
+        setResetting,
+        mode,
+        confirm,
+        engines,
+      });
+      return c.json({
+        mode,
+        archivedTo: result.archivedTo,
+        restored: result.restored,
+        workspace: computeWorkspaceInfo(),
+      });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'workspace reset failed' }, 500);
     }
   });
 

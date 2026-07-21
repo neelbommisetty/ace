@@ -63,7 +63,13 @@ export async function startAceServer(opts: StartAceServerOptions): Promise<AceSe
       // tmp dir may not exist yet
     }
 
-    const activeSession = session;
+    // Mutable across the process lifetime: POST /api/workspace/reset tears
+    // down and rebuilds `activeSession` (via swapSession) without restarting
+    // the HTTP listener; `resetting` gates the mid-reset 503 middleware and
+    // the reset route's own "already in progress" 409.
+    let activeSession = session;
+    let resetting = false;
+    const getSession = () => activeSession;
     const app = createApp({
       bus,
       workspaceRoot,
@@ -71,9 +77,15 @@ export async function startAceServer(opts: StartAceServerOptions): Promise<AceSe
       uiDir,
       version: readPackageVersion(),
       importer: { previewImport, runImport },
-      getSession: () => activeSession,
-      // No reset endpoint yet — always false until that subtask lands.
-      isResetting: () => false,
+      getSession,
+      isResetting: () => resetting,
+      swapSession: (next) => {
+        activeSession = next;
+        session = next; // keep the boot-scope reference in sync for close()/error teardown
+      },
+      setResetting: (value) => {
+        resetting = value;
+      },
     });
 
     const server = await new Promise<ServerType>((resolve, reject) => {
