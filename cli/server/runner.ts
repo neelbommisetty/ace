@@ -278,6 +278,25 @@ export function createRunner(opts: {
       const relOutputFile = `.ace/tmp/${run.id}.json`;
       const relQuestionDir = path.relative(workspaceRoot, question.dirPath);
 
+      // Vite resolves absolute virtual module paths (e.g. `/@fs/<root>/...`
+      // for setupFiles) against a canonicalized form of `--root` internally,
+      // but does NOT canonicalize the `--root` value we pass it. If
+      // workspaceRoot itself contains a symlinked path segment — notably
+      // macOS, where `os.tmpdir()` (and therefore any workspace under it,
+      // e.g. in e2e tests) lives under `/var/...`, itself a symlink to
+      // `/private/var/...` — the two disagree and every run fails with
+      // "Cannot find module .../vitest.setup.ts" before any test executes.
+      // Resolving once here keeps `--root` and the child's cwd on the same
+      // (real) path Vite computes internally. Falls back to workspaceRoot
+      // as-is if it can't be resolved (should not happen — the server has
+      // this root open — but a spawn must never throw synchronously here).
+      let vitestRoot = workspaceRoot;
+      try {
+        vitestRoot = fs.realpathSync(workspaceRoot);
+      } catch {
+        // keep the original value
+      }
+
       const child = spawn(
         vitestBin,
         [
@@ -286,10 +305,10 @@ export function createRunner(opts: {
           '--reporter=json',
           `--outputFile=${relOutputFile}`,
           '--root',
-          workspaceRoot,
+          vitestRoot,
         ],
         {
-          cwd: workspaceRoot,
+          cwd: vitestRoot,
           env: { ...process.env, CI: '1' },
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true,
