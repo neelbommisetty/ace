@@ -415,6 +415,40 @@ export interface AceDb {
   /** Oldest snapshot for a path (optionally by trigger) — the pristine scaffold baseline. */
   getFirstSnapshot(questionId: string, relPath: string, trigger?: SnapshotTrigger): SnapshotRow | null;
 
+  createGenerationJob(j: {
+    category: string;
+    difficulty: Difficulty;
+    topic: string;
+    brainstormSessionId?: string | null;
+  }): GenerationJobRow;
+  /**
+   * Throws when the existing row's status is already 'done' (terminal rows
+   * are immutable). Stamps `finishedAt` when the patch's resulting status is
+   * 'done' or 'error'; leaves it null for any other status.
+   */
+  patchGenerationJob(
+    id: string,
+    patch: {
+      status?: GenerationJobStatus;
+      title?: string | null;
+      slug?: string | null;
+      result?: Record<string, unknown> | null;
+      rawText?: string | null;
+      errorMessage?: string | null;
+      questionId?: string | null;
+    },
+  ): GenerationJobRow;
+  getGenerationJob(id: string): GenerationJobRow | null;
+  /** Newest first. */
+  listGenerationJobs(limit?: number): GenerationJobRow[];
+  /**
+   * Narrow provenance-correction escape hatch: a plain `UPDATE questions SET
+   * source = ?`, used only by the generation engine to re-assert 'generated'
+   * over a 'manual' row the reconciler may have inserted first during a crash
+   * window. Does not touch `upsertQuestion`'s insert-only source semantics.
+   */
+  setQuestionSource(id: string, source: QuestionSource): void;
+
   /**
    * Search reviews + disputes, newest first. `q` uses FTS5 over review bodies
    * when available (LIKE fallback otherwise); empty q returns everything.

@@ -666,3 +666,123 @@ describe('snapshots', () => {
     expect(db.getLatestSnapshot('nope', rel)).toBeNull();
   });
 });
+
+describe('generation jobs', () => {
+  it('round-trips a generation job', () => {
+    const job = db.createGenerationJob({
+      category: 'js-ts',
+      difficulty: 'hard',
+      topic: 'a debounce utility with cancel support',
+      brainstormSessionId: 'bs-1',
+    });
+
+    expect(job.status).toBe('running');
+    expect(job.category).toBe('js-ts');
+    expect(job.difficulty).toBe('hard');
+    expect(job.topic).toBe('a debounce utility with cancel support');
+    expect(job.brainstormSessionId).toBe('bs-1');
+    expect(job.title).toBeNull();
+    expect(job.slug).toBeNull();
+    expect(job.result).toBeNull();
+    expect(job.rawText).toBeNull();
+    expect(job.errorMessage).toBeNull();
+    expect(job.questionId).toBeNull();
+    expect(job.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(job.finishedAt).toBeNull();
+
+    expect(db.getGenerationJob(job.id)).toEqual(job);
+    expect(db.getGenerationJob('nope')).toBeNull();
+  });
+
+  it('createGenerationJob defaults brainstormSessionId to null when omitted', () => {
+    const job = db.createGenerationJob({ category: 'js-ts', difficulty: 'easy', topic: 'foo' });
+    expect(job.brainstormSessionId).toBeNull();
+  });
+
+  it('patches through running -> llm_done -> done, stamping finished_at only at done', () => {
+    const job = db.createGenerationJob({ category: 'js-ts', difficulty: 'medium', topic: 'x' });
+
+    const llmDone = db.patchGenerationJob(job.id, {
+      status: 'llm_done',
+      title: 'Debounce Utility',
+      slug: 'debounce-utility',
+      result: { slug: 'debounce-utility', title: 'Debounce Utility' },
+    });
+    expect(llmDone.status).toBe('llm_done');
+    expect(llmDone.title).toBe('Debounce Utility');
+    expect(llmDone.slug).toBe('debounce-utility');
+    expect(llmDone.result).toEqual({ slug: 'debounce-utility', title: 'Debounce Utility' });
+    expect(llmDone.finishedAt).toBeNull();
+
+    const q = makeQuestion({ slug: 'debounce-utility' });
+    const done = db.patchGenerationJob(job.id, { status: 'done', questionId: q.id });
+    expect(done.status).toBe('done');
+    expect(done.questionId).toBe(q.id);
+    // fields not touched by this patch are preserved from the prior patch
+    expect(done.title).toBe('Debounce Utility');
+    expect(done.slug).toBe('debounce-utility');
+    expect(done.result).toEqual({ slug: 'debounce-utility', title: 'Debounce Utility' });
+    expect(done.finishedAt).not.toBeNull();
+    expect(done.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('stamps finished_at on a transition straight to error and preserves rawText salvage', () => {
+    const job = db.createGenerationJob({ category: 'js-ts', difficulty: 'medium', topic: 'x' });
+    const errored = db.patchGenerationJob(job.id, {
+      status: 'error',
+      errorMessage: 'LLM call timed out',
+      rawText: 'not quite json',
+    });
+    expect(errored.status).toBe('error');
+    expect(errored.errorMessage).toBe('LLM call timed out');
+    expect(errored.rawText).toBe('not quite json');
+    expect(errored.finishedAt).not.toBeNull();
+  });
+
+  it('throws when patching an already-done job', () => {
+    const job = db.createGenerationJob({ category: 'js-ts', difficulty: 'medium', topic: 'x' });
+    db.patchGenerationJob(job.id, { status: 'done' });
+    expect(() => db.patchGenerationJob(job.id, { title: 'too late' })).toThrow(
+      /done and cannot be patched/,
+    );
+  });
+
+  it('throws when patching an unknown job', () => {
+    expect(() => db.patchGenerationJob('nope', { status: 'error' })).toThrow(
+      /unknown generation job/,
+    );
+  });
+
+  it('lists jobs newest first and truncates to the limit', () => {
+    const j1 = db.createGenerationJob({ category: 'js-ts', difficulty: 'easy', topic: 'one' });
+    const j2 = db.createGenerationJob({ category: 'js-ts', difficulty: 'easy', topic: 'two' });
+    const j3 = db.createGenerationJob({ category: 'js-ts', difficulty: 'easy', topic: 'three' });
+
+    expect(db.listGenerationJobs().map((j) => j.id)).toEqual([j3.id, j2.id, j1.id]);
+    expect(db.listGenerationJobs(2).map((j) => j.id)).toEqual([j3.id, j2.id]);
+    expect(db.listGenerationJobs(1).map((j) => j.id)).toEqual([j3.id]);
+  });
+
+  it('setQuestionSource flips provenance and a later upsertQuestion rescan does not revert it', () => {
+    const q = makeQuestion({ slug: 'generated-one' });
+    expect(q.source).toBe('manual');
+
+    db.setQuestionSource(q.id, 'generated');
+    expect(db.getQuestionById(q.id)?.source).toBe('generated');
+
+    // insert-only source semantics: a later rescan upsert must not revert it
+    const rescanned = db.upsertQuestion({
+      category: q.category,
+      slug: q.slug,
+      title: 'Debounce (renamed)',
+      difficulty: 'hard',
+      suggestedMinutes: 45,
+      dirPath: q.dirPath,
+      source: 'manual',
+    });
+    expect(rescanned.source).toBe('generated');
+    expect(rescanned.title).toBe('Debounce (renamed)');
+
+    expect(db.getQuestionById(q.id)?.source).toBe('generated');
+  });
+});

@@ -10,6 +10,8 @@ import type {
   Difficulty,
   DisputeRow,
   DisputeVerdict,
+  GenerationJobRow,
+  GenerationJobStatus,
   HistoryItem,
   QuestionRow,
   QuestionSource,
@@ -147,6 +149,28 @@ function rowToSnapshot(r: SqlRow): SnapshotRow {
     hash: r.hash as string,
     at: r.at as string,
     trigger: r.trigger as SnapshotTrigger,
+  };
+}
+
+function rowToGenerationJob(r: SqlRow): GenerationJobRow {
+  return {
+    id: r.id as string,
+    status: r.status as GenerationJobStatus,
+    category: r.category as string,
+    difficulty: r.difficulty as Difficulty,
+    topic: r.topic as string,
+    brainstormSessionId: (r.brainstorm_session_id as string | null) ?? null,
+    title: (r.title as string | null) ?? null,
+    slug: (r.slug as string | null) ?? null,
+    result:
+      r.result_json == null
+        ? null
+        : (JSON.parse(r.result_json as string) as Record<string, unknown>),
+    rawText: (r.raw_text as string | null) ?? null,
+    errorMessage: (r.error_message as string | null) ?? null,
+    questionId: (r.question_id as string | null) ?? null,
+    createdAt: r.created_at as string,
+    finishedAt: (r.finished_at as string | null) ?? null,
   };
 }
 
@@ -719,6 +743,99 @@ class SqliteAceDb implements AceDb {
       | SqlRow
       | undefined;
     return r ? rowToSnapshot(r) : null;
+  }
+
+  // -- generation jobs --------------------------------------------------------
+
+  createGenerationJob(j: {
+    category: string;
+    difficulty: Difficulty;
+    topic: string;
+    brainstormSessionId?: string | null;
+  }): GenerationJobRow {
+    const id = uuidv7();
+    this.db
+      .prepare(
+        `INSERT INTO generation_jobs
+          (id, status, category, difficulty, topic, brainstorm_session_id, created_at)
+         VALUES (?, 'running', ?, ?, ?, ?, ?)`,
+      )
+      .run(id, j.category, j.difficulty, j.topic, j.brainstormSessionId ?? null, nowIso());
+    const row = this.getGenerationJob(id);
+    if (!row) throw new Error(`createGenerationJob failed for ${j.category}`);
+    return row;
+  }
+
+  patchGenerationJob(
+    id: string,
+    patch: {
+      status?: GenerationJobStatus;
+      title?: string | null;
+      slug?: string | null;
+      result?: Record<string, unknown> | null;
+      rawText?: string | null;
+      errorMessage?: string | null;
+      questionId?: string | null;
+    },
+  ): GenerationJobRow {
+    const existing = this.getGenerationJob(id);
+    if (!existing) throw new Error(`unknown generation job: ${id}`);
+    if (existing.status === 'done') {
+      throw new Error(`generation job ${id} is done and cannot be patched further`);
+    }
+
+    const status = patch.status ?? existing.status;
+    const title = patch.title !== undefined ? patch.title : existing.title;
+    const slug = patch.slug !== undefined ? patch.slug : existing.slug;
+    const result = patch.result !== undefined ? patch.result : existing.result;
+    const rawText = patch.rawText !== undefined ? patch.rawText : existing.rawText;
+    const errorMessage =
+      patch.errorMessage !== undefined ? patch.errorMessage : existing.errorMessage;
+    const questionId = patch.questionId !== undefined ? patch.questionId : existing.questionId;
+    // finished_at is stamped only when the resulting status is terminal
+    // ('done' | 'error'); any other status (including a retry moving an
+    // 'error' row back to 'running') leaves it null.
+    const finishedAt = status === 'done' || status === 'error' ? nowIso() : null;
+
+    this.db
+      .prepare(
+        `UPDATE generation_jobs SET
+           status = ?, title = ?, slug = ?, result_json = ?, raw_text = ?,
+           error_message = ?, question_id = ?, finished_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        status,
+        title,
+        slug,
+        result != null ? JSON.stringify(result) : null,
+        rawText,
+        errorMessage,
+        questionId,
+        finishedAt,
+        id,
+      );
+    const row = this.getGenerationJob(id);
+    if (!row) throw new Error(`unknown generation job: ${id}`);
+    return row;
+  }
+
+  getGenerationJob(id: string): GenerationJobRow | null {
+    const r = this.db.prepare('SELECT * FROM generation_jobs WHERE id = ?').get(id) as
+      | SqlRow
+      | undefined;
+    return r ? rowToGenerationJob(r) : null;
+  }
+
+  listGenerationJobs(limit = 20): GenerationJobRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM generation_jobs ORDER BY created_at DESC, id DESC LIMIT ?')
+      .all(limit) as SqlRow[];
+    return rows.map(rowToGenerationJob);
+  }
+
+  setQuestionSource(id: string, source: QuestionSource): void {
+    this.db.prepare('UPDATE questions SET source = ? WHERE id = ?').run(source, id);
   }
 
   // -- history search -------------------------------------------------------
