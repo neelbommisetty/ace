@@ -706,6 +706,72 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   // -------------------------------------------------------------------------
+  // Brainstorm
+  // -------------------------------------------------------------------------
+
+  app.post('/api/brainstorm/turns', async (c) => {
+    const { db, brainstorm } = getSession();
+    const body = await readJsonBody(c);
+    if (!body) return c.json({ error: 'invalid JSON body' }, 400);
+
+    const message = body.message;
+    if (typeof message !== 'string' || message.length < 1 || message.length > 4000) {
+      return c.json({ error: 'message must be a string between 1 and 4000 characters' }, 400);
+    }
+
+    let sessionId: string | null = null;
+    if (body.sessionId !== undefined && body.sessionId !== null) {
+      if (typeof body.sessionId !== 'string') {
+        return c.json({ error: 'sessionId must be a string' }, 400);
+      }
+      if (!db.getBrainstormSession(body.sessionId)) {
+        return c.json({ error: 'brainstorm session not found' }, 404);
+      }
+      if (brainstorm.isThinking(body.sessionId)) {
+        return c.json(
+          { error: 'a brainstorm turn is already running for this session' },
+          409,
+        );
+      }
+      sessionId = body.sessionId;
+    }
+
+    if (!resolveProvider()) {
+      return c.json({ error: 'no LLM API key configured — add one in Settings' }, 503);
+    }
+
+    const { sessionId: id } = brainstorm.startTurn(sessionId, message);
+    return c.json({ sessionId: id }, 202);
+  });
+
+  app.get('/api/brainstorm/sessions', (c) => {
+    const { db } = getSession();
+    const rawLimit = c.req.query('limit');
+    let limit = 20;
+    if (rawLimit !== undefined && rawLimit !== '') {
+      const parsed = Number.parseInt(rawLimit, 10);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return c.json({ error: 'limit must be a positive integer' }, 400);
+      }
+      limit = Math.min(parsed, 100);
+    }
+    const sessions = db.listBrainstormSessions(limit).map((s) => ({
+      id: s.id,
+      title: s.title,
+      status: s.status,
+      updatedAt: s.updatedAt,
+    }));
+    return c.json({ sessions });
+  });
+
+  app.get('/api/brainstorm/sessions/:id', (c) => {
+    const { db } = getSession();
+    const session = db.getBrainstormSession(c.req.param('id'));
+    if (!session) return c.json({ error: 'brainstorm session not found' }, 404);
+    return c.json({ session });
+  });
+
+  // -------------------------------------------------------------------------
   // Fresh attempt
   // -------------------------------------------------------------------------
 
@@ -915,7 +981,7 @@ export function createApp(opts: CreateAppOptions): Hono {
       return c.json({ error: 'a workspace reset is already in progress' }, 409);
     }
 
-    const { runner, reviews, disputes } = getSession();
+    const { runner, reviews, disputes, generation, brainstorm } = getSession();
     if (runner.isBusy()) {
       return c.json(
         { error: 'a test run is in progress — wait for it to finish and try again' },
@@ -931,6 +997,18 @@ export function createApp(opts: CreateAppOptions): Hono {
     if (disputes.isAnyRunning()) {
       return c.json(
         { error: 'a dispute analysis is in progress — wait for it to finish and try again' },
+        409,
+      );
+    }
+    if (generation.isAnyRunning()) {
+      return c.json(
+        { error: 'a generation is in progress — wait for it to finish and try again' },
+        409,
+      );
+    }
+    if (brainstorm.isAnyRunning()) {
+      return c.json(
+        { error: 'a brainstorm turn is in progress — wait for it to finish and try again' },
         409,
       );
     }

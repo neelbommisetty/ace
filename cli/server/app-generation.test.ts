@@ -16,7 +16,7 @@ import { createApp } from './app.js';
 import { runImport, previewImport } from './importer.js';
 import { createWorkspaceSession, type EngineFactories, type WorkspaceSession } from './session.js';
 import { createBus } from './sse.js';
-import type { GenerationJobRow } from './types.js';
+import type { BrainstormSessionRow, GenerationJobRow } from './types.js';
 
 const TOKEN = 'test-token';
 
@@ -57,7 +57,11 @@ function setProviderConfigured(): void {
 }
 
 /** Fake engine factories — never touch the LLM or spawn vitest. */
-function fakeEngines(runningCount: () => number = () => 0): EngineFactories {
+function fakeEngines(
+  runningCount: () => number = () => 0,
+  /** sessionId considered "thinking" (isThinking(id) === true), or null for none. */
+  thinkingSessionId: string | null = null,
+): EngineFactories {
   return {
     createRunner: (() => ({
       start: vi.fn(),
@@ -81,15 +85,20 @@ function fakeEngines(runningCount: () => number = () => 0): EngineFactories {
       dispose: vi.fn(),
     })) as unknown as EngineFactories['createGenerationEngine'],
     createBrainstormEngine: (() => ({
-      startTurn: vi.fn(),
-      isThinking: vi.fn(() => false),
-      isAnyRunning: vi.fn(() => false),
+      startTurn: vi.fn((sessionId: string | null) => ({
+        sessionId: sessionId ?? 'fake-started-session-id',
+      })),
+      isThinking: vi.fn((id: string) => id === thinkingSessionId),
+      isAnyRunning: vi.fn(() => thinkingSessionId != null),
       dispose: vi.fn(),
     })) as unknown as EngineFactories['createBrainstormEngine'],
   };
 }
 
-function buildSession(runningCount: () => number = () => 0): WorkspaceSession {
+function buildSession(
+  runningCount: () => number = () => 0,
+  thinkingSessionId: string | null = null,
+): WorkspaceSession {
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ace-app-generation-'));
   fs.mkdirSync(path.join(tempRoot, 'questions'), { recursive: true });
   const bus = createBus();
@@ -97,7 +106,7 @@ function buildSession(runningCount: () => number = () => 0): WorkspaceSession {
     workspaceRoot: tempRoot,
     bus,
     watch: false,
-    engines: fakeEngines(runningCount),
+    engines: fakeEngines(runningCount, thinkingSessionId),
   });
 }
 
@@ -425,5 +434,172 @@ describe('POST /api/generation/jobs/:id/retry', () => {
     expect(res.status).toBe(202);
     const body = (await res.json()) as { jobId: string };
     expect(body.jobId).toBe(job.id);
+  });
+});
+
+describe('POST /api/brainstorm/turns', () => {
+  it('202s with a sessionId on the happy path (new session, provider configured)', async () => {
+    setProviderConfigured();
+    const app = buildApp();
+    const res = await postJson(app, `http://localhost/api/brainstorm/turns?t=${TOKEN}`, {
+      message: 'give me some react ideas',
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { sessionId: string };
+    expect(body.sessionId).toBe('fake-started-session-id');
+  });
+
+  it('202s with the same sessionId on a follow-up turn to an existing session', async () => {
+    setProviderConfigured();
+    const bsession = session.db.createBrainstormSession('first message');
+    session.db.setBrainstormStatus(bsession.id, 'idle');
+    const app = buildApp();
+    const res = await postJson(app, `http://localhost/api/brainstorm/turns?t=${TOKEN}`, {
+      sessionId: bsession.id,
+      message: 'make it harder',
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { sessionId: string };
+    expect(body.sessionId).toBe(bsession.id);
+  });
+
+  it('400s on a missing/empty message', async () => {
+    setProviderConfigured();
+    const app = buildApp();
+    const res = await postJson(app, `http://localhost/api/brainstorm/turns?t=${TOKEN}`, {
+      message: '',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('400s on a message over 4000 characters', async () => {
+    setProviderConfigured();
+    const app = buildApp();
+    const res = await postJson(app, `http://localhost/api/brainstorm/turns?t=${TOKEN}`, {
+      message: 'x'.repeat(4001),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('400s when sessionId is not a string', async () => {
+    setProviderConfigured();
+    const app = buildApp();
+    const res = await postJson(app, `http://localhost/api/brainstorm/turns?t=${TOKEN}`, {
+      sessionId: 42,
+      message: 'anything',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('404s on an unknown sessionId', async () => {
+    setProviderConfigured();
+    const app = buildApp();
+    const res = await postJson(app, `http://localhost/api/brainstorm/turns?t=${TOKEN}`, {
+      sessionId: 'does-not-exist',
+      message: 'anything',
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('409s when the target session is already thinking', async () => {
+    setProviderConfigured();
+    // A session's id is only known once created, but the fake brainstorm
+    // engine's thinkingSessionId is baked in at session-construction time —
+    // so seed the row against the existing (real) db first, then rebuild
+    // the WorkspaceSession over the SAME db file with a fake engine that
+    // treats exactly that id as "thinking" (isThinking is engine state, not
+    // read from the db's own status column).
+    const seeded = session.db.createBrainstormSession('first message');
+    session.db.close();
+    session = createWorkspaceSession({
+      workspaceRoot: tempRoot,
+      bus: createBus(),
+      watch: false,
+      engines: fakeEngines(() => 0, seeded.id),
+    });
+    const app = buildApp();
+    const res = await postJson(app, `http://localhost/api/brainstorm/turns?t=${TOKEN}`, {
+      sessionId: seeded.id,
+      message: 'anything',
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/already running for this session/);
+  });
+
+  it('503s when no LLM provider is configured', async () => {
+    // setKeyless() already ran in beforeEach; no setProviderConfigured() here.
+    const app = buildApp();
+    const res = await postJson(app, `http://localhost/api/brainstorm/turns?t=${TOKEN}`, {
+      message: 'anything',
+    });
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/no LLM API key configured/);
+  });
+});
+
+describe('GET /api/brainstorm/sessions', () => {
+  it('lists sessions as {id,title,status,updatedAt} summaries, default limit', async () => {
+    session.db.createBrainstormSession('idea one');
+    session.db.createBrainstormSession('idea two');
+    const app = buildApp();
+    const res = await request(app, `http://localhost/api/brainstorm/sessions?t=${TOKEN}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      sessions: Array<{ id: string; title: string; status: string; updatedAt: string }>;
+    };
+    expect(body.sessions.length).toBe(2);
+    const summary = body.sessions[0];
+    expect(Object.keys(summary).sort()).toEqual(['id', 'status', 'title', 'updatedAt'].sort());
+  });
+
+  it('respects an explicit limit', async () => {
+    session.db.createBrainstormSession('a');
+    session.db.createBrainstormSession('b');
+    session.db.createBrainstormSession('c');
+    const app = buildApp();
+    const res = await request(app, `http://localhost/api/brainstorm/sessions?t=${TOKEN}&limit=1`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sessions: unknown[] };
+    expect(body.sessions.length).toBe(1);
+  });
+
+  it('caps an oversized limit at 100', async () => {
+    const spy = vi.spyOn(session.db, 'listBrainstormSessions');
+    const app = buildApp();
+    const res = await request(app, `http://localhost/api/brainstorm/sessions?t=${TOKEN}&limit=9000`);
+    expect(res.status).toBe(200);
+    expect(spy).toHaveBeenCalledWith(100);
+  });
+
+  it('400s on a non-positive limit', async () => {
+    const app = buildApp();
+    const res = await request(app, `http://localhost/api/brainstorm/sessions?t=${TOKEN}&limit=0`);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /api/brainstorm/sessions/:id', () => {
+  it('returns the full session (messages included)', async () => {
+    const bsession = session.db.createBrainstormSession('idea one');
+    const app = buildApp();
+    const res = await request(
+      app,
+      `http://localhost/api/brainstorm/sessions/${bsession.id}?t=${TOKEN}`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { session: BrainstormSessionRow };
+    expect(body.session.id).toBe(bsession.id);
+    expect(body.session.messages.length).toBe(1);
+  });
+
+  it('404s on an unknown id', async () => {
+    const app = buildApp();
+    const res = await request(
+      app,
+      `http://localhost/api/brainstorm/sessions/does-not-exist?t=${TOKEN}`,
+    );
+    expect(res.status).toBe(404);
   });
 });
