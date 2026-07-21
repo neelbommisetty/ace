@@ -153,6 +153,48 @@ export function createApp(opts: CreateAppOptions): Hono {
     await next();
   });
 
+  // Tracks requests that passed the gate above and are actively running
+  // handler code against the *current* session (db/engines) — everything
+  // except the long-lived SSE stream (never expected to drain), the health
+  // check, and the reset route's own request (which would otherwise wait on
+  // itself). This is what lets performWorkspaceReset's beforeDbClose hook
+  // wait out a request that was already mid-flight (e.g. suspended in
+  // `await c.req.json()`) when `resetting` flipped to true, instead of that
+  // request resuming against a session whose db/watcher have already been
+  // torn down. See closeWorkspaceSession's `beforeDbClose` doc comment.
+  let inFlightRequests = 0;
+  app.use('/api/*', async (c, next) => {
+    const isHealth = c.req.path === '/api/health';
+    const isSSE = c.req.path === '/api/events';
+    const isResetRoute = c.req.path === '/api/workspace/reset' && c.req.method === 'POST';
+    if (isHealth || isSSE || isResetRoute) {
+      await next();
+      return;
+    }
+    inFlightRequests += 1;
+    try {
+      await next();
+    } finally {
+      inFlightRequests -= 1;
+    }
+  });
+
+  /**
+   * Waits for requests already past the gate above to finish, so
+   * performWorkspaceReset can be sure nothing still holds a reference to the
+   * about-to-be-closed session's db. Polls rather than tracking individual
+   * promises — simplest correct option for what's expected to be 0 or 1
+   * stragglers — and gives up after `timeoutMs` so a wedged handler can never
+   * hang a reset forever (best-effort, matching the rest of this file's
+   * reset-failure recovery posture).
+   */
+  async function waitForRequestDrain(timeoutMs = 5000): Promise<void> {
+    const start = Date.now();
+    while (inFlightRequests > 0 && Date.now() - start < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
   async function readJsonBody(c: {
     req: { json(): Promise<unknown> };
   }): Promise<Record<string, unknown> | null> {
@@ -381,13 +423,18 @@ export function createApp(opts: CreateAppOptions): Hono {
 
   /** Records a 'save' snapshot when the written content is new for that file. */
   function snapshotOnWrite(relPath: string, content: string, hash: string): void {
-    const { db } = getSession();
-    // relPath shape: questions/<category>/<slug>/<file...>
-    const segments = relPath.split('/');
-    if (segments.length < 4 || segments[0] !== 'questions') return;
-    const question = db.getQuestion(segments[1], segments[2]);
-    if (!question) return;
+    // Everything below — including the initial getSession()/getQuestion()
+    // lookup — is inside the try/catch: snapshot bookkeeping must never fail
+    // the save itself (the file is already safely on disk), and a session
+    // torn down mid-request (e.g. a reset racing this write) throws on the
+    // very first db call just as easily as on a later one.
     try {
+      const { db } = getSession();
+      // relPath shape: questions/<category>/<slug>/<file...>
+      const segments = relPath.split('/');
+      if (segments.length < 4 || segments[0] !== 'questions') return;
+      const question = db.getQuestion(segments[1], segments[2]);
+      if (!question) return;
       const latest = db.getLatestSnapshot(question.id, relPath);
       if (latest && latest.hash === hash) return;
       saveBlob(workspaceRoot, content);
@@ -399,8 +446,6 @@ export function createApp(opts: CreateAppOptions): Hono {
         trigger: 'save',
       });
     } catch (err) {
-      // Snapshot bookkeeping must never fail the save itself — the file is
-      // already safely on disk.
       console.error('[ace] snapshot-on-write failed:', err);
     }
   }
@@ -781,6 +826,7 @@ export function createApp(opts: CreateAppOptions): Hono {
         mode,
         confirm,
         engines,
+        drainRequests: waitForRequestDrain,
       });
       return c.json({
         mode,

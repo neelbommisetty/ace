@@ -202,7 +202,7 @@ describe('POST /api/workspace/reset — happy path', () => {
     // Fresh db: reconciled question, zeroed attempt/review history.
     expect(body.workspace.counts.questions).toBe(1);
     expect(body.workspace.counts.attempts).toBe(0);
-    expect(body.restored).toEqual({ questions: 1, files: 0 });
+    expect(body.restored).toEqual({ questions: 0, files: 0 });
 
     // Exactly one workspace-reset SSE event, emitted after the swap.
     expect(events).toEqual([{ mode: 'progress', archivedTo: body.archivedTo }]);
@@ -411,6 +411,69 @@ describe('POST /api/workspace/reset — concurrency', () => {
     releaseClose();
     const firstRes = await firstReq;
     expect(firstRes.status).toBe(200);
+
+    await closeWorkspaceSession(harness.getSession());
+  });
+
+  it('a PUT /api/file already past the gate when a reset begins finishes against the old db (no 500) and the reset waits for it before closing that db', async () => {
+    const dir = writeCodingQuestion('js-ts', 'straddle', { solution: 'export const before = 1;\n' });
+    const bus = createBus();
+    const flags: BusyFlags = { runner: false, reviews: false, disputes: false };
+    const engines = fakeEngines(flags);
+    const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
+    const harness = makeHarness(session);
+    const app = buildApp(bus, harness, engines);
+
+    // A save request that passed the 503 gate (resetting is still false)
+    // but is suspended reading its body — mimics a client whose PUT body is
+    // still streaming in when POST /api/workspace/reset begins.
+    let releaseBody!: (chunk: Uint8Array) => void;
+    let closeBody!: () => void;
+    const bodyStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        releaseBody = (chunk) => controller.enqueue(chunk);
+        closeBody = () => controller.close();
+      },
+    });
+    const solutionRel = toWorkspaceRelPath(tempRoot, path.join(dir, 'solution.ts'));
+    const putPromise = request(app, `http://localhost/api/file?t=${TOKEN}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: bodyStream,
+      duplex: 'half',
+    } as RequestInit);
+
+    // Let the PUT's middleware chain run far enough to register as in-flight
+    // (it suspends inside `await c.req.json()`, past the counter middleware)
+    // before the reset starts.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const resetPromise = postReset(app, { mode: 'progress', confirm: path.basename(tempRoot) });
+    for (let i = 0; i < 200 && !harness.isResetting(); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(harness.isResetting()).toBe(true);
+
+    // The reset must not sail through independently of the still-open PUT —
+    // race it against a short timer to prove it's genuinely blocked (in
+    // beforeDbClose's drain), not just naturally slow.
+    const raceResult = await Promise.race([
+      Promise.resolve(resetPromise).then(() => 'reset-resolved' as const),
+      new Promise<'still-pending'>((resolve) => setTimeout(() => resolve('still-pending'), 100)),
+    ]);
+    expect(raceResult).toBe('still-pending');
+
+    // Now let the PUT's body arrive. Its handler (write + snapshot) must run
+    // to completion against the still-open old db before the reset is
+    // allowed to close it.
+    releaseBody(
+      new TextEncoder().encode(JSON.stringify({ path: solutionRel, content: 'export const after = 2;\n' })),
+    );
+    closeBody();
+
+    const [putRes, resetRes] = await Promise.all([putPromise, resetPromise]);
+    expect(putRes.status).toBe(200);
+    expect(resetRes.status).toBe(200);
 
     await closeWorkspaceSession(harness.getSession());
   });

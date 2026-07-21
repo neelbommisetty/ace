@@ -116,8 +116,9 @@ describe('performWorkspaceReset — happy path (progress)', () => {
     expect(newSession.watcher).not.toBeNull();
 
     // applyRestorePlan still seeds a 'scaffold' snapshot per question in
-    // progress mode (see workspace-reset.test.ts) — only `files` is zeroed.
-    expect(result.restored).toEqual({ questions: 1, files: 0 });
+    // progress mode (see workspace-reset.test.ts), but that's internal
+    // bookkeeping, not a restoration — the reported counts are zeros.
+    expect(result.restored).toEqual({ questions: 0, files: 0 });
     expect(harness.isResetting()).toBe(false);
     expect(events).toEqual([{ mode: 'progress', archivedTo: result.archivedTo }]);
 

@@ -36,6 +36,14 @@ export interface PerformWorkspaceResetOptions {
   confirm: string;
   /** Defaults to the real engine factories; tests inject fakes here. */
   engines?: EngineFactories;
+  /**
+   * Awaited right before the old session's db is closed (wired through as
+   * closeWorkspaceSession's `beforeDbClose`) — lets the HTTP layer drain any
+   * request that was already past the resetting-gate and mid-flight against
+   * the old session when the reset began, so it can't resume against a
+   * closed db. Defaults to a no-op; tests generally omit it.
+   */
+  drainRequests?: () => Promise<void>;
 }
 
 export interface PerformWorkspaceResetResult {
@@ -73,6 +81,7 @@ export async function performWorkspaceReset(
   opts: PerformWorkspaceResetOptions,
 ): Promise<PerformWorkspaceResetResult> {
   const { workspaceRoot, bus, getSession, swapSession, setResetting, mode, engines } = opts;
+  const drainRequests = opts.drainRequests ?? (async () => {});
 
   setResetting(true);
 
@@ -86,7 +95,12 @@ export async function performWorkspaceReset(
       snapshotPreResetState(oldSession.db, workspaceRoot, plan);
     }
 
-    await closeWorkspaceSession(oldSession);
+    // beforeDbClose runs after the watcher/engines are torn down but before
+    // db.close() — wait out any request that got past the 503 gate before
+    // `setResetting(true)` took effect (e.g. suspended in `await
+    // c.req.json()`) so it resumes against a still-open db instead of a
+    // closed one. See closeWorkspaceSession's doc comment for this seam.
+    await closeWorkspaceSession(oldSession, { beforeDbClose: drainRequests });
     closed = true;
 
     const archivedTo = archiveAceDir(workspaceRoot);
