@@ -18,6 +18,36 @@ import type { AceDb, Difficulty, GenerationJobRow } from './types.js';
 
 const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
 
+// Path-traversal guard for LLM-supplied slugs (e.g. a malicious/malformed
+// '../evil' or 'Foo Bar' must never reach fs.mkdirSync as-is).
+const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * Resolves a safe, unique slug for a generated question: the LLM-supplied
+ * slug is used only if it passes SLUG_RE, else we fall back to
+ * slugify(title||topic) (which always produces a SLUG_RE-safe string given
+ * non-empty input). Suffixes -2..-9 on a questions-dir collision, re-checking
+ * SLUG_RE on every candidate before probing the filesystem. Throws if all 9
+ * candidates are taken.
+ */
+function resolveSlug(
+  workspaceRoot: string,
+  category: CategorySlug,
+  parsedSlug: string | null | undefined,
+  title: string,
+  topic: string,
+): string {
+  const trimmed = parsedSlug?.trim();
+  const base = trimmed && SLUG_RE.test(trimmed) ? trimmed : slugify(title || topic);
+  for (let n = 1; n <= 9; n++) {
+    const candidate = n === 1 ? base : `${base}-${n}`;
+    if (!SLUG_RE.test(candidate)) continue;
+    const dir = path.join(workspaceRoot, 'questions', category, candidate);
+    if (!fs.existsSync(dir)) return candidate;
+  }
+  throw new Error(`could not find an available slug for "${base}" — too many collisions`);
+}
+
 // Copied from cli/commands/generate.ts's GeneratedQuestionSchema — same
 // contract, different consumer (the server engine vs. the CLI command), kept
 // in sync manually like IdeaListSchema/DisputeResultSchema are with their CLI
@@ -119,26 +149,40 @@ Question type: ${config.type}`;
         );
       }
 
-      // Slug: no collision handling yet (a later step suffixes -2..-9 on a
-      // dir collision) — this step covers only the straight-through path.
-      const slug = (parsed.slug && parsed.slug.trim()) || slugify(title);
+      // Slug: LLM-supplied slug is validated/sanitized and, on a questions-dir
+      // collision, suffixed -2..-9. Recorded on the job row BEFORE any file
+      // I/O so a retry after a scaffold failure reuses the same slug rather
+      // than re-suffixing or spending a second LLM call.
+      const slug = resolveSlug(workspaceRoot, category, parsed.slug, title, job.topic);
       db.patchGenerationJob(jobId, { slug });
 
       // LLM solutionCode is always discarded (anti-cheat rule) — the
-      // scaffold templates build a stub from the signature instead.
-      const { dir } = scaffoldQuestionAt(
-        workspaceRoot,
-        {
-          title,
-          slug,
-          category,
-          difficulty,
-          description: parsed.description || '',
-          signature: parsed.signature ?? undefined,
-          testCode: parsed.testCode ?? undefined,
-        },
-        { writeScorecard: false },
-      );
+      // scaffold templates build a stub from the signature instead. Wrapped
+      // separately so a post-LLM-success I/O failure (disk full, permission
+      // denied, a last-instant dir collision) never loses the already-persisted
+      // result_json — the outer catch below patches status 'error' without
+      // touching the `result` field, so it stays intact for a scaffold-only retry.
+      let dir: string;
+      try {
+        ({ dir } = scaffoldQuestionAt(
+          workspaceRoot,
+          {
+            title,
+            slug,
+            category,
+            difficulty,
+            description: parsed.description || '',
+            signature: parsed.signature ?? undefined,
+            testCode: parsed.testCode ?? undefined,
+          },
+          { writeScorecard: false },
+        ));
+      } catch (scaffoldErr) {
+        const reason = scaffoldErr instanceof Error ? scaffoldErr.message : String(scaffoldErr);
+        throw new Error(
+          `question files could not be written (${reason}) — result is saved, retry to resume`,
+        );
+      }
 
       const question = db.upsertQuestion({
         category,

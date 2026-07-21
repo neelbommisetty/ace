@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LLMMessage, LLMProvider } from '../lib/llm.js';
 import type { createGenerationEngine as CreateGenerationEngineFn } from './generation.js';
 import { openDb } from './db.js';
@@ -79,6 +79,29 @@ function makeFakeLlm(
     llm: { chatObject } as unknown as Parameters<typeof CreateGenerationEngineFn>[0]['llm'],
     calls,
   };
+}
+
+/**
+ * Wraps a real AceDb so its `patchGenerationJob` throws once, the first time
+ * it's called with `status: 'llm_done'` — simulating a db write failure right
+ * after a paid LLM call succeeds, to exercise the salvage-to-disk path.
+ * Every other method (and every other call) forwards to the real db.
+ */
+function makeThrowOnLlmDoneDb(realDb: AceDb): AceDb {
+  return new Proxy(realDb, {
+    get(target, prop, receiver) {
+      if (prop === 'patchGenerationJob') {
+        return (id: string, patch: Parameters<AceDb['patchGenerationJob']>[1]) => {
+          if (patch.status === 'llm_done') {
+            throw new Error('simulated db failure on llm_done patch');
+          }
+          return target.patchGenerationJob(id, patch);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as AceDb;
 }
 
 function waitFor<N extends string>(name: N): Promise<any> {
@@ -260,5 +283,133 @@ describe('createGenerationEngine', () => {
     expect(fs.existsSync(path.join(tempRoot, 'questions', 'leetcode-ds', 'two-sum-variant'))).toBe(
       false,
     );
+  });
+
+  it('leaves status error with result_json intact when scaffolding fails after a successful LLM call', async () => {
+    const { llm, calls } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
+    const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+    const errored = waitFor('generation-error');
+
+    // Fail exactly the mkdirSync call scaffoldQuestionAt makes for the
+    // question dir (the slug is already unique, so this is a pure I/O
+    // failure, not a collision) — mockImplementationOnce falls back to the
+    // real implementation afterward, so nothing else in the test is affected.
+    const mkdirSpy = vi
+      .spyOn(fs, 'mkdirSync')
+      .mockImplementationOnce(() => {
+        throw new Error('EACCES: permission denied, mkdir');
+      });
+
+    const { jobId } = engine.start({
+      category: 'leetcode-ds',
+      difficulty: 'medium',
+      topic: 'two sum variant',
+    });
+
+    const { message } = await errored;
+    expect(message).toContain('question files could not be written');
+    mkdirSpy.mockRestore();
+
+    const job = db.getGenerationJob(jobId)!;
+    expect(job.status).toBe('error');
+    expect(job.errorMessage).toBe(message);
+    // The paid LLM result must survive a scaffold failure — a retry can
+    // reuse it without spending a second LLM call.
+    expect(job.result).toEqual(VALID_GENERATED_PAYLOAD);
+    expect(job.title).toBe(VALID_GENERATED_PAYLOAD.title);
+    expect(job.slug).toBe('two-sum-variant');
+    expect(job.questionId).toBeNull();
+
+    expect(calls).toHaveLength(1);
+    expect(
+      fs.existsSync(path.join(tempRoot, 'questions', 'leetcode-ds', 'two-sum-variant')),
+    ).toBe(false);
+  });
+
+  it('salvages the parsed JSON to disk when the llm_done db write throws', async () => {
+    const { llm, calls } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
+    const throwingDb = makeThrowOnLlmDoneDb(db);
+    const engine = createGenerationEngine({ db: throwingDb, bus, workspaceRoot: tempRoot, llm });
+    const errored = waitFor('generation-error');
+
+    const { jobId } = engine.start({
+      category: 'leetcode-ds',
+      difficulty: 'medium',
+      topic: 'two sum variant',
+    });
+
+    const { message } = await errored;
+    expect(message).toContain('could not be saved');
+    expect(message).toContain('salvaged to');
+
+    const salvagePath = path.join(tempRoot, '.ace', `generation-salvage-${jobId}.json`);
+    expect(fs.existsSync(salvagePath)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(salvagePath, 'utf8'))).toEqual(VALID_GENERATED_PAYLOAD);
+
+    // The db write itself never landed, so the job row's own result column
+    // stays null — the salvage file on disk is the copy of record here.
+    const job = db.getGenerationJob(jobId)!;
+    expect(job.status).toBe('error');
+    expect(job.result).toBeNull();
+    expect(calls).toHaveLength(1);
+  });
+
+  describe('slug sanitization and collision handling', () => {
+    it('suffixes -2 on a same-slug collision, keeping both question dirs and rows', async () => {
+      const { llm } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD, () => VALID_GENERATED_PAYLOAD]);
+      const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+
+      const firstDone = waitFor('generation-done');
+      engine.start({ category: 'leetcode-ds', difficulty: 'medium', topic: 'two sum variant' });
+      const { question: q1 } = await firstDone;
+
+      const secondDone = waitFor('generation-done');
+      engine.start({ category: 'leetcode-ds', difficulty: 'medium', topic: 'two sum variant' });
+      const { question: q2 } = await secondDone;
+
+      expect(q1.slug).toBe('two-sum-variant');
+      expect(q2.slug).toBe('two-sum-variant-2');
+      expect(q1.id).not.toBe(q2.id);
+
+      expect(
+        fs.existsSync(path.join(tempRoot, 'questions', 'leetcode-ds', 'two-sum-variant')),
+      ).toBe(true);
+      expect(
+        fs.existsSync(path.join(tempRoot, 'questions', 'leetcode-ds', 'two-sum-variant-2')),
+      ).toBe(true);
+
+      expect(db.getQuestionById(q1.id)).not.toBeNull();
+      expect(db.getQuestionById(q2.id)).not.toBeNull();
+    });
+
+    it('rejects a path-traversal slug from the LLM and falls back to slugify(title)', async () => {
+      const maliciousPayload = {
+        ...VALID_GENERATED_PAYLOAD,
+        title: 'Sneaky Title',
+        slug: '../evil',
+      };
+      const { llm } = makeFakeLlm([() => maliciousPayload]);
+      const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+      const done = waitFor('generation-done');
+
+      const { jobId } = engine.start({
+        category: 'leetcode-ds',
+        difficulty: 'medium',
+        topic: 'irrelevant topic',
+      });
+      const { question } = await done;
+
+      expect(question.slug).toBe('sneaky-title');
+      const job = db.getGenerationJob(jobId)!;
+      expect(job.slug).toBe('sneaky-title');
+
+      const questionsRoot = path.resolve(tempRoot, 'questions', 'leetcode-ds');
+      expect(path.resolve(question.dirPath)).toBe(path.join(questionsRoot, 'sneaky-title'));
+      expect(path.resolve(question.dirPath).startsWith(questionsRoot + path.sep)).toBe(true);
+
+      // Never escaped the questions dir: no 'evil' directory anywhere near it.
+      expect(fs.existsSync(path.join(tempRoot, 'questions', 'evil'))).toBe(false);
+      expect(fs.existsSync(path.join(tempRoot, 'evil'))).toBe(false);
+    });
   });
 });
