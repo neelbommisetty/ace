@@ -80,6 +80,19 @@ function fakeEngines(flags: BusyFlags): EngineFactories {
       isAnyRunning: () => flags.disputes,
       dispose: vi.fn(),
     })) as unknown as EngineFactories['createDisputeEngine'],
+    createGenerationEngine: (() => ({
+      start: vi.fn(),
+      retry: vi.fn(),
+      runningCount: () => 0,
+      isAnyRunning: () => false,
+      dispose: vi.fn(),
+    })) as unknown as EngineFactories['createGenerationEngine'],
+    createBrainstormEngine: (() => ({
+      startTurn: vi.fn(),
+      isThinking: () => false,
+      isAnyRunning: () => false,
+      dispose: vi.fn(),
+    })) as unknown as EngineFactories['createBrainstormEngine'],
   };
 }
 
