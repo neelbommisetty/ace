@@ -1,20 +1,32 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
-import { ApiError, getSettings, startGenerationJob } from '../api';
+import {
+  ApiError,
+  getBrainstormSession,
+  getBrainstormSessions,
+  getSettings,
+  sendBrainstormTurn,
+  startGenerationJob,
+} from '../api';
 import { GenerationJobStrip } from '../components/GenerationJobStrip';
+import { IdeaCard } from '../components/IdeaCard';
 import {
   CATEGORY_SLUGS,
   categoryHint,
   categoryShortName,
   suggestedMinutes,
 } from '../lib/categories';
-import type { Difficulty, GenerationJobRow, SettingsInfo } from '../types';
+import { useSseEvent } from '../sse';
+import type { BrainstormSessionRow, Difficulty, GenerationJobRow, SettingsInfo } from '../types';
 
 type Tab = 'describe' | 'brainstorm';
 
 const DIFFICULTIES: Difficulty[] = ['easy', 'medium', 'hard'];
 
 const TOPIC_MAX = 4000;
+
+/** sessionStorage key for reopening the in-progress brainstorm session across a reload/tab-switch. */
+const BRAINSTORM_SESSION_KEY = 'ace-brainstorm-session';
 
 /**
  * /new — start a generation job. Two tabs: describe a question directly, or
@@ -87,7 +99,7 @@ export function NewQuestion() {
           {tab === 'describe' ? (
             <DescribeForm disabled={formDisabled} />
           ) : (
-            <div className="pane-empty">Brainstorm mode is coming soon.</div>
+            <BrainstormPane disabled={formDisabled} />
           )}
 
           <GenerationJobStrip />
@@ -222,5 +234,189 @@ function DescribeForm({ disabled }: { disabled: boolean }) {
         </div>
       )}
     </form>
+  );
+}
+
+/**
+ * Brainstorm tab: chat with the LLM to land on idea(s), then hand any of
+ * them straight to a generation job via IdeaCard. Reopens the last active
+ * session (sessionStorage id, falling back to the most recent session from
+ * the server) so a reload or tab-switch doesn't lose an in-progress chat.
+ */
+function BrainstormPane({ disabled }: { disabled: boolean }) {
+  const [session, setSession] = useState<BrainstormSessionRow | null>(null);
+  const [message, setMessage] = useState('');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // A ref, not state: this guard must not itself be an effect dependency —
+  // flipping state inside the effect would re-run the effect and fire this
+  // same run's cleanup (setting `cancelled`) before the in-flight fetch below
+  // even resolves, silently dropping the reopened session.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function reopen() {
+      const storedId = sessionStorage.getItem(BRAINSTORM_SESSION_KEY);
+      if (storedId) {
+        try {
+          const res = await getBrainstormSession(storedId);
+          if (!cancelled) setSession(res.session);
+          return;
+        } catch {
+          // Stale/unknown id (e.g. 404) — clear it and fall back to the
+          // latest session below.
+          sessionStorage.removeItem(BRAINSTORM_SESSION_KEY);
+        }
+      }
+      try {
+        const { sessions } = await getBrainstormSessions(1);
+        const latest = sessions[0];
+        if (latest == null || cancelled) return;
+        const full = await getBrainstormSession(latest.id);
+        if (!cancelled) {
+          setSession(full.session);
+          sessionStorage.setItem(BRAINSTORM_SESSION_KEY, full.session.id);
+        }
+      } catch {
+        // Nothing to reopen — leave the empty composer.
+      }
+    }
+
+    void reopen();
+    return () => {
+      cancelled = true;
+    };
+    // Runs once per mount (BrainstormPane itself unmounts on tab-switch away,
+    // so this already covers "on mount/tab-switch, attempt session reopen").
+  }, []);
+
+  useSseEvent('brainstorm-done', ({ sessionId, turn }) => {
+    setSession((prev) =>
+      prev != null && prev.id === sessionId
+        ? { ...prev, status: 'idle', errorMessage: null, messages: [...prev.messages, turn] }
+        : prev,
+    );
+  });
+
+  useSseEvent('brainstorm-error', ({ sessionId, message: msg }) => {
+    setSession((prev) =>
+      prev != null && prev.id === sessionId ? { ...prev, status: 'error', errorMessage: msg } : prev,
+    );
+  });
+
+  // Disabled the instant a turn is sent (optimistic status flip below), all
+  // the way through the corresponding SSE 'brainstorm-done'/'brainstorm-error'.
+  const thinking = session?.status === 'thinking';
+  const trimmed = message.trim();
+  const canSend =
+    !disabled && !sending && !thinking && trimmed.length > 0 && trimmed.length <= TOPIC_MAX;
+
+  async function onSend(e: FormEvent) {
+    e.preventDefault();
+    if (!canSend) return;
+
+    setSending(true);
+    setError(null);
+    const sentMessage = trimmed;
+    try {
+      const { sessionId } = await sendBrainstormTurn(session?.id ?? null, sentMessage);
+      setMessage('');
+      setSession((prev) => {
+        if (prev != null && prev.id === sessionId) {
+          return {
+            ...prev,
+            status: 'thinking',
+            errorMessage: null,
+            messages: [...prev.messages, { role: 'user', content: sentMessage }],
+          };
+        }
+        const now = new Date().toISOString();
+        return {
+          id: sessionId,
+          status: 'thinking',
+          title: sentMessage.slice(0, 80),
+          messages: [{ role: 'user', content: sentMessage }],
+          errorMessage: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+      });
+      sessionStorage.setItem(BRAINSTORM_SESSION_KEY, sessionId);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to send message');
+    } finally {
+      setSending(false);
+    }
+  }
+
+  function onStartOver() {
+    sessionStorage.removeItem(BRAINSTORM_SESSION_KEY);
+    setSession(null);
+    setMessage('');
+    setError(null);
+  }
+
+  return (
+    <div className="brainstorm-pane">
+      {session != null && session.messages.length > 0 && (
+        <div className="brainstorm-history">
+          {session.messages.map((turn, i) =>
+            turn.role === 'user' ? (
+              <div key={i} className="brainstorm-turn brainstorm-turn-user">
+                {turn.content}
+              </div>
+            ) : (
+              <div key={i} className="brainstorm-turn brainstorm-turn-assistant">
+                <p>{turn.content}</p>
+                {turn.ideas != null && turn.ideas.length > 0 ? (
+                  <div className="idea-grid">
+                    {turn.ideas.map((idea, j) => (
+                      <IdeaCard key={j} idea={idea} sessionId={session.id} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="brainstorm-refine-hint">
+                    Couldn&apos;t parse ideas from that reply — try refining your ask below.
+                  </div>
+                )}
+              </div>
+            ),
+          )}
+        </div>
+      )}
+
+      {session?.status === 'error' && session.errorMessage != null && (
+        <div className="error-note">{session.errorMessage}</div>
+      )}
+
+      <form className="brainstorm-composer" onSubmit={onSend}>
+        <textarea
+          className="dispute-argument"
+          rows={3}
+          maxLength={TOPIC_MAX}
+          aria-label={session == null ? 'Brainstorm' : 'Refine'}
+          placeholder={
+            session == null
+              ? "What kind of question do you want? e.g. 'something about React state management'"
+              : 'Refine — ask for more ideas, a different angle, etc.'
+          }
+          value={message}
+          disabled={disabled || thinking || sending}
+          onChange={(e) => setMessage(e.target.value)}
+        />
+        {error != null && <div className="error-note">{error}</div>}
+        <div className="settings-row">
+          <button className="btn btn-accent" type="submit" disabled={!canSend}>
+            {thinking ? 'Thinking…' : sending ? 'Sending…' : session == null ? 'Brainstorm' : 'Send'}
+          </button>
+          {session != null && (
+            <button type="button" className="btn btn-small" onClick={onStartOver}>
+              Start over
+            </button>
+          )}
+        </div>
+      </form>
+    </div>
   );
 }
