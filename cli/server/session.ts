@@ -114,12 +114,60 @@ export function startSessionWatcher(session: WorkspaceSession): void {
 /**
  * Tears down a session in the exact order the previous startAceServer's
  * close() used: watcher (skipped when null) → runner.dispose → reviews.dispose
- * → disputes.dispose → db.close.
+ * → disputes.dispose → [beforeDbClose] → db.close.
+ *
+ * `beforeDbClose`, if given, runs after the engines are disposed and before
+ * the db is closed — this is the seam the HTTP server's own close() must run
+ * in, so an in-flight request handler that resumes mid-shutdown still finds
+ * the db open (matches the pre-session.ts ordering: server.close() happened
+ * before db.close(), not after). Like the rest of this function, a rejection
+ * from `beforeDbClose` propagates and aborts the db.close() step — callers
+ * that want best-effort cleanup on a failure path should use
+ * closeWorkspaceSessionSafe instead.
  */
-export async function closeWorkspaceSession(session: WorkspaceSession): Promise<void> {
+export async function closeWorkspaceSession(
+  session: WorkspaceSession,
+  opts?: { beforeDbClose?: () => Promise<void> },
+): Promise<void> {
   if (session.watcher) await session.watcher.close();
   session.runner.dispose();
   session.reviews.dispose();
   session.disputes.dispose();
+  await opts?.beforeDbClose?.();
   session.db.close();
+}
+
+/**
+ * Best-effort teardown for failure paths (e.g. boot failure during
+ * startAceServer, so a caller retrying on the next port doesn't inherit a
+ * leaked db handle or live engines). Unlike closeWorkspaceSession, each step
+ * is guarded individually so a rejection from one (most commonly
+ * watcher.close(), which does real chokidar teardown work) doesn't skip the
+ * rest — mirrors the per-step try/catch the old inline boot-failure handler
+ * in startAceServer used before this file existed.
+ */
+export async function closeWorkspaceSessionSafe(session: WorkspaceSession): Promise<void> {
+  if (session.watcher) {
+    await session.watcher.close().catch(() => {});
+  }
+  try {
+    session.runner.dispose();
+  } catch {
+    // best effort
+  }
+  try {
+    session.reviews.dispose();
+  } catch {
+    // best effort
+  }
+  try {
+    session.disputes.dispose();
+  } catch {
+    // best effort
+  }
+  try {
+    session.db.close();
+  } catch {
+    // already closed, or never fully opened
+  }
 }

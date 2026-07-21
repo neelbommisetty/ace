@@ -3,7 +3,12 @@ import path from 'node:path';
 import { serve, type ServerType } from '@hono/node-server';
 import { createApp } from './app.js';
 import { previewImport, runImport } from './importer.js';
-import { closeWorkspaceSession, createWorkspaceSession, type WorkspaceSession } from './session.js';
+import {
+  closeWorkspaceSession,
+  closeWorkspaceSessionSafe,
+  createWorkspaceSession,
+  type WorkspaceSession,
+} from './session.js';
 import { createBus } from './sse.js';
 
 export interface StartAceServerOptions {
@@ -83,18 +88,23 @@ export async function startAceServer(opts: StartAceServerOptions): Promise<AceSe
       url: `http://127.0.0.1:${port}`,
       port,
       async close() {
-        await closeWorkspaceSession(activeSession);
-        await new Promise<void>((resolve, reject) => {
-          server.close((err) => (err ? reject(err) : resolve()));
-          // Open SSE connections would keep close() waiting forever.
-          const s = server as { closeAllConnections?: () => void };
-          s.closeAllConnections?.();
+        // db.close() must run after the HTTP server has fully closed, not
+        // before — an in-flight request handler (e.g. a PUT /api/file
+        // autosave) can resume mid-shutdown and needs the db still open.
+        await closeWorkspaceSession(activeSession, {
+          beforeDbClose: () =>
+            new Promise<void>((resolve, reject) => {
+              server.close((err) => (err ? reject(err) : resolve()));
+              // Open SSE connections would keep close() waiting forever.
+              const s = server as { closeAllConnections?: () => void };
+              s.closeAllConnections?.();
+            }),
         });
       },
     };
   } catch (err) {
     // Listen (or boot) failed — release everything so the caller can retry.
-    if (session) await closeWorkspaceSession(session).catch(() => {});
+    if (session) await closeWorkspaceSessionSafe(session);
     throw err;
   }
 }
