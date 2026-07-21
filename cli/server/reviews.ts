@@ -229,6 +229,8 @@ export interface ReviewEngine {
   /** Kicks off a review job; the route must check isRunning first (409). */
   start(question: QuestionRow, attemptId: string | null): { jobId: string };
   isRunning(questionId: string): boolean;
+  /** True while any review is streaming, across all questions. */
+  isAnyRunning(): boolean;
   dispose(): void;
 }
 
@@ -387,6 +389,10 @@ export function createReviewEngine(opts: {
 
     isRunning(questionId) {
       return inFlight.has(questionId);
+    },
+
+    isAnyRunning() {
+      return inFlight.size > 0;
     },
 
     dispose() {

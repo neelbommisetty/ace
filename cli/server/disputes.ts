@@ -92,6 +92,8 @@ export interface DisputeEngine {
     argument: string | null,
   ): { disputeJobId: string };
   isRunning(questionId: string): boolean;
+  /** True while any dispute analysis is in flight, across all questions. */
+  isAnyRunning(): boolean;
   dispose(): void;
 }
 
@@ -231,6 +233,10 @@ ${buildFailureOutput(run)}
 
     isRunning(questionId) {
       return inFlight.has(questionId);
+    },
+
+    isAnyRunning() {
+      return inFlight.size > 0;
     },
 
     dispose() {

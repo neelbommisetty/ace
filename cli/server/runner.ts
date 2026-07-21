@@ -94,6 +94,8 @@ export function parseVitestJson(
 
 export interface Runner {
   start(question: QuestionRow, attemptId: string | null, trigger: TestRunTrigger): TestRunRow;
+  /** True while any test run is in flight, across all questions. */
+  isBusy(): boolean;
   dispose(): void;
 }
 
@@ -339,6 +341,10 @@ export function createRunner(opts: {
       });
 
       return run;
+    },
+
+    isBusy() {
+      return inFlight.size > 0;
     },
 
     dispose() {
