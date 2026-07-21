@@ -2,7 +2,10 @@ import type {
   AttemptEventRow,
   AttemptEventType,
   AttemptRow,
+  BrainstormSessionRow,
+  BrainstormSessionStatus,
   DisputeRow,
+  GenerationJobRow,
   HistoryItem,
   ImportPreviewItem,
   ImportResult,
@@ -285,4 +288,56 @@ export function resetWorkspace(
     method: 'POST',
     body: JSON.stringify({ mode, confirm, requestId }),
   });
+}
+
+// ---- generation / brainstorm ------------------------------------------------
+
+export function startGenerationJob(body: {
+  category: string;
+  difficulty: string;
+  topic: string;
+  brainstormSessionId?: string | null;
+}): Promise<{ jobId: string }> {
+  return request('/api/generation/jobs', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function getGenerationJobs(limit?: number): Promise<{ jobs: GenerationJobRow[] }> {
+  const qs = limit != null ? `?limit=${limit}` : '';
+  return request(`/api/generation/jobs${qs}`);
+}
+
+export function getGenerationJob(id: string): Promise<{ job: GenerationJobRow }> {
+  return request(`/api/generation/jobs/${encodeURIComponent(id)}`);
+}
+
+export function retryGenerationJob(id: string): Promise<{ jobId: string }> {
+  return request(`/api/generation/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST' });
+}
+
+export function sendBrainstormTurn(
+  sessionId: string | null,
+  message: string,
+): Promise<{ sessionId: string }> {
+  return request('/api/brainstorm/turns', {
+    method: 'POST',
+    body: JSON.stringify(sessionId != null ? { sessionId, message } : { message }),
+  });
+}
+
+export function getBrainstormSession(id: string): Promise<{ session: BrainstormSessionRow }> {
+  return request(`/api/brainstorm/sessions/${encodeURIComponent(id)}`);
+}
+
+export interface BrainstormSessionSummary {
+  id: string;
+  title: string;
+  status: BrainstormSessionStatus;
+  updatedAt: string;
+}
+
+export function getBrainstormSessions(
+  limit?: number,
+): Promise<{ sessions: BrainstormSessionSummary[] }> {
+  const qs = limit != null ? `?limit=${limit}` : '';
+  return request(`/api/brainstorm/sessions${qs}`);
 }
