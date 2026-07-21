@@ -302,6 +302,14 @@ export interface SseEventMap {
   'brainstorm-done': { sessionId: string; turn: BrainstormTurn };
   'brainstorm-error': { sessionId: string; message: string };
   /**
+   * The FULL row (not just the id) — the job strip and Library pill must
+   * render a card for a job started from another tab (category, topic,
+   * createdAt) without a follow-up fetch.
+   */
+  'generation-started': { job: GenerationJobRow };
+  'generation-done': { jobId: string; question: QuestionRow };
+  'generation-error': { jobId: string; message: string };
+  /**
    * Emitted once, after the new session is live, at the end of a workspace
    * reset. `requestId` echoes back whatever the initiating
    * `POST /api/workspace/reset` request sent (or a server-minted fallback if

@@ -276,6 +276,14 @@ export interface SseEventMap {
   'brainstorm-done': { sessionId: string; turn: BrainstormTurn };
   'brainstorm-error': { sessionId: string; message: string };
   /**
+   * The FULL row (not just the id) — the job strip and Library pill must
+   * render a card for a job started from another tab (category, topic,
+   * createdAt) without a follow-up fetch.
+   */
+  'generation-started': { job: GenerationJobRow };
+  'generation-done': { jobId: string; question: QuestionRow };
+  'generation-error': { jobId: string; message: string };
+  /**
    * `requestId` echoes back the initiating POST's own id (see
    * `resetWorkspace` in `api.ts`) so the initiating tab can recognize its
    * own broadcast and distinguish it from a reset some other tab triggered.

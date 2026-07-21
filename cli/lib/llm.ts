@@ -183,7 +183,10 @@ function getModel(provider: LLMProvider): LanguageModel {
   return createAnthropic({ apiKey: config.ANTHROPIC_API_KEY })(ANTHROPIC_MODEL);
 }
 
-function toCallInput(messages: LLMMessage[]): {
+function toCallInput(
+  messages: LLMMessage[],
+  maxOutputTokens = 4096,
+): {
   instructions?: string;
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
   maxOutputTokens: number;
@@ -198,7 +201,7 @@ function toCallInput(messages: LLMMessage[]): {
   return {
     ...(systemMsg ? { instructions: systemMsg.content } : {}),
     messages: nonSystemMessages,
-    maxOutputTokens: 4096,
+    maxOutputTokens,
   };
 }
 
@@ -228,7 +231,7 @@ export async function chatObject<T>(
   provider: LLMProvider,
   messages: LLMMessage[],
   schema: z.ZodType<T>,
-  opts?: { abortSignal?: AbortSignal },
+  opts?: { abortSignal?: AbortSignal; maxOutputTokens?: number },
 ): Promise<T> {
   if (mockLlm) {
     if (process.env.ACE_MOCK_LLM_MODE) {
@@ -249,7 +252,7 @@ export async function chatObject<T>(
 
   const result = await generateObject({
     model: getModel(provider),
-    ...toCallInput(messages),
+    ...toCallInput(messages, opts?.maxOutputTokens),
     schema,
     abortSignal: opts?.abortSignal,
     // OpenAI strict mode rejects optional schema properties.
