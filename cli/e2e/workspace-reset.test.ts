@@ -541,9 +541,22 @@ describe('workspace reset — 409 guard against a real running test', () => {
       // .ace was left untouched by the rejected reset.
       expect(fs.existsSync(path.join(root, '.ace', 'ace.db'))).toBe(true);
 
-      // Wait for the real vitest run to actually finish.
-      const runDone = (await sse.waitFor('run-done', 25_000)) as { runId: string };
+      // Wait for the real vitest run to actually finish, and assert it
+      // genuinely ran (not merely that the runner reported *some* outcome —
+      // an instantly-failing spawn also emits a matching run-done). This is
+      // the guard against a regression of the realpath fix in 8457ca2: without
+      // it the spawned vitest process fails before executing any test, and
+      // status/summary catch that even though runId still matches.
+      const runDone = (await sse.waitFor('run-done', 25_000)) as {
+        runId: string;
+        status: string;
+        summary: { total: number; passed: number; failed: number } | null;
+      };
       expect(runDone.runId).toBe(startRes.body.runId);
+      expect(runDone.status).toBe('done');
+      expect(runDone.summary).toEqual(
+        expect.objectContaining({ total: 1, passed: 1, failed: 0 }),
+      );
       sse.close();
 
       const okRes = await apiJson<{ mode: string }>(baseUrl, token, '/api/workspace/reset', {
