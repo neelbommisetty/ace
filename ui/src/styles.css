@@ -2161,3 +2161,25 @@ code {
   margin: 0;
   line-height: 1.5;
 }
+
+.settings-danger-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.settings-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--crit-text);
+  margin: 0;
+}
+
+.settings-card-danger {
+  border-color: var(--crit-text);
+}
+
+.settings-card-danger .settings-card-title {
+  color: var(--crit-text);
+}

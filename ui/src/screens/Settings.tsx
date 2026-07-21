@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { getSettings, putSettings } from '../api';
-import type { SettingsInfo } from '../types';
+import { getSettings, getWorkspace, putSettings } from '../api';
+import { WorkspaceResetDialog } from '../components/WorkspaceResetDialog';
+import type { SettingsInfo, WorkspaceResetMode } from '../types';
 
 type ProviderKey = 'openai' | 'anthropic';
 
@@ -8,6 +9,11 @@ const PROVIDER_LABELS: Record<ProviderKey, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
 };
+
+/** Basename of a workspace root, tolerant of both POSIX and Windows separators. */
+function folderNameOf(root: string): string {
+  return root.split(/[\\/]/).filter(Boolean).pop() ?? root;
+}
 
 /**
  * /settings — API keys and default provider. Keys are write-only: the server
@@ -19,6 +25,9 @@ export function Settings() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [defaultSaving, setDefaultSaving] = useState(false);
   const [defaultError, setDefaultError] = useState<string | null>(null);
+  const [folderName, setFolderName] = useState<string | null>(null);
+  const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
+  const [resetMode, setResetMode] = useState<WorkspaceResetMode | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -33,6 +42,24 @@ export function Settings() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    getWorkspace()
+      .then((ws) => {
+        if (!cancelled) setFolderName(folderNameOf(ws.root));
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          setWorkspaceLoadError(e instanceof Error ? e.message : 'Failed to load workspace info');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const dangerDisabled = folderName == null;
 
   const setDefaultProvider = (value: ProviderKey) => {
     setDefaultSaving(true);
@@ -103,8 +130,66 @@ export function Settings() {
               </section>
             </>
           )}
+          <section className="settings-danger-zone">
+            <h2 className="settings-section-title">Danger zone</h2>
+            <div className="settings-card settings-card-danger">
+              <h3 className="settings-card-title">Clear progress</h3>
+              <p className="settings-hint">
+                Archives every attempt, test run, review, and dispute, and returns each question
+                to a fresh, unattempted state. Solution and test files on disk are left exactly as
+                they are — nothing is deleted, the archive keeps a full copy.
+              </p>
+              <div className="settings-row">
+                <button
+                  className="btn btn-danger"
+                  disabled={dangerDisabled}
+                  onClick={() => setResetMode('progress')}
+                >
+                  Clear progress…
+                </button>
+                {dangerDisabled && (
+                  <span className="cell-dim">
+                    {workspaceLoadError != null
+                      ? 'workspace info unavailable'
+                      : 'loading workspace info…'}
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="settings-card settings-card-danger">
+              <h3 className="settings-card-title">Reset workspace</h3>
+              <p className="settings-hint">
+                Does everything Clear progress does, and also resets solution files on disk to
+                their original scaffold. Applied dispute fixes to test files are kept as the new
+                baseline for the next attempt.
+              </p>
+              <div className="settings-row">
+                <button
+                  className="btn btn-danger"
+                  disabled={dangerDisabled}
+                  onClick={() => setResetMode('full')}
+                >
+                  Reset workspace…
+                </button>
+                {dangerDisabled && (
+                  <span className="cell-dim">
+                    {workspaceLoadError != null
+                      ? 'workspace info unavailable'
+                      : 'loading workspace info…'}
+                  </span>
+                )}
+              </div>
+            </div>
+          </section>
         </div>
       </div>
+      {resetMode != null && folderName != null && (
+        <WorkspaceResetDialog
+          mode={resetMode}
+          folderName={folderName}
+          onClose={() => setResetMode(null)}
+        />
+      )}
     </div>
   );
 }
