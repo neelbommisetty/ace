@@ -4,6 +4,7 @@ import { getToken, setUnauthorizedHandler } from './api';
 import { consumeSuppressForReset, isSuppressArmed } from './lib/resetSuppress';
 import { History } from './screens/History';
 import { Library } from './screens/Library';
+import { NewQuestion } from './screens/NewQuestion';
 import { NotFound } from './screens/NotFound';
 import { Room } from './screens/Room';
 import { Settings } from './screens/Settings';
@@ -71,6 +72,7 @@ export function App() {
         <div className="app-main">
           <Routes>
             <Route path="/" element={<Library />} />
+            <Route path="/new" element={<NewQuestion />} />
             <Route path="/q/:category/:slug" element={<Room />} />
             <Route path="/history" element={<History />} />
             <Route path="/settings" element={<Settings />} />

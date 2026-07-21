@@ -2184,6 +2184,36 @@ code {
   color: var(--crit-text);
 }
 
+/* ---- new question ---------------------------------------------------------- */
+
+.new-question-wrap {
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tab-row {
+  display: flex;
+  gap: 8px;
+}
+
+.new-question-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 /* ---- generation job strip / toast ----------------------------------------- */
 
 .job-strip {
