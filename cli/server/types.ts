@@ -134,6 +134,49 @@ export interface SnapshotRow {
   trigger: SnapshotTrigger;
 }
 
+export type GenerationJobStatus = 'running' | 'llm_done' | 'done' | 'error';
+
+export interface GenerationJobRow {
+  id: string;
+  status: GenerationJobStatus;
+  category: string;
+  difficulty: Difficulty;
+  topic: string;
+  brainstormSessionId: string | null;
+  title: string | null;
+  slug: string | null;
+  result: Record<string, unknown> | null; // parsed LLM object, persisted BEFORE any scaffolding
+  rawText: string | null; // salvage when parsing failed
+  errorMessage: string | null;
+  questionId: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+export type BrainstormSessionStatus = 'idle' | 'thinking' | 'error';
+
+export interface BrainstormTurn {
+  role: 'user' | 'assistant';
+  content: string;
+  ideas?: Array<{
+    title: string;
+    category: string;
+    difficulty: Difficulty;
+    pitch: string;
+    topic: string; // ready-to-feed generation description
+  }>;
+}
+
+export interface BrainstormSessionRow {
+  id: string;
+  status: BrainstormSessionStatus;
+  title: string; // first user message, truncated
+  messages: BrainstormTurn[]; // parsed from messages_json
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ProviderSettings {
   configured: boolean;
   masked: string | null; // '...abcd'
@@ -371,6 +414,83 @@ export interface AceDb {
   getLatestSnapshot(questionId: string, relPath: string, trigger?: SnapshotTrigger): SnapshotRow | null;
   /** Oldest snapshot for a path (optionally by trigger) — the pristine scaffold baseline. */
   getFirstSnapshot(questionId: string, relPath: string, trigger?: SnapshotTrigger): SnapshotRow | null;
+
+  createGenerationJob(j: {
+    category: string;
+    difficulty: Difficulty;
+    topic: string;
+    brainstormSessionId?: string | null;
+  }): GenerationJobRow;
+  /**
+   * Throws when the existing row's status is already 'done' (terminal rows
+   * are immutable). Stamps `finishedAt` when the patch's resulting status is
+   * 'done' or 'error'; leaves it null for any other status.
+   */
+  patchGenerationJob(
+    id: string,
+    patch: {
+      status?: GenerationJobStatus;
+      title?: string | null;
+      slug?: string | null;
+      result?: Record<string, unknown> | null;
+      rawText?: string | null;
+      errorMessage?: string | null;
+      questionId?: string | null;
+    },
+  ): GenerationJobRow;
+  getGenerationJob(id: string): GenerationJobRow | null;
+  /** Newest first. */
+  listGenerationJobs(limit?: number): GenerationJobRow[];
+  /**
+   * Narrow provenance-correction escape hatch: a plain `UPDATE questions SET
+   * source = ?`, used only by the generation engine to re-assert 'generated'
+   * over a 'manual' row the reconciler may have inserted first during a crash
+   * window. Does not touch `upsertQuestion`'s insert-only source semantics.
+   */
+  setQuestionSource(id: string, source: QuestionSource): void;
+
+  /**
+   * Creates a brainstorm session seeded with the first user message: status
+   * starts 'thinking' (a reply is about to be generated for it), `title` is
+   * `firstMessage` truncated, and `messages` is a single user turn.
+   */
+  createBrainstormSession(firstMessage: string): BrainstormSessionRow;
+  getBrainstormSession(id: string): BrainstormSessionRow | null;
+  /** Newest first (by `updatedAt`). */
+  listBrainstormSessions(limit?: number): BrainstormSessionRow[];
+  /**
+   * Transactional read-modify-write: appends `turn` to `messages` and sets
+   * `status` + bumps `updatedAt`, all inside one transaction, so a mid-write
+   * failure (e.g. a constraint violation) leaves `messages` byte-for-byte
+   * unchanged rather than partially applied. Throws on an unknown id.
+   */
+  appendBrainstormTurn(
+    id: string,
+    turn: BrainstormTurn,
+    status: BrainstormSessionStatus,
+  ): BrainstormSessionRow;
+  /**
+   * Sets `status` (and `errorMessage`, cleared to null when omitted) without
+   * touching `messages` — for transitions that have no turn to persist (e.g.
+   * a hard LLM failure with nothing salvageable). Throws on an unknown id.
+   */
+  setBrainstormStatus(
+    id: string,
+    status: BrainstormSessionStatus,
+    errorMessage?: string | null,
+  ): BrainstormSessionRow;
+
+  /**
+   * Run once at session build, before anything else touches these tables.
+   * Flips every non-terminal in-flight row left behind by an unclean
+   * shutdown: 'running' generation jobs -> 'error' ("interrupted by a server
+   * restart — retry"); 'llm_done' generation jobs -> 'error' ("interrupted by
+   * a server restart — retry (no new LLM call)"), preserving `result`/`title`/
+   * `slug`/`rawText` so retry is scaffold-only with no re-spend; 'thinking'
+   * brainstorm sessions -> 'error' ("interrupted by a server restart").
+   * Terminal job rows ('done', 'error') and 'idle' sessions are untouched.
+   */
+  sweepInterruptedGenerationState(): void;
 
   /**
    * Search reviews + disputes, newest first. `q` uses FTS5 over review bodies

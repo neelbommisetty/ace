@@ -187,6 +187,49 @@ export interface DisputeRow {
   appliedAt: string | null;
 }
 
+export type GenerationJobStatus = 'running' | 'llm_done' | 'done' | 'error';
+
+export interface GenerationJobRow {
+  id: string;
+  status: GenerationJobStatus;
+  category: string;
+  difficulty: Difficulty;
+  topic: string;
+  brainstormSessionId: string | null;
+  title: string | null;
+  slug: string | null;
+  result: Record<string, unknown> | null; // parsed LLM object, persisted BEFORE any scaffolding
+  rawText: string | null; // salvage when parsing failed
+  errorMessage: string | null;
+  questionId: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+export type BrainstormSessionStatus = 'idle' | 'thinking' | 'error';
+
+export interface BrainstormTurn {
+  role: 'user' | 'assistant';
+  content: string;
+  ideas?: Array<{
+    title: string;
+    category: string;
+    difficulty: Difficulty;
+    pitch: string;
+    topic: string; // ready-to-feed generation description
+  }>;
+}
+
+export interface BrainstormSessionRow {
+  id: string;
+  status: BrainstormSessionStatus;
+  title: string; // first user message, truncated
+  messages: BrainstormTurn[]; // parsed from messages_json
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ProviderSettings {
   configured: boolean;
   masked: string | null;

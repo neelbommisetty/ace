@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { DatabaseSync } from 'node:sqlite';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AceDb, QuestionRow, TestCaseResult } from './types.js';
 import { openDb } from './db.js';
 import { nowIso, uuidv7 } from './ids.js';
+import { MIGRATIONS } from './migrations.js';
 
 let tempRoot = '';
 let db: AceDb;
@@ -53,7 +55,7 @@ describe('openDb', () => {
   it('creates .ace and .ace/tmp and tracks schema_version', () => {
     expect(fs.existsSync(path.join(tempRoot, '.ace', 'ace.db'))).toBe(true);
     expect(fs.statSync(path.join(tempRoot, '.ace', 'tmp')).isDirectory()).toBe(true);
-    expect(db.getMeta('schema_version')).toBe('2');
+    expect(db.getMeta('schema_version')).toBe('3');
   });
 
   it('reopens an existing db without re-running migrations', () => {
@@ -62,9 +64,93 @@ describe('openDb', () => {
     db.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('2');
+    expect(db.getMeta('schema_version')).toBe('3');
     expect(db.getMeta('custom')).toBe('kept');
     expect(db.getQuestionById(q.id)?.slug).toBe('debounce');
+  });
+});
+
+describe('migration 3 (generation jobs + brainstorm sessions)', () => {
+  it('lands schema_version=3 and creates the new tables + indexes', () => {
+    expect(db.getMeta('schema_version')).toBe('3');
+
+    const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
+    try {
+      const tables = (
+        raw
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name IN ('generation_jobs', 'brainstorm_sessions')
+             ORDER BY name`,
+          )
+          .all() as Array<{ name: string }>
+      ).map((r) => r.name);
+      expect(tables).toEqual(['brainstorm_sessions', 'generation_jobs']);
+
+      const indexes = (
+        raw
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'index'
+               AND name IN ('idx_generation_jobs_created_at', 'idx_brainstorm_sessions_updated_at')
+             ORDER BY name`,
+          )
+          .all() as Array<{ name: string }>
+      ).map((r) => r.name);
+      expect(indexes).toEqual(['idx_brainstorm_sessions_updated_at', 'idx_generation_jobs_created_at']);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('migrates a db pre-seeded at schema_version 2 cleanly to 3, preserving existing data', () => {
+    // Rebuild the db file from scratch with only the first two migrations
+    // applied (mirrors main's schema before M3 landed).
+    db.close();
+    const dbPath = path.join(tempRoot, '.ace', 'ace.db');
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(`${dbPath}-wal`, { force: true });
+    fs.rmSync(`${dbPath}-shm`, { force: true });
+
+    const seed = new DatabaseSync(dbPath);
+    seed.exec('PRAGMA journal_mode = WAL');
+    for (let i = 0; i < 2; i++) seed.exec(MIGRATIONS[i]);
+    seed.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('schema_version', '2');
+    seed
+      .prepare(
+        `INSERT INTO questions
+          (id, category, slug, title, difficulty, suggested_minutes, dir_path, source, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'seed-q1',
+        'js-ts',
+        'debounce',
+        'Debounce',
+        'medium',
+        30,
+        '/tmp/debounce',
+        'manual',
+        nowIso(),
+      );
+    seed.close();
+
+    db = openDb(tempRoot);
+    expect(db.getMeta('schema_version')).toBe('3');
+    expect(db.getQuestionById('seed-q1')?.slug).toBe('debounce');
+
+    const raw = new DatabaseSync(dbPath);
+    try {
+      const tables = raw
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'table' AND name IN ('generation_jobs', 'brainstorm_sessions')`,
+        )
+        .all();
+      expect(tables).toHaveLength(2);
+    } finally {
+      raw.close();
+    }
   });
 });
 
@@ -578,5 +664,374 @@ describe('snapshots', () => {
     expect(db.getLatestSnapshot(q.id, rel)?.hash).toBe('2'.repeat(40));
     expect(db.getLatestSnapshot(q.id, 'questions/js-ts/debounce/nope.ts')).toBeNull();
     expect(db.getLatestSnapshot('nope', rel)).toBeNull();
+  });
+});
+
+describe('generation jobs', () => {
+  it('round-trips a generation job', () => {
+    const job = db.createGenerationJob({
+      category: 'js-ts',
+      difficulty: 'hard',
+      topic: 'a debounce utility with cancel support',
+      brainstormSessionId: 'bs-1',
+    });
+
+    expect(job.status).toBe('running');
+    expect(job.category).toBe('js-ts');
+    expect(job.difficulty).toBe('hard');
+    expect(job.topic).toBe('a debounce utility with cancel support');
+    expect(job.brainstormSessionId).toBe('bs-1');
+    expect(job.title).toBeNull();
+    expect(job.slug).toBeNull();
+    expect(job.result).toBeNull();
+    expect(job.rawText).toBeNull();
+    expect(job.errorMessage).toBeNull();
+    expect(job.questionId).toBeNull();
+    expect(job.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(job.finishedAt).toBeNull();
+
+    expect(db.getGenerationJob(job.id)).toEqual(job);
+    expect(db.getGenerationJob('nope')).toBeNull();
+  });
+
+  it('createGenerationJob defaults brainstormSessionId to null when omitted', () => {
+    const job = db.createGenerationJob({ category: 'js-ts', difficulty: 'easy', topic: 'foo' });
+    expect(job.brainstormSessionId).toBeNull();
+  });
+
+  it('patches through running -> llm_done -> done, stamping finished_at only at done', () => {
+    const job = db.createGenerationJob({ category: 'js-ts', difficulty: 'medium', topic: 'x' });
+
+    const llmDone = db.patchGenerationJob(job.id, {
+      status: 'llm_done',
+      title: 'Debounce Utility',
+      slug: 'debounce-utility',
+      result: { slug: 'debounce-utility', title: 'Debounce Utility' },
+    });
+    expect(llmDone.status).toBe('llm_done');
+    expect(llmDone.title).toBe('Debounce Utility');
+    expect(llmDone.slug).toBe('debounce-utility');
+    expect(llmDone.result).toEqual({ slug: 'debounce-utility', title: 'Debounce Utility' });
+    expect(llmDone.finishedAt).toBeNull();
+
+    const q = makeQuestion({ slug: 'debounce-utility' });
+    const done = db.patchGenerationJob(job.id, { status: 'done', questionId: q.id });
+    expect(done.status).toBe('done');
+    expect(done.questionId).toBe(q.id);
+    // fields not touched by this patch are preserved from the prior patch
+    expect(done.title).toBe('Debounce Utility');
+    expect(done.slug).toBe('debounce-utility');
+    expect(done.result).toEqual({ slug: 'debounce-utility', title: 'Debounce Utility' });
+    expect(done.finishedAt).not.toBeNull();
+    expect(done.finishedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('stamps finished_at on a transition straight to error and preserves rawText salvage', () => {
+    const job = db.createGenerationJob({ category: 'js-ts', difficulty: 'medium', topic: 'x' });
+    const errored = db.patchGenerationJob(job.id, {
+      status: 'error',
+      errorMessage: 'LLM call timed out',
+      rawText: 'not quite json',
+    });
+    expect(errored.status).toBe('error');
+    expect(errored.errorMessage).toBe('LLM call timed out');
+    expect(errored.rawText).toBe('not quite json');
+    expect(errored.finishedAt).not.toBeNull();
+  });
+
+  it('throws when patching an already-done job', () => {
+    const job = db.createGenerationJob({ category: 'js-ts', difficulty: 'medium', topic: 'x' });
+    db.patchGenerationJob(job.id, { status: 'done' });
+    expect(() => db.patchGenerationJob(job.id, { title: 'too late' })).toThrow(
+      /done and cannot be patched/,
+    );
+  });
+
+  it('throws when patching an unknown job', () => {
+    expect(() => db.patchGenerationJob('nope', { status: 'error' })).toThrow(
+      /unknown generation job/,
+    );
+  });
+
+  it('lists jobs newest first and truncates to the limit', () => {
+    const j1 = db.createGenerationJob({ category: 'js-ts', difficulty: 'easy', topic: 'one' });
+    const j2 = db.createGenerationJob({ category: 'js-ts', difficulty: 'easy', topic: 'two' });
+    const j3 = db.createGenerationJob({ category: 'js-ts', difficulty: 'easy', topic: 'three' });
+
+    expect(db.listGenerationJobs().map((j) => j.id)).toEqual([j3.id, j2.id, j1.id]);
+    expect(db.listGenerationJobs(2).map((j) => j.id)).toEqual([j3.id, j2.id]);
+    expect(db.listGenerationJobs(1).map((j) => j.id)).toEqual([j3.id]);
+  });
+
+  it('setQuestionSource flips provenance and a later upsertQuestion rescan does not revert it', () => {
+    const q = makeQuestion({ slug: 'generated-one' });
+    expect(q.source).toBe('manual');
+
+    db.setQuestionSource(q.id, 'generated');
+    expect(db.getQuestionById(q.id)?.source).toBe('generated');
+
+    // insert-only source semantics: a later rescan upsert must not revert it
+    const rescanned = db.upsertQuestion({
+      category: q.category,
+      slug: q.slug,
+      title: 'Debounce (renamed)',
+      difficulty: 'hard',
+      suggestedMinutes: 45,
+      dirPath: q.dirPath,
+      source: 'manual',
+    });
+    expect(rescanned.source).toBe('generated');
+    expect(rescanned.title).toBe('Debounce (renamed)');
+
+    expect(db.getQuestionById(q.id)?.source).toBe('generated');
+  });
+});
+
+describe('brainstorm sessions', () => {
+  it('creates a session seeded with the first user turn, thinking, title truncated', () => {
+    const session = db.createBrainstormSession('an idea about debounced React hooks 🎯');
+
+    expect(session.status).toBe('thinking');
+    expect(session.title).toBe('an idea about debounced React hooks 🎯');
+    expect(session.messages).toEqual([
+      { role: 'user', content: 'an idea about debounced React hooks 🎯' },
+    ]);
+    expect(session.errorMessage).toBeNull();
+    expect(session.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(session.updatedAt).toBe(session.createdAt);
+
+    expect(db.getBrainstormSession(session.id)).toEqual(session);
+    expect(db.getBrainstormSession('nope')).toBeNull();
+  });
+
+  it('truncates a long first message for the title but keeps full content in messages', () => {
+    const long = 'x'.repeat(200);
+    const session = db.createBrainstormSession(long);
+
+    expect(session.title.length).toBe(80);
+    expect(session.title.endsWith('…')).toBe(true);
+    expect(session.messages[0].content).toBe(long);
+  });
+
+  it('round-trips multi-turn conversations verbatim, including unicode and code fences', () => {
+    const session = db.createBrainstormSession('give me an array question idea 😀');
+
+    const codeFence = [
+      '```ts',
+      'function debounce<T extends (...args: unknown[]) => void>(fn: T, ms: number) {',
+      "  // handles 'quotes', \"double quotes\", and emoji 🚀",
+      '  let t: ReturnType<typeof setTimeout> | undefined;',
+      '  return (...args: Parameters<T>) => {',
+      '    clearTimeout(t);',
+      '    t = setTimeout(() => fn(...args), ms);',
+      '  };',
+      '}',
+      '```',
+    ].join('\n');
+
+    const withIdeas = db.appendBrainstormTurn(
+      session.id,
+      {
+        role: 'assistant',
+        content: `Here are a few ideas:\n\n${codeFence}`,
+        ideas: [
+          {
+            title: 'Debounce with cancel — 取消可能なデバウンス',
+            category: 'js-ts',
+            difficulty: 'medium',
+            pitch: 'A classic closures + timers exercise.',
+            topic: 'implement a debounce utility with a cancel() method',
+          },
+        ],
+      },
+      'idle',
+    );
+
+    expect(withIdeas.status).toBe('idle');
+    expect(withIdeas.messages).toHaveLength(2);
+    expect(withIdeas.messages[1].content).toBe(`Here are a few ideas:\n\n${codeFence}`);
+    expect(withIdeas.messages[1].ideas).toEqual([
+      {
+        title: 'Debounce with cancel — 取消可能なデバウンス',
+        category: 'js-ts',
+        difficulty: 'medium',
+        pitch: 'A classic closures + timers exercise.',
+        topic: 'implement a debounce utility with a cancel() method',
+      },
+    ]);
+    expect(withIdeas.updatedAt >= session.createdAt).toBe(true);
+
+    const withFollowup = db.appendBrainstormTurn(
+      session.id,
+      { role: 'user', content: 'give me another one, more advanced' },
+      'thinking',
+    );
+    expect(withFollowup.status).toBe('thinking');
+    expect(withFollowup.messages).toHaveLength(3);
+    // earlier turns preserved exactly
+    expect(withFollowup.messages[0]).toEqual({
+      role: 'user',
+      content: 'give me an array question idea 😀',
+    });
+    expect(withFollowup.messages[1]).toEqual(withIdeas.messages[1]);
+
+    expect(db.getBrainstormSession(session.id)).toEqual(withFollowup);
+  });
+
+  it('throws appending a turn to an unknown session', () => {
+    expect(() =>
+      db.appendBrainstormTurn('nope', { role: 'assistant', content: 'hi' }, 'idle'),
+    ).toThrow(/unknown brainstorm session/);
+  });
+
+  it('leaves messages_json byte-for-byte unchanged when the append transaction fails mid-write', () => {
+    const session = db.createBrainstormSession('a starting idea');
+    const before = db.getBrainstormSession(session.id)!;
+
+    const raw = (db as unknown as { db: DatabaseSync }).db;
+    const originalPrepare = raw.prepare.bind(raw);
+    raw.prepare = ((sql: string) => {
+      if (sql.includes('UPDATE brainstorm_sessions')) {
+        throw new Error('boom - simulated mid-transaction failure');
+      }
+      return originalPrepare(sql);
+    }) as typeof raw.prepare;
+
+    try {
+      expect(() =>
+        db.appendBrainstormTurn(session.id, { role: 'assistant', content: 'reply' }, 'idle'),
+      ).toThrow('boom - simulated mid-transaction failure');
+    } finally {
+      raw.prepare = originalPrepare;
+    }
+
+    const after = db.getBrainstormSession(session.id);
+    expect(after).toEqual(before);
+    expect(after?.messages).toEqual(before.messages);
+    expect(after?.status).toBe('thinking');
+    expect(after?.updatedAt).toBe(before.updatedAt);
+  });
+
+  it('setBrainstormStatus flips status/errorMessage without touching messages', () => {
+    const session = db.createBrainstormSession('idea time');
+
+    const errored = db.setBrainstormStatus(session.id, 'error', 'LLM call failed');
+    expect(errored.status).toBe('error');
+    expect(errored.errorMessage).toBe('LLM call failed');
+    expect(errored.messages).toEqual(session.messages);
+
+    // omitted errorMessage clears any stale error on the next transition
+    const recovered = db.setBrainstormStatus(session.id, 'thinking');
+    expect(recovered.status).toBe('thinking');
+    expect(recovered.errorMessage).toBeNull();
+    expect(recovered.messages).toEqual(session.messages);
+  });
+
+  it('throws setting status on an unknown session', () => {
+    expect(() => db.setBrainstormStatus('nope', 'error', 'x')).toThrow(
+      /unknown brainstorm session/,
+    );
+  });
+
+  it('lists sessions newest-first by updatedAt and truncates to the limit', () => {
+    // node:sqlite's default text timestamp resolution is 1ms; fake timers
+    // force distinct updated_at values so ordering reflects updatedAt (not
+    // just insertion/id order) deterministically.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      const s1 = db.createBrainstormSession('first');
+      vi.setSystemTime(new Date('2026-01-01T00:00:01.000Z'));
+      const s2 = db.createBrainstormSession('second');
+      vi.setSystemTime(new Date('2026-01-01T00:00:02.000Z'));
+      const s3 = db.createBrainstormSession('third');
+
+      // bump s1's updated_at above s2/s3 via an append
+      vi.setSystemTime(new Date('2026-01-01T00:00:03.000Z'));
+      db.appendBrainstormTurn(s1.id, { role: 'assistant', content: 'reply' }, 'idle');
+
+      const listed = db.listBrainstormSessions();
+      expect(listed.map((s) => s.id)).toEqual([s1.id, s3.id, s2.id]);
+      expect(db.listBrainstormSessions(2).map((s) => s.id)).toEqual([s1.id, s3.id]);
+      expect(db.listBrainstormSessions(1).map((s) => s.id)).toEqual([s1.id]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('sweepInterruptedGenerationState', () => {
+  it('flips only non-terminal generation_jobs/brainstorm_sessions rows, preserving llm_done payload', () => {
+    const running = db.createGenerationJob({ category: 'js-ts', difficulty: 'easy', topic: 'a' });
+
+    const llmDoneSeed = db.createGenerationJob({
+      category: 'js-ts',
+      difficulty: 'hard',
+      topic: 'b',
+    });
+    const llmDone = db.patchGenerationJob(llmDoneSeed.id, {
+      status: 'llm_done',
+      title: 'Some Title',
+      slug: 'some-slug',
+      result: { slug: 'some-slug', title: 'Some Title', testCode: 'x'.repeat(500) },
+    });
+
+    const doneSeed = db.createGenerationJob({ category: 'js-ts', difficulty: 'easy', topic: 'c' });
+    const q = makeQuestion({ slug: 'sweep-done' });
+    const done = db.patchGenerationJob(doneSeed.id, { status: 'done', questionId: q.id });
+
+    const erroredSeed = db.createGenerationJob({
+      category: 'js-ts',
+      difficulty: 'easy',
+      topic: 'd',
+    });
+    const errored = db.patchGenerationJob(erroredSeed.id, {
+      status: 'error',
+      errorMessage: 'already errored',
+    });
+
+    const idleSession = db.createBrainstormSession('idle to start');
+    db.setBrainstormStatus(idleSession.id, 'idle');
+
+    const thinkingSession = db.createBrainstormSession('mid-generation when it crashed');
+
+    const erroredSession = db.createBrainstormSession('already errored session');
+    db.setBrainstormStatus(erroredSession.id, 'error', 'pre-existing error');
+
+    db.sweepInterruptedGenerationState();
+
+    const sweptRunning = db.getGenerationJob(running.id)!;
+    expect(sweptRunning.status).toBe('error');
+    expect(sweptRunning.errorMessage).toBe('interrupted by a server restart — retry');
+    expect(sweptRunning.finishedAt).not.toBeNull();
+
+    const sweptLlmDone = db.getGenerationJob(llmDone.id)!;
+    expect(sweptLlmDone.status).toBe('error');
+    expect(sweptLlmDone.errorMessage).toBe(
+      'interrupted by a server restart — retry (no new LLM call)',
+    );
+    expect(sweptLlmDone.finishedAt).not.toBeNull();
+    // llm_done payload survives so retry can be scaffold-only, no re-spend
+    expect(sweptLlmDone.title).toBe('Some Title');
+    expect(sweptLlmDone.slug).toBe('some-slug');
+    expect(sweptLlmDone.result).toEqual(llmDone.result);
+
+    // terminal rows untouched
+    expect(db.getGenerationJob(done.id)).toEqual(done);
+    expect(db.getGenerationJob(errored.id)).toEqual(errored);
+
+    const sweptThinking = db.getBrainstormSession(thinkingSession.id)!;
+    expect(sweptThinking.status).toBe('error');
+    expect(sweptThinking.errorMessage).toBe('interrupted by a server restart');
+    expect(sweptThinking.messages).toEqual(thinkingSession.messages);
+
+    // idle / already-error sessions untouched
+    const idleAfter = db.getBrainstormSession(idleSession.id)!;
+    expect(idleAfter.status).toBe('idle');
+    expect(idleAfter.errorMessage).toBeNull();
+
+    const erroredSessionAfter = db.getBrainstormSession(erroredSession.id)!;
+    expect(erroredSessionAfter.status).toBe('error');
+    expect(erroredSessionAfter.errorMessage).toBe('pre-existing error');
   });
 });
