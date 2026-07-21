@@ -14,6 +14,8 @@ import type {
   TestRunRow,
   TestRunTrigger,
   WorkspaceInfo,
+  WorkspaceResetMode,
+  WorkspaceResetResult,
 } from './types';
 
 // Token bootstrap (module init): ?t= → sessionStorage → strip from the URL.
@@ -272,4 +274,14 @@ export function putSettings(body: {
   defaultProvider?: 'openai' | 'anthropic';
 }): Promise<SettingsInfo> {
   return request('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
+}
+
+export function resetWorkspace(
+  mode: WorkspaceResetMode,
+  confirm: string,
+): Promise<WorkspaceResetResult> {
+  return request('/api/workspace/reset', {
+    method: 'POST',
+    body: JSON.stringify({ mode, confirm }),
+  });
 }

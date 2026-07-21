@@ -261,6 +261,17 @@ code {
   filter: brightness(1.06);
 }
 
+.btn-danger {
+  background: var(--crit-text);
+  color: #1a0a0a;
+  border-color: var(--crit-text);
+  font-weight: 600;
+}
+
+.btn-danger:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
 .btn-small {
   padding: 3px 10px;
   font-size: 12px;
@@ -672,6 +683,16 @@ code {
   margin: 0;
   padding-left: 18px;
   color: var(--dim);
+}
+
+.reset-consequences {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--dim);
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 /* ---- room ---------------------------------------------------------------- */
