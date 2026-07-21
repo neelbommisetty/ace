@@ -15,42 +15,74 @@ export interface LLMMessage {
 const mockLlm =
   process.env.ACE_E2E_MOCK_LLM === '1' || process.env.ACE_E2E_MOCK_LLM === 'true';
 
+// Mock payloads for keyless testing, keyed by the shape of structured-output
+// call each one impersonates. `getMockResponse()` is used by both `chatStream`
+// (env-var-selected, unstructured text) and `chatObject`'s explicit-mode
+// override path; `chatObject`'s no-mode-var path instead dispatches on the
+// caller's zod schema (see MOCK_OBJECT_CANDIDATES below) so one keyless
+// server process can serve multiple structured-output shapes.
+function getGenerateMockPayload() {
+  return {
+    title: 'Two Sum',
+    slug: 'two-sum',
+    description: 'Return indices of the two numbers such that they add up to target.',
+    signature: 'export function twoSum(nums: number[], target: number): number[]',
+  };
+}
+
+function getDisputeMockPayload() {
+  return {
+    verdict: 'test_incorrect',
+    summary: 'The expected output for one case does not match the problem statement.',
+    details: 'The failing assertion expects an index order that is not required by the spec.',
+    failingTests: [
+      {
+        testName: 'handles duplicate values',
+        verdict: 'test_incorrect',
+        explanation: 'Either index order is acceptable, but the test fixes one order.',
+        fixedAssertion: 'expect(result.sort()).toEqual([0, 1])',
+      },
+    ],
+    fixedTestCode:
+      "import { describe, it, expect } from 'vitest';\n\ndescribe('two sum', () => {\n  it('handles duplicate values', () => {\n    const result = [1, 0];\n    expect(result.sort()).toEqual([0, 1]);\n  });\n});\n",
+  };
+}
+
+function getBrainstormMockPayload() {
+  return {
+    reply: 'Here are a few ideas to get you started — let me know if you want variations.',
+    ideas: [
+      {
+        title: 'Debounced Search Box',
+        category: 'react-apps',
+        difficulty: 'medium',
+        pitch: 'Build a search input that debounces API calls and cancels stale requests.',
+        topic: 'Implement a React search box component with debounced, cancelable API calls.',
+      },
+      {
+        title: 'LRU Cache',
+        category: 'leetcode-ds',
+        difficulty: 'medium',
+        pitch: 'Classic data structure question combining a hash map and a doubly linked list.',
+        topic: 'Design and implement an LRU cache with O(1) get/put.',
+      },
+    ],
+  };
+}
+
 function getMockResponse(): string {
   const mode = process.env.ACE_MOCK_LLM_MODE || '';
 
   if (mode === 'generate') {
-    return JSON.stringify(
-      {
-        title: 'Two Sum',
-        slug: 'two-sum',
-        description: 'Return indices of the two numbers such that they add up to target.',
-        signature: 'export function twoSum(nums: number[], target: number): number[]',
-      },
-      null,
-      2,
-    );
+    return JSON.stringify(getGenerateMockPayload(), null, 2);
   }
 
   if (mode === 'dispute') {
-    return JSON.stringify(
-      {
-        verdict: 'test_incorrect',
-        summary: 'The expected output for one case does not match the problem statement.',
-        details: 'The failing assertion expects an index order that is not required by the spec.',
-        failingTests: [
-          {
-            testName: 'handles duplicate values',
-            verdict: 'test_incorrect',
-            explanation: 'Either index order is acceptable, but the test fixes one order.',
-            fixedAssertion: 'expect(result.sort()).toEqual([0, 1])',
-          },
-        ],
-        fixedTestCode:
-          "import { describe, it, expect } from 'vitest';\n\ndescribe('two sum', () => {\n  it('handles duplicate values', () => {\n    const result = [1, 0];\n    expect(result.sort()).toEqual([0, 1]);\n  });\n});\n",
-      },
-      null,
-      2,
-    );
+    return JSON.stringify(getDisputeMockPayload(), null, 2);
+  }
+
+  if (mode === 'brainstorm') {
+    return JSON.stringify(getBrainstormMockPayload(), null, 2);
   }
 
   if (mode === 'feedback') {
@@ -59,6 +91,14 @@ function getMockResponse(): string {
 
   return 'OK';
 }
+
+// Tried in order, against the caller's schema, when chatObject runs in mock
+// mode with no explicit ACE_MOCK_LLM_MODE override — first validated wins.
+const MOCK_OBJECT_CANDIDATES: Array<() => unknown> = [
+  getGenerateMockPayload,
+  getDisputeMockPayload,
+  getBrainstormMockPayload,
+];
 
 // Load config once at module level
 let cachedConfig: AceConfig | null = null;
@@ -191,7 +231,20 @@ export async function chatObject<T>(
   opts?: { abortSignal?: AbortSignal },
 ): Promise<T> {
   if (mockLlm) {
-    return schema.parse(JSON.parse(getMockResponse()));
+    if (process.env.ACE_MOCK_LLM_MODE) {
+      // Explicit override: honored first, exactly as before.
+      return schema.parse(JSON.parse(getMockResponse()));
+    }
+    // No mode var: dispatch on the schema itself, so a single keyless
+    // process can serve differently-shaped structured-output calls (e.g.
+    // brainstorm turns and question generation) without per-call config.
+    for (const candidate of MOCK_OBJECT_CANDIDATES) {
+      const result = schema.safeParse(candidate());
+      if (result.success) return result.data;
+    }
+    // No candidate matched this schema — fall through to today's
+    // parse-failure behavior.
+    return schema.parse('OK');
   }
 
   const result = await generateObject({
