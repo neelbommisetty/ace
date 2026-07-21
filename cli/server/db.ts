@@ -194,9 +194,11 @@ const BRAINSTORM_TITLE_MAX = 80;
 /** Collapses whitespace and truncates to `BRAINSTORM_TITLE_MAX` chars with an ellipsis. */
 function truncateBrainstormTitle(message: string): string {
   const collapsed = message.trim().replace(/\s+/g, ' ');
-  return collapsed.length > BRAINSTORM_TITLE_MAX
-    ? `${collapsed.slice(0, BRAINSTORM_TITLE_MAX - 1).trimEnd()}…`
-    : collapsed;
+  if (collapsed.length <= BRAINSTORM_TITLE_MAX) return collapsed;
+  // Truncate on code points (not UTF-16 code units) so we never split a
+  // surrogate pair, which node:sqlite would otherwise persist as U+FFFD.
+  const codePoints = [...collapsed];
+  return `${codePoints.slice(0, BRAINSTORM_TITLE_MAX - 1).join('').trimEnd()}…`;
 }
 
 /**
