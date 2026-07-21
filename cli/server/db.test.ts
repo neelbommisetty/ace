@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AceDb, QuestionRow, TestCaseResult } from './types.js';
 import { openDb } from './db.js';
 import { nowIso, uuidv7 } from './ids.js';
+import { MIGRATIONS } from './migrations.js';
 
 let tempRoot = '';
 let db: AceDb;
@@ -53,7 +55,7 @@ describe('openDb', () => {
   it('creates .ace and .ace/tmp and tracks schema_version', () => {
     expect(fs.existsSync(path.join(tempRoot, '.ace', 'ace.db'))).toBe(true);
     expect(fs.statSync(path.join(tempRoot, '.ace', 'tmp')).isDirectory()).toBe(true);
-    expect(db.getMeta('schema_version')).toBe('2');
+    expect(db.getMeta('schema_version')).toBe('3');
   });
 
   it('reopens an existing db without re-running migrations', () => {
@@ -62,9 +64,93 @@ describe('openDb', () => {
     db.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('2');
+    expect(db.getMeta('schema_version')).toBe('3');
     expect(db.getMeta('custom')).toBe('kept');
     expect(db.getQuestionById(q.id)?.slug).toBe('debounce');
+  });
+});
+
+describe('migration 3 (generation jobs + brainstorm sessions)', () => {
+  it('lands schema_version=3 and creates the new tables + indexes', () => {
+    expect(db.getMeta('schema_version')).toBe('3');
+
+    const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
+    try {
+      const tables = (
+        raw
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name IN ('generation_jobs', 'brainstorm_sessions')
+             ORDER BY name`,
+          )
+          .all() as Array<{ name: string }>
+      ).map((r) => r.name);
+      expect(tables).toEqual(['brainstorm_sessions', 'generation_jobs']);
+
+      const indexes = (
+        raw
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'index'
+               AND name IN ('idx_generation_jobs_created_at', 'idx_brainstorm_sessions_updated_at')
+             ORDER BY name`,
+          )
+          .all() as Array<{ name: string }>
+      ).map((r) => r.name);
+      expect(indexes).toEqual(['idx_brainstorm_sessions_updated_at', 'idx_generation_jobs_created_at']);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('migrates a db pre-seeded at schema_version 2 cleanly to 3, preserving existing data', () => {
+    // Rebuild the db file from scratch with only the first two migrations
+    // applied (mirrors main's schema before M3 landed).
+    db.close();
+    const dbPath = path.join(tempRoot, '.ace', 'ace.db');
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(`${dbPath}-wal`, { force: true });
+    fs.rmSync(`${dbPath}-shm`, { force: true });
+
+    const seed = new DatabaseSync(dbPath);
+    seed.exec('PRAGMA journal_mode = WAL');
+    for (let i = 0; i < 2; i++) seed.exec(MIGRATIONS[i]);
+    seed.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('schema_version', '2');
+    seed
+      .prepare(
+        `INSERT INTO questions
+          (id, category, slug, title, difficulty, suggested_minutes, dir_path, source, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'seed-q1',
+        'js-ts',
+        'debounce',
+        'Debounce',
+        'medium',
+        30,
+        '/tmp/debounce',
+        'manual',
+        nowIso(),
+      );
+    seed.close();
+
+    db = openDb(tempRoot);
+    expect(db.getMeta('schema_version')).toBe('3');
+    expect(db.getQuestionById('seed-q1')?.slug).toBe('debounce');
+
+    const raw = new DatabaseSync(dbPath);
+    try {
+      const tables = raw
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'table' AND name IN ('generation_jobs', 'brainstorm_sessions')`,
+        )
+        .all();
+      expect(tables).toHaveLength(2);
+    } finally {
+      raw.close();
+    }
   });
 });
 

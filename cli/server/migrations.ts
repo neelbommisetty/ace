@@ -116,4 +116,37 @@ CREATE TABLE snapshots (
 CREATE INDEX idx_disputes_question_id ON disputes (question_id);
 CREATE INDEX idx_snapshots_question_rel_path_at ON snapshots (question_id, rel_path, at);
 `,
+  // Migration 3 (M3 "The Room"): background generation jobs + brainstorm
+  // sessions. Pure CREATE only — no ALTERs to existing tables.
+  `
+CREATE TABLE generation_jobs (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,          -- 'running' | 'llm_done' | 'done' | 'error'
+  category TEXT NOT NULL,
+  difficulty TEXT NOT NULL,
+  topic TEXT NOT NULL,
+  brainstorm_session_id TEXT,
+  title TEXT,
+  slug TEXT,
+  result_json TEXT,
+  raw_text TEXT,
+  error_message TEXT,
+  question_id TEXT REFERENCES questions (id),
+  created_at TEXT NOT NULL,
+  finished_at TEXT
+);
+
+CREATE TABLE brainstorm_sessions (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,          -- 'idle' | 'thinking' | 'error'
+  title TEXT NOT NULL,
+  messages_json TEXT NOT NULL,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_generation_jobs_created_at ON generation_jobs (created_at);
+CREATE INDEX idx_brainstorm_sessions_updated_at ON brainstorm_sessions (updated_at);
+`,
 ];
