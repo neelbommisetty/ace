@@ -203,6 +203,15 @@ export interface ImportResult {
   skipped: number;
 }
 
+export type WorkspaceResetMode = 'progress' | 'full';
+
+export interface WorkspaceResetResult {
+  mode: WorkspaceResetMode;
+  archivedTo: string; // absolute path of the renamed .ace-archive-* dir
+  restored: { questions: number; files: number }; // zeros in 'progress' mode
+  workspace: WorkspaceInfo; // freshly computed post-reset, for the initiating tab
+}
+
 // ---------------------------------------------------------------------------
 // SSE events — sent on GET /api/events. `event:` field is the name below,
 // `data:` is the JSON payload.
@@ -236,6 +245,8 @@ export interface SseEventMap {
   'dispute-started': { disputeJobId: string; questionId: string; testRunId: string };
   'dispute-done': { disputeJobId: string; questionId: string; dispute: DisputeRow };
   'dispute-error': { disputeJobId: string; questionId: string; message: string };
+  /** Emitted once, after the new session is live, at the end of a workspace reset. */
+  'workspace-reset': { mode: WorkspaceResetMode; archivedTo: string };
 }
 
 export type SseEventName = keyof SseEventMap;
