@@ -16,7 +16,8 @@ import {
   writeWorkspaceFile,
 } from './files.js';
 import { getReviewGuardError } from './reviews.js';
-import type { WorkspaceSession } from './session.js';
+import { performWorkspaceReset } from './reset-orchestrator.js';
+import type { EngineFactories, WorkspaceSession } from './session.js';
 import {
   getSettingsInfo,
   resolveProvider,
@@ -36,6 +37,7 @@ import type {
   QuestionRow,
   TestRunTrigger,
   WorkspaceInfo,
+  WorkspaceResetMode,
 } from './types.js';
 
 export interface ImporterApi {
@@ -54,6 +56,12 @@ export interface CreateAppOptions {
   getSession: () => WorkspaceSession;
   /** True while a workspace reset is in flight. Defaults to always false. */
   isResetting?: () => boolean;
+  /** Swaps the live session — called by POST /api/workspace/reset after a successful reset. */
+  swapSession?: (session: WorkspaceSession) => void;
+  /** Flips the resetting flag; read by both the mid-reset 503 gate and this route's own guard. */
+  setResetting?: (resetting: boolean) => void;
+  /** Defaults to the real engine factories; tests inject fakes for the reset route too. */
+  engines?: EngineFactories;
 }
 
 const HOST_RE = /^(127\.0\.0\.1|localhost)(:\d+)?$/;
@@ -96,8 +104,10 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 export function createApp(opts: CreateAppOptions): Hono {
-  const { bus, workspaceRoot, token, uiDir, version, importer, getSession } = opts;
+  const { bus, workspaceRoot, token, uiDir, version, importer, getSession, engines } = opts;
   const isResetting = opts.isResetting ?? (() => false);
+  const swapSession = opts.swapSession ?? (() => {});
+  const setResetting = opts.setResetting ?? (() => {});
   const app = new Hono();
 
   app.onError((err, c) => {
@@ -143,6 +153,48 @@ export function createApp(opts: CreateAppOptions): Hono {
     await next();
   });
 
+  // Tracks requests that passed the gate above and are actively running
+  // handler code against the *current* session (db/engines) — everything
+  // except the long-lived SSE stream (never expected to drain), the health
+  // check, and the reset route's own request (which would otherwise wait on
+  // itself). This is what lets performWorkspaceReset's beforeDbClose hook
+  // wait out a request that was already mid-flight (e.g. suspended in
+  // `await c.req.json()`) when `resetting` flipped to true, instead of that
+  // request resuming against a session whose db/watcher have already been
+  // torn down. See closeWorkspaceSession's `beforeDbClose` doc comment.
+  let inFlightRequests = 0;
+  app.use('/api/*', async (c, next) => {
+    const isHealth = c.req.path === '/api/health';
+    const isSSE = c.req.path === '/api/events';
+    const isResetRoute = c.req.path === '/api/workspace/reset' && c.req.method === 'POST';
+    if (isHealth || isSSE || isResetRoute) {
+      await next();
+      return;
+    }
+    inFlightRequests += 1;
+    try {
+      await next();
+    } finally {
+      inFlightRequests -= 1;
+    }
+  });
+
+  /**
+   * Waits for requests already past the gate above to finish, so
+   * performWorkspaceReset can be sure nothing still holds a reference to the
+   * about-to-be-closed session's db. Polls rather than tracking individual
+   * promises — simplest correct option for what's expected to be 0 or 1
+   * stragglers — and gives up after `timeoutMs` so a wedged handler can never
+   * hang a reset forever (best-effort, matching the rest of this file's
+   * reset-failure recovery posture).
+   */
+  async function waitForRequestDrain(timeoutMs = 5000): Promise<void> {
+    const start = Date.now();
+    while (inFlightRequests > 0 && Date.now() - start < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
   async function readJsonBody(c: {
     req: { json(): Promise<unknown> };
   }): Promise<Record<string, unknown> | null> {
@@ -162,7 +214,8 @@ export function createApp(opts: CreateAppOptions): Hono {
 
   app.get('/api/health', (c) => c.json({ ok: true, version }));
 
-  app.get('/api/workspace', (c) => {
+  /** Shared by GET /api/workspace and the reset route's 200 response. */
+  function computeWorkspaceInfo(): WorkspaceInfo {
     const { db, skippedDirs } = getSession();
     const questions = db.listQuestions();
     let attempts = 0;
@@ -182,7 +235,7 @@ export function createApp(opts: CreateAppOptions): Hono {
       // a broken legacy tree must not take down the workspace endpoint
     }
 
-    const info: WorkspaceInfo = {
+    return {
       root: workspaceRoot,
       questionsDir: getQuestionsDir(workspaceRoot),
       version,
@@ -191,8 +244,9 @@ export function createApp(opts: CreateAppOptions): Hono {
       legacyImport,
       activeAttempt: db.getLatestActiveAttempt(),
     };
-    return c.json(info);
-  });
+  }
+
+  app.get('/api/workspace', (c) => c.json(computeWorkspaceInfo()));
 
   app.get('/api/questions', (c) => c.json(getSession().db.listQuestions()));
 
@@ -369,13 +423,18 @@ export function createApp(opts: CreateAppOptions): Hono {
 
   /** Records a 'save' snapshot when the written content is new for that file. */
   function snapshotOnWrite(relPath: string, content: string, hash: string): void {
-    const { db } = getSession();
-    // relPath shape: questions/<category>/<slug>/<file...>
-    const segments = relPath.split('/');
-    if (segments.length < 4 || segments[0] !== 'questions') return;
-    const question = db.getQuestion(segments[1], segments[2]);
-    if (!question) return;
+    // Everything below — including the initial getSession()/getQuestion()
+    // lookup — is inside the try/catch: snapshot bookkeeping must never fail
+    // the save itself (the file is already safely on disk), and a session
+    // torn down mid-request (e.g. a reset racing this write) throws on the
+    // very first db call just as easily as on a later one.
     try {
+      const { db } = getSession();
+      // relPath shape: questions/<category>/<slug>/<file...>
+      const segments = relPath.split('/');
+      if (segments.length < 4 || segments[0] !== 'questions') return;
+      const question = db.getQuestion(segments[1], segments[2]);
+      if (!question) return;
       const latest = db.getLatestSnapshot(question.id, relPath);
       if (latest && latest.hash === hash) return;
       saveBlob(workspaceRoot, content);
@@ -387,8 +446,6 @@ export function createApp(opts: CreateAppOptions): Hono {
         trigger: 'save',
       });
     } catch (err) {
-      // Snapshot bookkeeping must never fail the save itself — the file is
-      // already safely on disk.
       console.error('[ace] snapshot-on-write failed:', err);
     }
   }
@@ -704,6 +761,81 @@ export function createApp(opts: CreateAppOptions): Hono {
     } catch (err) {
       if (err instanceof SettingsValidationError) return c.json({ error: err.message }, 400);
       throw err;
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Workspace reset (NEE-165 — "clear workspace")
+  // -------------------------------------------------------------------------
+
+  const VALID_RESET_MODES: ReadonlySet<string> = new Set<WorkspaceResetMode>(['progress', 'full']);
+
+  app.post('/api/workspace/reset', async (c) => {
+    const body = await readJsonBody(c);
+    if (!body) return c.json({ error: 'invalid JSON body' }, 400);
+
+    const rawMode = body.mode;
+    if (typeof rawMode !== 'string' || !VALID_RESET_MODES.has(rawMode)) {
+      return c.json({ error: 'mode must be "progress" or "full"' }, 400);
+    }
+    const mode = rawMode as WorkspaceResetMode;
+
+    const expectedConfirm = path.basename(workspaceRoot);
+    const confirm = body.confirm;
+    if (typeof confirm !== 'string' || confirm !== expectedConfirm) {
+      return c.json(
+        { error: `type the workspace folder name "${expectedConfirm}" to confirm` },
+        400,
+      );
+    }
+
+    // Checked at route entry — reachable only because this route is exempt
+    // from the mid-reset 503 gate above (a concurrent reset POST answers
+    // from here, not the gate).
+    if (isResetting()) {
+      return c.json({ error: 'a workspace reset is already in progress' }, 409);
+    }
+
+    const { runner, reviews, disputes } = getSession();
+    if (runner.isBusy()) {
+      return c.json(
+        { error: 'a test run is in progress — wait for it to finish and try again' },
+        409,
+      );
+    }
+    if (reviews.isAnyRunning()) {
+      return c.json(
+        { error: 'a review is streaming — wait for it to finish and try again' },
+        409,
+      );
+    }
+    if (disputes.isAnyRunning()) {
+      return c.json(
+        { error: 'a dispute analysis is in progress — wait for it to finish and try again' },
+        409,
+      );
+    }
+
+    try {
+      const result = await performWorkspaceReset({
+        workspaceRoot,
+        bus,
+        getSession,
+        swapSession,
+        setResetting,
+        mode,
+        confirm,
+        engines,
+        drainRequests: waitForRequestDrain,
+      });
+      return c.json({
+        mode,
+        archivedTo: result.archivedTo,
+        restored: result.restored,
+        workspace: computeWorkspaceInfo(),
+      });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'workspace reset failed' }, 500);
     }
   });
 

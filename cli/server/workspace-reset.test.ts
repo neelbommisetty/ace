@@ -418,7 +418,7 @@ describe('applyRestorePlan', () => {
 
     expect(fs.readFileSync(solutionAbs, 'utf-8')).toBe(contentBefore);
     expect(fs.statSync(solutionAbs).mtimeMs).toBe(mtimeBefore);
-    expect(result).toEqual({ questions: 1, files: 0 });
+    expect(result).toEqual({ questions: 0, files: 0 });
 
     const question = db.getQuestion('js-ts', 'restore-me')!;
     const solutionRel = toWorkspaceRelPath(tempRoot, solutionAbs);

@@ -154,6 +154,14 @@ export function snapshotPreResetState(db: AceDb, workspaceRoot: string, plan: Re
  * captures the *current* (dispute-fixed) test files as the new baseline.
  * That's deliberate: applied dispute fixes are corrections to the question,
  * not attempt progress, and must survive a reset.
+ *
+ * The returned counts describe what the caller should tell the user was
+ * *restored* (per the `WorkspaceResetResult.restored` contract, which is
+ * zeros across the board in `progress` mode) — not internal bookkeeping.
+ * Scaffold snapshots are seeded in both modes (the review guard needs a
+ * `'scaffold'` baseline to diff against regardless of mode), but that seeding
+ * is not itself a restoration, so `questions` only counts entries in `full`
+ * mode, same as `files`.
  */
 export function applyRestorePlan(
   newDb: AceDb,
@@ -171,6 +179,7 @@ export function applyRestorePlan(
     if (mode === 'full') {
       writeWorkspaceFile(workspaceRoot, entry.relPath, entry.baselineContent);
       files += 1;
+      restoredQuestionIds.add(question.id);
     }
 
     const hash = saveBlob(workspaceRoot, entry.baselineContent);
@@ -181,7 +190,6 @@ export function applyRestorePlan(
       hash,
       trigger: 'scaffold',
     });
-    restoredQuestionIds.add(question.id);
   }
 
   return { questions: restoredQuestionIds.size, files };

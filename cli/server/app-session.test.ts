@@ -101,15 +101,16 @@ describe('createApp with a session accessor', () => {
     const health = await request(app, `http://localhost/api/health?t=${TOKEN}`);
     expect(health.status).toBe(200);
 
-    // The reset route doesn't exist yet — it must fall through to the JSON
-    // 404 handler, NOT the 503 reset gate. This pins the exemption the
-    // future endpoint subtask relies on for its own route-level 409.
+    // The reset route itself must run its own guard logic rather than being
+    // swallowed by the 503 gate — an empty body fails mode validation (400),
+    // proving the route was reached at all (not gated to 503 or falling
+    // through to the JSON 404 handler).
     const reset = await request(app, `http://localhost/api/workspace/reset?t=${TOKEN}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
     });
-    expect(reset.status).toBe(404);
+    expect(reset.status).toBe(400);
   });
 
   it('the SSE hello event carries the session epoch', async () => {

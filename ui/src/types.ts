@@ -139,6 +139,15 @@ export interface ImportResult {
   skipped: number;
 }
 
+export type WorkspaceResetMode = 'progress' | 'full';
+
+export interface WorkspaceResetResult {
+  mode: WorkspaceResetMode;
+  archivedTo: string;
+  restored: { questions: number; files: number };
+  workspace: WorkspaceInfo;
+}
+
 export interface ReviewRow {
   id: string;
   questionId: string;
@@ -214,6 +223,7 @@ export interface SseEventMap {
   'dispute-started': { disputeJobId: string; questionId: string; testRunId: string };
   'dispute-done': { disputeJobId: string; questionId: string; dispute: DisputeRow };
   'dispute-error': { disputeJobId: string; questionId: string; message: string };
+  'workspace-reset': { mode: WorkspaceResetMode; archivedTo: string };
 }
 
 export type SseEventName = keyof SseEventMap;
