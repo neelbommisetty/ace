@@ -927,6 +927,21 @@ describe('brainstorm sessions', () => {
     expect(recovered.messages).toEqual(session.messages);
   });
 
+  it('appendBrainstormTurn clears a stale error_message left over from a previous failed turn', () => {
+    const session = db.createBrainstormSession('idea time');
+    db.setBrainstormStatus(session.id, 'error', 'the model API is down');
+
+    // Retrying re-enters via a user turn (status 'thinking') — the stale
+    // error from the previous attempt must not survive it.
+    const retried = db.appendBrainstormTurn(
+      session.id,
+      { role: 'user', content: 'try again' },
+      'thinking',
+    );
+    expect(retried.status).toBe('thinking');
+    expect(retried.errorMessage).toBeNull();
+  });
+
   it('throws setting status on an unknown session', () => {
     expect(() => db.setBrainstormStatus('nope', 'error', 'x')).toThrow(
       /unknown brainstorm session/,

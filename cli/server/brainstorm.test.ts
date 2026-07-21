@@ -158,6 +158,33 @@ describe('createBrainstormEngine', () => {
     ]);
   });
 
+  it('folds a prior assistant turn\'s structured ideas back into the history sent to the llm', async () => {
+    const { llm, calls } = makeFakeLlm([
+      () => VALID_IDEA_PAYLOAD,
+      () => ({ reply: 'second reply', ideas: [] }),
+    ]);
+    const engine = createBrainstormEngine({ db, bus, workspaceRoot: tempRoot, llm });
+
+    const firstDone = waitFor('brainstorm-done');
+    const { sessionId } = engine.startTurn(null, 'first message');
+    await firstDone;
+
+    const secondDone = waitFor('brainstorm-done');
+    engine.startTurn(sessionId, 'make the idea harder');
+    await secondDone;
+
+    // The assistant's ideas from turn 1 must be visible to the llm on turn
+    // 2 — otherwise a follow-up like "make the second one harder" has no
+    // record of what was proposed (see VALID_IDEA_PAYLOAD's idea title).
+    const assistantMsg = calls[1].messages.find(
+      (m) => m.role === 'assistant',
+    )!;
+    expect(assistantMsg.content).toContain(VALID_IDEA_PAYLOAD.reply);
+    expect(assistantMsg.content).toContain('Debounced Search');
+    expect(assistantMsg.content).toContain('react-apps/medium');
+    expect(assistantMsg.content).toContain('Implement a debounced search box.');
+  });
+
   it('preserves raw text with an empty ideas list and returns to idle on NoObjectGeneratedError', async () => {
     const { llm } = makeFakeLlm([
       () => {
@@ -222,7 +249,7 @@ describe('createBrainstormEngine', () => {
     expect(engine.isThinking(sessionId)).toBe(false);
   });
 
-  it('emits nothing after dispose(), even though the llm resolves later (persistence is not skipped, only the emit)', async () => {
+  it('emits nothing and writes nothing after dispose(), even though the llm resolves later', async () => {
     let resolvePayload!: (v: unknown) => void;
     const pending = new Promise<unknown>((resolve) => {
       resolvePayload = resolve;
@@ -245,11 +272,13 @@ describe('createBrainstormEngine', () => {
 
     expect(events.length).toBe(countAtDispose);
 
-    // The db write from the in-flight call still lands — only the emit is
-    // skipped once the engine is disposed.
+    // Mirrors the disputes/reviews engines' convention: once disposed, a
+    // settling call must not write through the db either (session teardown
+    // may already be closing or have closed it) — only the persisted user
+    // turn from before dispose is there.
     const session = db.getBrainstormSession(sessionId)!;
-    expect(session.status).toBe('idle');
-    expect(session.messages).toHaveLength(2);
+    expect(session.status).toBe('thinking');
+    expect(session.messages).toHaveLength(1);
   });
 
   it('rejects an out-of-enum idea category via schema validation on the generic-error path; the session recovers on a later turn', async () => {
@@ -274,13 +303,18 @@ describe('createBrainstormEngine', () => {
     const { sessionId } = engine.startTurn(null, 'weird idea');
     await errored;
 
-    expect(db.getBrainstormSession(sessionId)!.status).toBe('error');
+    const erroredSession = db.getBrainstormSession(sessionId)!;
+    expect(erroredSession.status).toBe('error');
+    expect(erroredSession.errorMessage).not.toBeNull();
 
     const done = waitFor('brainstorm-done');
     engine.startTurn(sessionId, 'try again');
     await done;
 
-    expect(db.getBrainstormSession(sessionId)!.status).toBe('idle');
+    const recovered = db.getBrainstormSession(sessionId)!;
+    expect(recovered.status).toBe('idle');
+    // The stale error from turn 1 must not linger once the session recovers.
+    expect(recovered.errorMessage).toBeNull();
     expect(calls).toHaveLength(2);
   });
 });

@@ -56,6 +56,26 @@ directions — a purely conversational reply (e.g. a clarifying question) should
 return an empty "ideas" array.
 `;
 
+/**
+ * Renders a persisted turn back into the plain-text form fed to the LLM.
+ * Assistant turns split their paid output across two fields — freeform
+ * `content` (the `reply`) and the structured `ideas` array — but LLMMessage
+ * only carries a single content string, and the model itself put those ideas
+ * there in the first place (STRUCTURED_OUTPUT_ADDENDUM). Without folding
+ * `ideas` back in, a follow-up turn like "make the second one harder" would
+ * reach the model with no record of what idea #2 was.
+ */
+function serializeTurn(m: BrainstormTurn): string {
+  if (m.role !== 'assistant' || !m.ideas || m.ideas.length === 0) return m.content;
+  const ideasBlock = m.ideas
+    .map(
+      (idea, i) =>
+        `${i + 1}. [${idea.category}/${idea.difficulty}] ${idea.title} — ${idea.pitch} (topic: ${idea.topic})`,
+    )
+    .join('\n');
+  return `${m.content}\n\nIdeas proposed:\n${ideasBlock}`;
+}
+
 /** Injectable seam so unit tests never need a real API key. */
 export interface BrainstormLlm {
   chatObject: typeof chatObject;
@@ -96,13 +116,17 @@ export function createBrainstormEngine(opts: {
 
       const messages: LLMMessage[] = [
         { role: 'system', content: systemPrompt },
-        ...session.messages.map((m): LLMMessage => ({ role: m.role, content: m.content })),
+        ...session.messages.map((m): LLMMessage => ({ role: m.role, content: serializeTurn(m) })),
       ];
 
       const abort = AbortSignal.timeout(120_000);
       const result = await llm.chatObject(provider, messages, IdeaListSchema, {
         abortSignal: abort,
       });
+      // Mirrors the disputes/reviews engines' convention: a paid call that
+      // resolves after dispose() must not write through a db the session
+      // teardown may already be closing (or have closed).
+      if (disposed) return;
 
       const updated = db.appendBrainstormTurn(
         sessionId,
@@ -110,9 +134,10 @@ export function createBrainstormEngine(opts: {
         'idle',
       );
       const turn = updated.messages[updated.messages.length - 1];
-      if (!disposed) bus.emit('brainstorm-done', { sessionId, turn });
+      bus.emit('brainstorm-done', { sessionId, turn });
     } catch (err) {
       if (NoObjectGeneratedError.isInstance(err)) {
+        if (disposed) return;
         // Raw paid output preserved AND user-visible, even though it didn't
         // parse as a valid idea list.
         const updated = db.appendBrainstormTurn(
@@ -121,12 +146,13 @@ export function createBrainstormEngine(opts: {
           'idle',
         );
         const turn = updated.messages[updated.messages.length - 1];
-        if (!disposed) bus.emit('brainstorm-done', { sessionId, turn });
+        bus.emit('brainstorm-done', { sessionId, turn });
         return;
       }
+      if (disposed) return;
       const message = err instanceof Error ? err.message : String(err);
       db.setBrainstormStatus(sessionId, 'error', message);
-      if (!disposed) bus.emit('brainstorm-error', { sessionId, message });
+      bus.emit('brainstorm-error', { sessionId, message });
     } finally {
       inFlight.delete(sessionId);
     }

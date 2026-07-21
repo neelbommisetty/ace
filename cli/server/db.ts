@@ -906,9 +906,14 @@ class SqliteAceDb implements AceDb {
       const existing = this.getBrainstormSession(id);
       if (!existing) throw new Error(`unknown brainstorm session: ${id}`);
       const messages = [...existing.messages, turn];
+      // A new turn is always forward progress away from a bare error state
+      // (retrying re-enters via 'thinking', succeeding lands on 'idle'), so
+      // clear any stale error_message left over from a previous failed turn
+      // — otherwise a healthy 'idle' session can keep reporting a resolved
+      // error forever.
       this.db
         .prepare(
-          `UPDATE brainstorm_sessions SET messages_json = ?, status = ?, updated_at = ?
+          `UPDATE brainstorm_sessions SET messages_json = ?, status = ?, error_message = NULL, updated_at = ?
            WHERE id = ?`,
         )
         .run(JSON.stringify(messages), status, nowIso(), id);
