@@ -2,11 +2,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { openDb } from './db.js';
 import type { DisputeEngine } from './disputes.js';
 import type { ReviewEngine } from './reviews.js';
 import type { Runner } from './runner.js';
 import {
   closeWorkspaceSession,
+  closeWorkspaceSessionSafe,
   createWorkspaceSession,
   startSessionWatcher,
   type EngineFactories,
@@ -27,9 +29,9 @@ function writeQuestion(category: string, slug: string): void {
 
 /** Fake engine factories that never touch the LLM or spawn vitest. */
 function fakeEngines(): EngineFactories & {
-  disposals: { runner: number; reviews: number; disputes: number };
+  disposals: { runner: number; reviews: number; disputes: number; generation: number; brainstorm: number };
 } {
-  const disposals = { runner: 0, reviews: 0, disputes: 0 };
+  const disposals = { runner: 0, reviews: 0, disputes: 0, generation: 0, brainstorm: 0 };
   return {
     disposals,
     createRunner: (() => ({
@@ -52,6 +54,23 @@ function fakeEngines(): EngineFactories & {
         disposals.disputes += 1;
       }),
     })) as unknown as EngineFactories['createDisputeEngine'],
+    createGenerationEngine: (() => ({
+      start: vi.fn(),
+      retry: vi.fn(),
+      runningCount: vi.fn(() => 0),
+      isAnyRunning: vi.fn(() => false),
+      dispose: vi.fn(() => {
+        disposals.generation += 1;
+      }),
+    })) as unknown as EngineFactories['createGenerationEngine'],
+    createBrainstormEngine: (() => ({
+      startTurn: vi.fn(),
+      isThinking: vi.fn(() => false),
+      isAnyRunning: vi.fn(() => false),
+      dispose: vi.fn(() => {
+        disposals.brainstorm += 1;
+      }),
+    })) as unknown as EngineFactories['createBrainstormEngine'],
   };
 }
 
@@ -129,6 +148,84 @@ describe('createWorkspaceSession', () => {
   });
 });
 
+describe('createWorkspaceSession — generation/brainstorm engines', () => {
+  it('exposes generation and brainstorm engines with their expected shapes', () => {
+    const bus = createBus();
+    const session = createWorkspaceSession({
+      workspaceRoot: tempRoot,
+      bus,
+      watch: false,
+      engines: fakeEngines(),
+    });
+
+    expect(typeof session.generation.start).toBe('function');
+    expect(typeof session.generation.retry).toBe('function');
+    expect(typeof session.generation.runningCount).toBe('function');
+    expect(typeof session.generation.isAnyRunning).toBe('function');
+    expect(typeof session.generation.dispose).toBe('function');
+
+    expect(typeof session.brainstorm.startTurn).toBe('function');
+    expect(typeof session.brainstorm.isThinking).toBe('function');
+    expect(typeof session.brainstorm.isAnyRunning).toBe('function');
+    expect(typeof session.brainstorm.dispose).toBe('function');
+
+    session.db.close();
+  });
+
+  it('sweeps interrupted generation/brainstorm state at session build time (boot AND every rebuild)', () => {
+    // Seed non-terminal rows directly against the db, as if a prior process
+    // crashed mid-job/mid-turn, then close that raw handle — session build
+    // reopens the same db file and must run the sweep before anything reads
+    // from it.
+    const seedDb = openDb(tempRoot);
+    const runningJob = seedDb.createGenerationJob({
+      category: 'js-ts',
+      difficulty: 'easy',
+      topic: 'debounce',
+    });
+    const llmDoneJobSeed = seedDb.createGenerationJob({
+      category: 'js-ts',
+      difficulty: 'hard',
+      topic: 'throttle',
+    });
+    const resultPayload = { title: 'Throttle a function', description: 'implement throttle' };
+    seedDb.patchGenerationJob(llmDoneJobSeed.id, {
+      status: 'llm_done',
+      result: resultPayload,
+      title: 'Throttle a function',
+    });
+    const brainstormSession = seedDb.createBrainstormSession('give me some ideas');
+    expect(brainstormSession.status).toBe('thinking');
+    seedDb.close();
+
+    const bus = createBus();
+    const session = createWorkspaceSession({
+      workspaceRoot: tempRoot,
+      bus,
+      watch: false,
+      engines: fakeEngines(),
+    });
+
+    const sweptRunning = session.db.getGenerationJob(runningJob.id);
+    expect(sweptRunning?.status).toBe('error');
+    expect(sweptRunning?.errorMessage).toMatch(/interrupted by a server restart/);
+
+    const sweptLlmDone = session.db.getGenerationJob(llmDoneJobSeed.id);
+    expect(sweptLlmDone?.status).toBe('error');
+    expect(sweptLlmDone?.errorMessage).toMatch(/no new LLM call/);
+    // The whole point of the llm_done sweep: the paid result must survive so
+    // a retry can be scaffold-only.
+    expect(sweptLlmDone?.result).toEqual(resultPayload);
+    expect(sweptLlmDone?.title).toBe('Throttle a function');
+
+    const sweptBrainstorm = session.db.getBrainstormSession(brainstormSession.id);
+    expect(sweptBrainstorm?.status).toBe('error');
+    expect(sweptBrainstorm?.errorMessage).toMatch(/interrupted by a server restart/);
+
+    session.db.close();
+  });
+});
+
 describe('closeWorkspaceSession', () => {
   it('calls each fake engine dispose() exactly once and closes the db', async () => {
     const bus = createBus();
@@ -140,6 +237,8 @@ describe('closeWorkspaceSession', () => {
     expect(engines.disposals.runner).toBe(1);
     expect(engines.disposals.reviews).toBe(1);
     expect(engines.disposals.disputes).toBe(1);
+    expect(engines.disposals.generation).toBe(1);
+    expect(engines.disposals.brainstorm).toBe(1);
     expect(() => session.db.listQuestions()).toThrow();
   });
 
@@ -150,5 +249,115 @@ describe('closeWorkspaceSession', () => {
     expect(session.watcher).toBeNull();
 
     await expect(closeWorkspaceSession(session)).resolves.toBeUndefined();
+  });
+
+  it('disposes generation and brainstorm AFTER disputes.dispose() and BEFORE db.close()', async () => {
+    const bus = createBus();
+    const callOrder: string[] = [];
+    const engines: EngineFactories = {
+      createRunner: (() => ({
+        start: vi.fn(),
+        dispose: vi.fn(() => callOrder.push('runner')),
+      })) as unknown as EngineFactories['createRunner'],
+      createReviewEngine: (() => ({
+        start: vi.fn(),
+        isRunning: vi.fn(() => false),
+        dispose: vi.fn(() => callOrder.push('reviews')),
+      })) as unknown as EngineFactories['createReviewEngine'],
+      createDisputeEngine: (() => ({
+        start: vi.fn(),
+        isRunning: vi.fn(() => false),
+        dispose: vi.fn(() => callOrder.push('disputes')),
+      })) as unknown as EngineFactories['createDisputeEngine'],
+      createGenerationEngine: (() => ({
+        start: vi.fn(),
+        retry: vi.fn(),
+        runningCount: vi.fn(() => 0),
+        isAnyRunning: vi.fn(() => false),
+        dispose: vi.fn(() => callOrder.push('generation')),
+      })) as unknown as EngineFactories['createGenerationEngine'],
+      createBrainstormEngine: (() => ({
+        startTurn: vi.fn(),
+        isThinking: vi.fn(() => false),
+        isAnyRunning: vi.fn(() => false),
+        dispose: vi.fn(() => callOrder.push('brainstorm')),
+      })) as unknown as EngineFactories['createBrainstormEngine'],
+    };
+    const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
+    const closeSpy = vi.spyOn(session.db, 'close').mockImplementation(() => {
+      callOrder.push('db.close');
+    });
+
+    await closeWorkspaceSession(session);
+
+    const disputesIdx = callOrder.indexOf('disputes');
+    const generationIdx = callOrder.indexOf('generation');
+    const brainstormIdx = callOrder.indexOf('brainstorm');
+    const dbCloseIdx = callOrder.indexOf('db.close');
+    expect(disputesIdx).toBeGreaterThanOrEqual(0);
+    expect(generationIdx).toBeGreaterThan(disputesIdx);
+    expect(brainstormIdx).toBeGreaterThan(disputesIdx);
+    expect(dbCloseIdx).toBeGreaterThan(generationIdx);
+    expect(dbCloseIdx).toBeGreaterThan(brainstormIdx);
+
+    closeSpy.mockRestore();
+    session.db.close();
+  });
+});
+
+describe('closeWorkspaceSessionSafe', () => {
+  it('a throwing engine.dispose() does not prevent the rest of teardown (including db.close()) from completing', async () => {
+    const bus = createBus();
+    const disposals = { runner: 0, reviews: 0, disputes: 0, brainstorm: 0 };
+    const engines: EngineFactories = {
+      createRunner: (() => ({
+        start: vi.fn(),
+        dispose: vi.fn(() => {
+          disposals.runner += 1;
+        }),
+      })) as unknown as EngineFactories['createRunner'],
+      createReviewEngine: (() => ({
+        start: vi.fn(),
+        isRunning: vi.fn(() => false),
+        dispose: vi.fn(() => {
+          disposals.reviews += 1;
+        }),
+      })) as unknown as EngineFactories['createReviewEngine'],
+      createDisputeEngine: (() => ({
+        start: vi.fn(),
+        isRunning: vi.fn(() => false),
+        dispose: vi.fn(() => {
+          disposals.disputes += 1;
+        }),
+      })) as unknown as EngineFactories['createDisputeEngine'],
+      createGenerationEngine: (() => ({
+        start: vi.fn(),
+        retry: vi.fn(),
+        runningCount: vi.fn(() => 0),
+        isAnyRunning: vi.fn(() => false),
+        dispose: vi.fn(() => {
+          // Simulates a broken generation engine's teardown.
+          throw new Error('generation dispose blew up');
+        }),
+      })) as unknown as EngineFactories['createGenerationEngine'],
+      createBrainstormEngine: (() => ({
+        startTurn: vi.fn(),
+        isThinking: vi.fn(() => false),
+        isAnyRunning: vi.fn(() => false),
+        dispose: vi.fn(() => {
+          disposals.brainstorm += 1;
+        }),
+      })) as unknown as EngineFactories['createBrainstormEngine'],
+    };
+    const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
+
+    await expect(closeWorkspaceSessionSafe(session)).resolves.toBeUndefined();
+
+    // Every other step still ran despite generation.dispose() throwing.
+    expect(disposals.runner).toBe(1);
+    expect(disposals.reviews).toBe(1);
+    expect(disposals.disputes).toBe(1);
+    expect(disposals.brainstorm).toBe(1);
+    expect(() => session.db.listQuestions()).toThrow();
   });
 });

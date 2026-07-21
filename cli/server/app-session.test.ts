@@ -36,6 +36,19 @@ function fakeEngines(): EngineFactories {
       isRunning: vi.fn(() => false),
       dispose: vi.fn(),
     })) as unknown as EngineFactories['createDisputeEngine'],
+    createGenerationEngine: (() => ({
+      start: vi.fn(),
+      retry: vi.fn(),
+      runningCount: vi.fn(() => 0),
+      isAnyRunning: vi.fn(() => false),
+      dispose: vi.fn(),
+    })) as unknown as EngineFactories['createGenerationEngine'],
+    createBrainstormEngine: (() => ({
+      startTurn: vi.fn(),
+      isThinking: vi.fn(() => false),
+      isAnyRunning: vi.fn(() => false),
+      dispose: vi.fn(),
+    })) as unknown as EngineFactories['createBrainstormEngine'],
   };
 }
 

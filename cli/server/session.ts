@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
+import { createBrainstormEngine, type BrainstormEngine } from './brainstorm.js';
 import { openDb } from './db.js';
 import { createDisputeEngine, type DisputeEngine } from './disputes.js';
+import { createGenerationEngine, type GenerationEngine } from './generation.js';
 import { reconcile } from './reconciler.js';
 import { createReviewEngine, type ReviewEngine } from './reviews.js';
 import { createRunner, type Runner } from './runner.js';
@@ -34,6 +36,8 @@ export interface WorkspaceSession {
   runner: Runner;
   reviews: ReviewEngine;
   disputes: DisputeEngine;
+  generation: GenerationEngine;
+  brainstorm: BrainstormEngine;
   watcher: { close(): Promise<void> } | null;
   /** Latest reconcile's skipped dirs (dirs under unknown categories). */
   skippedDirs: string[];
@@ -46,12 +50,16 @@ export interface EngineFactories {
   createRunner: typeof createRunner;
   createReviewEngine: typeof createReviewEngine;
   createDisputeEngine: typeof createDisputeEngine;
+  createGenerationEngine: typeof createGenerationEngine;
+  createBrainstormEngine: typeof createBrainstormEngine;
 }
 
 const defaultEngines: EngineFactories = {
   createRunner,
   createReviewEngine,
   createDisputeEngine,
+  createGenerationEngine,
+  createBrainstormEngine,
 };
 
 export interface CreateWorkspaceSessionOptions {
@@ -59,7 +67,7 @@ export interface CreateWorkspaceSessionOptions {
   bus: Bus;
   /** Defaults to true (chokidar watcher attached inline). false returns watcher: null. */
   watch?: boolean;
-  /** Defaults to the real createRunner/createReviewEngine/createDisputeEngine. */
+  /** Defaults to the real createRunner/createReviewEngine/createDisputeEngine/createGenerationEngine/createBrainstormEngine. */
   engines?: EngineFactories;
 }
 
@@ -99,6 +107,11 @@ export function createWorkspaceSession(opts: CreateWorkspaceSessionOptions): Wor
   const engines = opts.engines ?? defaultEngines;
 
   const db = openDb(workspaceRoot);
+  // Runs at every session build — boot AND every post-reset rebuild — so a
+  // job/session left non-terminal by a server crash (or a reset racing an
+  // in-flight generation/brainstorm call) always surfaces as 'error' rather
+  // than hanging forever as "in progress" with no engine left to resume it.
+  db.sweepInterruptedGenerationState();
 
   const session: WorkspaceSession = {
     epoch: resolveEpoch(db),
@@ -106,6 +119,8 @@ export function createWorkspaceSession(opts: CreateWorkspaceSessionOptions): Wor
     runner: engines.createRunner({ db, bus, workspaceRoot }),
     reviews: engines.createReviewEngine({ db, bus, workspaceRoot }),
     disputes: engines.createDisputeEngine({ db, bus, workspaceRoot }),
+    generation: engines.createGenerationEngine({ db, bus, workspaceRoot }),
+    brainstorm: engines.createBrainstormEngine({ db, bus, workspaceRoot }),
     watcher: null,
     skippedDirs: [],
     reconcile(): void {
@@ -141,7 +156,8 @@ export function startSessionWatcher(session: WorkspaceSession): void {
 /**
  * Tears down a session in the exact order the previous startAceServer's
  * close() used: watcher (skipped when null) → runner.dispose → reviews.dispose
- * → disputes.dispose → [beforeDbClose] → db.close.
+ * → disputes.dispose → generation.dispose → brainstorm.dispose →
+ * [beforeDbClose] → db.close.
  *
  * `beforeDbClose`, if given, runs after the engines are disposed and before
  * the db is closed — this is the seam the HTTP server's own close() must run
@@ -160,6 +176,8 @@ export async function closeWorkspaceSession(
   session.runner.dispose();
   session.reviews.dispose();
   session.disputes.dispose();
+  session.generation.dispose();
+  session.brainstorm.dispose();
   await opts?.beforeDbClose?.();
   session.db.close();
 }
@@ -189,6 +207,16 @@ export async function closeWorkspaceSessionSafe(session: WorkspaceSession): Prom
   }
   try {
     session.disputes.dispose();
+  } catch {
+    // best effort
+  }
+  try {
+    session.generation.dispose();
+  } catch {
+    // best effort
+  }
+  try {
+    session.brainstorm.dispose();
   } catch {
     // best effort
   }

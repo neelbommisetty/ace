@@ -56,6 +56,8 @@ interface BusyFlags {
   runner: boolean;
   reviews: boolean;
   disputes: boolean;
+  generation: boolean;
+  brainstorm: boolean;
 }
 
 /** Fake engine factories, never touching the LLM or spawning vitest. Busy
@@ -80,6 +82,19 @@ function fakeEngines(flags: BusyFlags): EngineFactories {
       isAnyRunning: () => flags.disputes,
       dispose: vi.fn(),
     })) as unknown as EngineFactories['createDisputeEngine'],
+    createGenerationEngine: (() => ({
+      start: vi.fn(),
+      retry: vi.fn(),
+      runningCount: () => 0,
+      isAnyRunning: () => flags.generation,
+      dispose: vi.fn(),
+    })) as unknown as EngineFactories['createGenerationEngine'],
+    createBrainstormEngine: (() => ({
+      startTurn: vi.fn(),
+      isThinking: () => false,
+      isAnyRunning: () => flags.brainstorm,
+      dispose: vi.fn(),
+    })) as unknown as EngineFactories['createBrainstormEngine'],
   };
 }
 
@@ -157,7 +172,7 @@ describe('POST /api/workspace/reset — happy path', () => {
   it('progress mode: archives the old db, reconciles fresh, keeps files, emits SSE once, new epoch', async () => {
     writeCodingQuestion('js-ts', 'debounce', { solution: 'export const x = 1;\n' });
     const bus = createBus();
-    const flags: BusyFlags = { runner: false, reviews: false, disputes: false };
+    const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
     const engines = fakeEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const oldEpoch = session.epoch;
@@ -224,7 +239,7 @@ describe('POST /api/workspace/reset — happy path', () => {
 
   it('echoes a client-supplied requestId back verbatim in the workspace-reset broadcast', async () => {
     const bus = createBus();
-    const flags: BusyFlags = { runner: false, reviews: false, disputes: false };
+    const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
     const engines = fakeEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const harness = makeHarness(session);
@@ -255,7 +270,7 @@ describe('POST /api/workspace/reset — happy path', () => {
       test: 'it("dispute-fixed", () => {});\n',
     });
     const bus = createBus();
-    const flags: BusyFlags = { runner: false, reviews: false, disputes: false };
+    const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
     const engines = fakeEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
 
@@ -309,7 +324,7 @@ describe('POST /api/workspace/reset — happy path', () => {
   it('full mode with no prior scaffold snapshot: restores to the template stub', async () => {
     const dir = writeCodingQuestion('js-ts', 'no-scaffold', { solution: 'export const edited = 1;\n' });
     const bus = createBus();
-    const flags: BusyFlags = { runner: false, reviews: false, disputes: false };
+    const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
     const engines = fakeEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const harness = makeHarness(session);
@@ -329,7 +344,7 @@ describe('POST /api/workspace/reset — guard matrix', () => {
   async function buildIdleApp() {
     writeCodingQuestion('js-ts', 'guarded');
     const bus = createBus();
-    const flags: BusyFlags = { runner: false, reviews: false, disputes: false };
+    const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
     const engines = fakeEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const harness = makeHarness(session);
@@ -366,6 +381,28 @@ describe('POST /api/workspace/reset — guard matrix', () => {
     expect(res.status).toBe(409);
     expect((await res.json()) as { error: string }).toEqual({
       error: 'a dispute analysis is in progress — wait for it to finish and try again',
+    });
+    expect(fs.existsSync(path.join(tempRoot, '.ace', 'ace.db'))).toBe(true);
+  });
+
+  it('409s with a generation-in-progress message when a generation job is running, .ace untouched', async () => {
+    const { app, flags } = await buildIdleApp();
+    flags.generation = true;
+    const res = await postReset(app, { mode: 'progress', confirm: path.basename(tempRoot) });
+    expect(res.status).toBe(409);
+    expect((await res.json()) as { error: string }).toEqual({
+      error: 'a generation is in progress — wait for it to finish and try again',
+    });
+    expect(fs.existsSync(path.join(tempRoot, '.ace', 'ace.db'))).toBe(true);
+  });
+
+  it('409s with a brainstorm-in-progress message when a brainstorm turn is thinking, .ace untouched', async () => {
+    const { app, flags } = await buildIdleApp();
+    flags.brainstorm = true;
+    const res = await postReset(app, { mode: 'progress', confirm: path.basename(tempRoot) });
+    expect(res.status).toBe(409);
+    expect((await res.json()) as { error: string }).toEqual({
+      error: 'a brainstorm turn is in progress — wait for it to finish and try again',
     });
     expect(fs.existsSync(path.join(tempRoot, '.ace', 'ace.db'))).toBe(true);
   });
@@ -409,7 +446,7 @@ describe('POST /api/workspace/reset — concurrency', () => {
   it('a concurrent second POST gets 409 "already in progress" (bypassing the 503 gate), not a busy-engine 409', async () => {
     writeCodingQuestion('js-ts', 'slow-close');
     const bus = createBus();
-    const flags: BusyFlags = { runner: false, reviews: false, disputes: false };
+    const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
     const engines = fakeEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
 
@@ -451,7 +488,7 @@ describe('POST /api/workspace/reset — concurrency', () => {
   it('a PUT /api/file already past the gate when a reset begins finishes against the old db (no 500) and the reset waits for it before closing that db', async () => {
     const dir = writeCodingQuestion('js-ts', 'straddle', { solution: 'export const before = 1;\n' });
     const bus = createBus();
-    const flags: BusyFlags = { runner: false, reviews: false, disputes: false };
+    const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
     const engines = fakeEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const harness = makeHarness(session);
@@ -514,7 +551,7 @@ describe('POST /api/workspace/reset — concurrency', () => {
   it('while the resetting flag is set: GET /api/questions -> 503, POST /api/workspace/reset -> 409', async () => {
     writeCodingQuestion('js-ts', 'gate-check');
     const bus = createBus();
-    const flags: BusyFlags = { runner: false, reviews: false, disputes: false };
+    const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
     const engines = fakeEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const harness = makeHarness(session);
@@ -542,7 +579,7 @@ describe('POST /api/workspace/reset — archive-failure recovery', () => {
   it('500s, clears the resetting flag, leaves .ace intact, and the workspace stays usable', async () => {
     writeCodingQuestion('js-ts', 'archive-fail');
     const bus = createBus();
-    const flags: BusyFlags = { runner: false, reviews: false, disputes: false };
+    const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
     const engines = fakeEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const harness = makeHarness(session);
