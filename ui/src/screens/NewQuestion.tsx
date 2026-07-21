@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ApiError,
@@ -27,6 +27,14 @@ const TOPIC_MAX = 4000;
 
 /** sessionStorage key for reopening the in-progress brainstorm session across a reload/tab-switch. */
 const BRAINSTORM_SESSION_KEY = 'ace-brainstorm-session';
+
+/**
+ * sessionStorage value written by "Start over" — distinct from "no key at
+ * all" so the reopen effect knows to leave the composer empty instead of
+ * falling back to the most recent session (session ids are uuidv7 and can
+ * never collide with this literal).
+ */
+const BRAINSTORM_CLEARED_SENTINEL = 'cleared';
 
 /**
  * /new — start a generation job. Two tabs: describe a question directly, or
@@ -249,6 +257,48 @@ function BrainstormPane({ disabled }: { disabled: boolean }) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The engine emits 'brainstorm-started' synchronously (before the LLM call
+  // even begins) and 'brainstorm-done'/'brainstorm-error' only after it —
+  // both over the same SSE stream, so they always arrive in that order.
+  // 'started' therefore is the reliable signal to flip the composer into
+  // "thinking", NOT the POST response: in mock mode the mock LLM resolves in
+  // a microtask, so the server can emit — and the client can receive —
+  // 'brainstorm-done' before the POST's own response body finishes parsing.
+  // `pendingSendRef` records the turn we just fired off so whichever of
+  // {the 'brainstorm-started' event, the POST resolving} lands first applies
+  // it, and the other becomes a no-op instead of clobbering later state.
+  const pendingSendRef = useRef<{ sessionId: string | null; message: string } | null>(null);
+
+  // Ids for which a 'brainstorm-done'/'brainstorm-error' arrived while no
+  // local `session` matched (i.e. the reopen fetch below for that exact id
+  // was still in flight) — the fetch may have raced a completing turn and
+  // returned a stale snapshot. Consulted by reopen() to refetch once more
+  // rather than silently showing a stale 'thinking' state forever.
+  const racedIdsRef = useRef<Set<string>>(new Set());
+
+  function applyPendingSend(sessionId: string, msg: string) {
+    setSession((prev) => {
+      if (prev != null && prev.id === sessionId) {
+        return {
+          ...prev,
+          status: 'thinking',
+          errorMessage: null,
+          messages: [...prev.messages, { role: 'user', content: msg }],
+        };
+      }
+      const now = new Date().toISOString();
+      return {
+        id: sessionId,
+        status: 'thinking',
+        title: msg.slice(0, 80),
+        messages: [{ role: 'user', content: msg }],
+        errorMessage: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+    });
+  }
+
   // A ref, not state: this guard must not itself be an effect dependency —
   // flipping state inside the effect would re-run the effect and fire this
   // same run's cleanup (setting `cancelled`) before the in-flight fetch below
@@ -256,12 +306,24 @@ function BrainstormPane({ disabled }: { disabled: boolean }) {
   useEffect(() => {
     let cancelled = false;
 
+    /** Fetches `id`, refetching once more if a done/error event for it raced this call. */
+    async function fetchSettled(id: string) {
+      racedIdsRef.current.delete(id);
+      let res = await getBrainstormSession(id);
+      if (racedIdsRef.current.has(id)) {
+        racedIdsRef.current.delete(id);
+        res = await getBrainstormSession(id);
+      }
+      return res.session;
+    }
+
     async function reopen() {
       const storedId = sessionStorage.getItem(BRAINSTORM_SESSION_KEY);
+      if (storedId === BRAINSTORM_CLEARED_SENTINEL) return; // explicit "Start over" — stay empty
       if (storedId) {
         try {
-          const res = await getBrainstormSession(storedId);
-          if (!cancelled) setSession(res.session);
+          const session = await fetchSettled(storedId);
+          if (!cancelled) setSession(session);
           return;
         } catch {
           // Stale/unknown id (e.g. 404) — clear it and fall back to the
@@ -273,10 +335,10 @@ function BrainstormPane({ disabled }: { disabled: boolean }) {
         const { sessions } = await getBrainstormSessions(1);
         const latest = sessions[0];
         if (latest == null || cancelled) return;
-        const full = await getBrainstormSession(latest.id);
+        const full = await fetchSettled(latest.id);
         if (!cancelled) {
-          setSession(full.session);
-          sessionStorage.setItem(BRAINSTORM_SESSION_KEY, full.session.id);
+          setSession(full);
+          sessionStorage.setItem(BRAINSTORM_SESSION_KEY, full.id);
         }
       } catch {
         // Nothing to reopen — leave the empty composer.
@@ -291,18 +353,33 @@ function BrainstormPane({ disabled }: { disabled: boolean }) {
     // so this already covers "on mount/tab-switch, attempt session reopen").
   }, []);
 
+  useSseEvent('brainstorm-started', ({ sessionId }) => {
+    const pending = pendingSendRef.current;
+    if (pending == null) return;
+    if (pending.sessionId != null && pending.sessionId !== sessionId) return;
+    pendingSendRef.current = null;
+    applyPendingSend(sessionId, pending.message);
+    sessionStorage.setItem(BRAINSTORM_SESSION_KEY, sessionId);
+  });
+
   useSseEvent('brainstorm-done', ({ sessionId, turn }) => {
-    setSession((prev) =>
-      prev != null && prev.id === sessionId
-        ? { ...prev, status: 'idle', errorMessage: null, messages: [...prev.messages, turn] }
-        : prev,
-    );
+    setSession((prev) => {
+      if (prev == null || prev.id !== sessionId) {
+        racedIdsRef.current.add(sessionId);
+        return prev;
+      }
+      return { ...prev, status: 'idle', errorMessage: null, messages: [...prev.messages, turn] };
+    });
   });
 
   useSseEvent('brainstorm-error', ({ sessionId, message: msg }) => {
-    setSession((prev) =>
-      prev != null && prev.id === sessionId ? { ...prev, status: 'error', errorMessage: msg } : prev,
-    );
+    setSession((prev) => {
+      if (prev == null || prev.id !== sessionId) {
+        racedIdsRef.current.add(sessionId);
+        return prev;
+      }
+      return { ...prev, status: 'error', errorMessage: msg };
+    });
   });
 
   // Disabled the instant a turn is sent (optimistic status flip below), all
@@ -319,31 +396,19 @@ function BrainstormPane({ disabled }: { disabled: boolean }) {
     setSending(true);
     setError(null);
     const sentMessage = trimmed;
+    pendingSendRef.current = { sessionId: session?.id ?? null, message: sentMessage };
     try {
       const { sessionId } = await sendBrainstormTurn(session?.id ?? null, sentMessage);
       setMessage('');
-      setSession((prev) => {
-        if (prev != null && prev.id === sessionId) {
-          return {
-            ...prev,
-            status: 'thinking',
-            errorMessage: null,
-            messages: [...prev.messages, { role: 'user', content: sentMessage }],
-          };
-        }
-        const now = new Date().toISOString();
-        return {
-          id: sessionId,
-          status: 'thinking',
-          title: sentMessage.slice(0, 80),
-          messages: [{ role: 'user', content: sentMessage }],
-          errorMessage: null,
-          createdAt: now,
-          updatedAt: now,
-        };
-      });
+      // If 'brainstorm-started' already arrived (see useSseEvent above) it
+      // already applied this exact send and cleared the ref — don't reapply.
+      if (pendingSendRef.current != null) {
+        pendingSendRef.current = null;
+        applyPendingSend(sessionId, sentMessage);
+      }
       sessionStorage.setItem(BRAINSTORM_SESSION_KEY, sessionId);
     } catch (err) {
+      pendingSendRef.current = null;
       setError(err instanceof ApiError ? err.message : 'Failed to send message');
     } finally {
       setSending(false);
@@ -351,7 +416,11 @@ function BrainstormPane({ disabled }: { disabled: boolean }) {
   }
 
   function onStartOver() {
-    sessionStorage.removeItem(BRAINSTORM_SESSION_KEY);
+    // Written, not removed: an absent key means "fall back to the latest
+    // session" (see reopen()) — writing the sentinel is what makes "Start
+    // over" stick across a tab-switch/remount instead of resurrecting the
+    // very session just discarded.
+    sessionStorage.setItem(BRAINSTORM_SESSION_KEY, BRAINSTORM_CLEARED_SENTINEL);
     setSession(null);
     setMessage('');
     setError(null);
@@ -369,15 +438,18 @@ function BrainstormPane({ disabled }: { disabled: boolean }) {
             ) : (
               <div key={i} className="brainstorm-turn brainstorm-turn-assistant">
                 <p>{turn.content}</p>
-                {turn.ideas != null && turn.ideas.length > 0 ? (
+                {/* An empty `ideas` array is the expected shape for a purely
+                    conversational reply (see STRUCTURED_OUTPUT_ADDENDUM in
+                    cli/server/brainstorm.ts) as well as for the parse-failure
+                    salvage path — the two are indistinguishable here, so we
+                    render nothing extra rather than asserting a failure that
+                    may not have happened; `turn.content` above already shows
+                    whatever the model said (including raw salvaged text). */}
+                {turn.ideas != null && turn.ideas.length > 0 && (
                   <div className="idea-grid">
                     {turn.ideas.map((idea, j) => (
                       <IdeaCard key={j} idea={idea} sessionId={session.id} />
                     ))}
-                  </div>
-                ) : (
-                  <div className="brainstorm-refine-hint">
-                    Couldn&apos;t parse ideas from that reply — try refining your ask below.
                   </div>
                 )}
               </div>

@@ -2374,12 +2374,6 @@ code {
   white-space: pre-wrap;
 }
 
-.brainstorm-refine-hint {
-  color: var(--dim);
-  font-size: 12.5px;
-  font-style: italic;
-}
-
 .brainstorm-composer {
   display: flex;
   flex-direction: column;

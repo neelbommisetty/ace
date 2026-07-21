@@ -150,7 +150,11 @@ describe('NewQuestion — brainstorm mode', () => {
     expect(screen.getByRole('button', { name: 'Thinking…' })).toBeDisabled();
   });
 
-  it('renders a parse-failure turn (ideas absent) as plain text with a refine hint, no idea cards', async () => {
+  it('renders a turn with an empty ideas array as plain text, no idea cards and no false parse-failure hint', async () => {
+    // An empty `ideas` array is the expected shape for BOTH a purely
+    // conversational reply and the parse-failure salvage path (see
+    // cli/server/brainstorm.ts) — indistinguishable here, so the UI must not
+    // assert a failure that may not have happened.
     sessionStorage.setItem(SESSION_KEY, 'parse-fail-session');
     getBrainstormSession.mockResolvedValue({
       session: session({
@@ -165,7 +169,7 @@ describe('NewQuestion — brainstorm mode', () => {
     await openBrainstormTab();
 
     expect(await screen.findByText('raw unparsed reply text')).toBeInTheDocument();
-    expect(screen.getByText(/try refining your ask below/)).toBeInTheDocument();
+    expect(screen.queryByText(/try refining your ask below/)).not.toBeInTheDocument();
     expect(screen.queryByText('Generate this')).not.toBeInTheDocument();
   });
 
@@ -208,7 +212,7 @@ describe('NewQuestion — brainstorm mode', () => {
     );
   });
 
-  it("'Start over' clears sessionStorage and resets to the empty composer without any network call", async () => {
+  it("'Start over' resets to the empty composer without any network call, and the reset sticks (no sessionStorage fallback resurrection)", async () => {
     sessionStorage.setItem(SESSION_KEY, 'stored-session-id');
     getBrainstormSession.mockResolvedValue({
       session: session({
@@ -227,7 +231,10 @@ describe('NewQuestion — brainstorm mode', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
 
-    expect(sessionStorage.getItem(SESSION_KEY)).toBeNull();
+    // Written as a "cleared" sentinel, not removed — an absent key means
+    // "fall back to the latest session" (see reopen()), which is exactly
+    // what must NOT happen right after an explicit Start over.
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe('cleared');
     expect(screen.queryByText('something about React state')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Brainstorm')).toBeInTheDocument();
     expect(screen.getByLabelText('Brainstorm')).toHaveValue('');
@@ -237,5 +244,34 @@ describe('NewQuestion — brainstorm mode', () => {
       getBrainstormSessions.mock.calls.length +
       sendBrainstormTurn.mock.calls.length;
     expect(callsAfter).toBe(callsBefore);
+  });
+
+  it("'Start over' stays cleared across a tab-switch remount instead of resurrecting the discarded session", async () => {
+    sessionStorage.setItem(SESSION_KEY, 'stored-session-id');
+    getBrainstormSession.mockResolvedValue({
+      session: session({
+        id: 'stored-session-id',
+        messages: [{ role: 'user', content: 'something about React state' }],
+      }),
+    });
+    // Would be hit by the "no stored id" fallback path if Start over's
+    // sentinel were mistaken for an absent key.
+    getBrainstormSessions.mockResolvedValue({
+      sessions: [session({ id: 'stored-session-id' })],
+    });
+
+    await openBrainstormTab();
+    await screen.findByText('something about React state');
+    fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
+    expect(screen.queryByText('something about React state')).not.toBeInTheDocument();
+
+    // BrainstormPane unmounts on tab-switch away and remounts on switch-back
+    // — exactly the path the reopen effect runs on.
+    fireEvent.click(screen.getByRole('tab', { name: 'Describe' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Brainstorm' }));
+
+    await waitFor(() => expect(screen.getByLabelText('Brainstorm')).toHaveValue(''));
+    expect(screen.queryByText('something about React state')).not.toBeInTheDocument();
+    expect(getBrainstormSessions).not.toHaveBeenCalled();
   });
 });
