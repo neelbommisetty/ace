@@ -1,23 +1,19 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LLMMessage, LLMProvider } from '../lib/llm.js';
-import type { createGenerationEngine as CreateGenerationEngineFn } from './generation.js';
+import { createGenerationEngine } from './generation.js';
 import { openDb } from './db.js';
 import { createBus, type Bus } from './sse.js';
 import type { AceDb } from './types.js';
 
-// `resolveProvider` (called by the engine) transitively imports lib/llm.js,
-// whose mock-vs-real behavior is a module-level const read at import time —
-// same reason cli/lib/llm.test.ts and brainstorm.test.ts set the env var in
-// beforeAll before a dynamic import, rather than a static top-level one.
-let createGenerationEngine: typeof CreateGenerationEngineFn;
-
-beforeAll(async () => {
-  process.env.ACE_E2E_MOCK_LLM = '1';
-  ({ createGenerationEngine } = await import('./generation.js'));
-});
+// The engine's `resolveProvider` option is the keyless-testable seam for
+// provider resolution — no real API key, no ACE_E2E_MOCK_LLM env var, and no
+// dependency on settings.ts/lib/llm.js's key-configured-in-~/.ace/config.json
+// state. Every test below injects both this and the `llm` fake, so the whole
+// pipeline runs deterministically off the fakes, keyless.
+const FAKE_PROVIDER: () => LLMProvider | null = () => 'openai';
 
 let tempRoot = '';
 let db: AceDb;
@@ -76,7 +72,7 @@ function makeFakeLlm(
     return schema.parse(payload);
   };
   return {
-    llm: { chatObject } as unknown as Parameters<typeof CreateGenerationEngineFn>[0]['llm'],
+    llm: { chatObject } as unknown as Parameters<typeof createGenerationEngine>[0]['llm'],
     calls,
   };
 }
@@ -131,7 +127,13 @@ describe('createGenerationEngine', () => {
       }
     });
 
-    const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+    });
     const done = waitFor('generation-done');
 
     const { jobId } = engine.start({
@@ -174,7 +176,13 @@ describe('createGenerationEngine', () => {
       }
     });
 
-    const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+    });
     const done = waitFor('generation-done');
 
     const { jobId } = engine.start({
@@ -199,7 +207,13 @@ describe('createGenerationEngine', () => {
 
   it('discards the LLM solutionCode — the scaffolded file on disk is the signature-based stub, not the LLM solution', async () => {
     const { llm } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
-    const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+    });
     const done = waitFor('generation-done');
 
     engine.start({ category: 'leetcode-ds', difficulty: 'medium', topic: 'two sum variant' });
@@ -225,7 +239,13 @@ describe('createGenerationEngine', () => {
       },
     ]);
 
-    const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+    });
     const errored = waitFor('generation-error');
 
     const { jobId } = engine.start({
@@ -252,7 +272,13 @@ describe('createGenerationEngine', () => {
       resolvePayload = resolve;
     });
     const { llm, calls } = makeFakeLlm([async () => pending]);
-    const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+    });
 
     const events: string[] = [];
     bus.subscribe((name) => events.push(name));
@@ -287,7 +313,13 @@ describe('createGenerationEngine', () => {
 
   it('leaves status error with result_json intact when scaffolding fails after a successful LLM call', async () => {
     const { llm, calls } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
-    const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+    });
     const errored = waitFor('generation-error');
 
     // Fail exactly the mkdirSync call scaffoldQuestionAt makes for the
@@ -326,10 +358,66 @@ describe('createGenerationEngine', () => {
     ).toBe(false);
   });
 
+  it('retry re-scaffolds (rather than landing done with an empty dir) when the question dir exists but is empty from a prior write failure', async () => {
+    const { llm, calls } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+    });
+    const errored = waitFor('generation-error');
+
+    // Unlike the mkdirSync-failure test above, let mkdir succeed (the dir
+    // gets created) but fail the very first file write inside it
+    // (README.md) — leaves an empty, partially-scaffolded dir on disk.
+    const writeSpy = vi
+      .spyOn(fs, 'writeFileSync')
+      .mockImplementationOnce(() => {
+        throw new Error('ENOSPC: no space left on device, write');
+      });
+
+    const { jobId } = engine.start({
+      category: 'leetcode-ds',
+      difficulty: 'medium',
+      topic: 'two sum variant',
+    });
+    await errored;
+    writeSpy.mockRestore();
+
+    const dir = path.join(tempRoot, 'questions', 'leetcode-ds', 'two-sum-variant');
+    expect(fs.existsSync(dir)).toBe(true);
+    expect(fs.readdirSync(dir)).toEqual([]);
+
+    const failedJob = db.getGenerationJob(jobId)!;
+    expect(failedJob.status).toBe('error');
+
+    const done = waitFor('generation-done');
+    engine.retry(failedJob);
+    const { question } = await done;
+
+    // Must NOT land 'done' with the empty dir left untouched — the empty
+    // dir is wiped and re-scaffolded from scratch.
+    expect(fs.readdirSync(dir).length).toBeGreaterThan(0);
+    expect(fs.existsSync(path.join(dir, 'README.md'))).toBe(true);
+
+    const finalJob = db.getGenerationJob(jobId)!;
+    expect(finalJob.status).toBe('done');
+    expect(finalJob.questionId).toBe(question.id);
+    expect(calls).toHaveLength(1); // scaffold-only resume, no second llm call
+  });
+
   it('salvages the parsed JSON to disk when the llm_done db write throws', async () => {
     const { llm, calls } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
     const throwingDb = makeThrowOnLlmDoneDb(db);
-    const engine = createGenerationEngine({ db: throwingDb, bus, workspaceRoot: tempRoot, llm });
+    const engine = createGenerationEngine({
+      db: throwingDb,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+    });
     const errored = waitFor('generation-error');
 
     const { jobId } = engine.start({
@@ -357,7 +445,13 @@ describe('createGenerationEngine', () => {
   describe('slug sanitization and collision handling', () => {
     it('suffixes -2 on a same-slug collision, keeping both question dirs and rows', async () => {
       const { llm } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD, () => VALID_GENERATED_PAYLOAD]);
-      const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+      const engine = createGenerationEngine({
+        db,
+        bus,
+        workspaceRoot: tempRoot,
+        llm,
+        resolveProvider: FAKE_PROVIDER,
+      });
 
       const firstDone = waitFor('generation-done');
       engine.start({ category: 'leetcode-ds', difficulty: 'medium', topic: 'two sum variant' });
@@ -389,7 +483,13 @@ describe('createGenerationEngine', () => {
         slug: '../evil',
       };
       const { llm } = makeFakeLlm([() => maliciousPayload]);
-      const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+      const engine = createGenerationEngine({
+        db,
+        bus,
+        workspaceRoot: tempRoot,
+        llm,
+        resolveProvider: FAKE_PROVIDER,
+      });
       const done = waitFor('generation-done');
 
       const { jobId } = engine.start({
@@ -411,12 +511,53 @@ describe('createGenerationEngine', () => {
       expect(fs.existsSync(path.join(tempRoot, 'questions', 'evil'))).toBe(false);
       expect(fs.existsSync(path.join(tempRoot, 'evil'))).toBe(false);
     });
+
+    it('falls back to a default base slug when neither title nor topic slugify to anything (non-ASCII input)', async () => {
+      // Both slugify(title) and slugify(topic) collapse to '' here — no LLM
+      // slug, no ASCII alphanumerics anywhere. Without a fallback default,
+      // every -N candidate starts with '-' (or is '') and fails SLUG_RE,
+      // so resolveSlug would throw "too many collisions" (a misleading
+      // diagnosis — nothing collided) and strand the already-paid-for LLM
+      // result on the job row forever.
+      const nonAsciiPayload = {
+        ...VALID_GENERATED_PAYLOAD,
+        title: '二分探索の問題',
+        slug: undefined,
+      };
+      const { llm } = makeFakeLlm([() => nonAsciiPayload]);
+      const engine = createGenerationEngine({
+        db,
+        bus,
+        workspaceRoot: tempRoot,
+        llm,
+        resolveProvider: FAKE_PROVIDER,
+      });
+      const done = waitFor('generation-done');
+
+      const { jobId } = engine.start({
+        category: 'leetcode-ds',
+        difficulty: 'medium',
+        topic: '二分探索',
+      });
+      const { question } = await done;
+
+      expect(question.slug).toBe('question');
+      const job = db.getGenerationJob(jobId)!;
+      expect(job.status).toBe('done');
+      expect(job.slug).toBe('question');
+    });
   });
 
   describe('retry', () => {
     it('resumes scaffold-only from a persisted result_json — the llm is never called a second time', async () => {
       const { llm, calls } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
-      const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+      const engine = createGenerationEngine({
+        db,
+        bus,
+        workspaceRoot: tempRoot,
+        llm,
+        resolveProvider: FAKE_PROVIDER,
+      });
 
       // Force the first attempt to fail purely at the scaffold-I/O step, so
       // result_json/title/slug are already persisted before it errors out.
@@ -476,7 +617,13 @@ describe('createGenerationEngine', () => {
         },
         () => VALID_GENERATED_PAYLOAD,
       ]);
-      const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+      const engine = createGenerationEngine({
+        db,
+        bus,
+        workspaceRoot: tempRoot,
+        llm,
+        resolveProvider: FAKE_PROVIDER,
+      });
 
       const errored = waitFor('generation-error');
       const { jobId } = engine.start({
@@ -506,7 +653,13 @@ describe('createGenerationEngine', () => {
 
     it('corrects provenance to generated when a question row was already pre-inserted as manual (boot-reconcile race)', async () => {
       const { llm, calls } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
-      const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+      const engine = createGenerationEngine({
+        db,
+        bus,
+        workspaceRoot: tempRoot,
+        llm,
+        resolveProvider: FAKE_PROVIDER,
+      });
 
       // First attempt fails at the scaffold step — result/slug persisted,
       // no files/question row created yet.
@@ -552,12 +705,101 @@ describe('createGenerationEngine', () => {
       expect(calls).toHaveLength(1);
     });
 
+    it('does not merge onto another job\'s completed question when the recorded slug was claimed by that job before this one retries', async () => {
+      const { llm, calls } = makeFakeLlm([
+        () => VALID_GENERATED_PAYLOAD, // job1's first (failing-at-scaffold) attempt
+        () => VALID_GENERATED_PAYLOAD, // job2's successful attempt
+        // job1's retry reuses its persisted result (resumeFromResult) — no
+        // third handler needed, and none queued proves it isn't called.
+      ]);
+      const engine = createGenerationEngine({
+        db,
+        bus,
+        workspaceRoot: tempRoot,
+        llm,
+        resolveProvider: FAKE_PROVIDER,
+      });
+
+      // job1: fails at mkdir — slug 'two-sum-variant' is recorded on its job
+      // row, but the dir is never created, so the slug is invisible to any
+      // fs-only or db-only collision check.
+      const mkdirSpy = vi
+        .spyOn(fs, 'mkdirSync')
+        .mockImplementationOnce(() => {
+          throw new Error('EACCES: permission denied, mkdir');
+        });
+      const job1Errored = waitFor('generation-error');
+      const { jobId: job1Id } = engine.start({
+        category: 'leetcode-ds',
+        difficulty: 'medium',
+        topic: 'two sum variant',
+      });
+      await job1Errored;
+      mkdirSpy.mockRestore();
+
+      const job1Failed = db.getGenerationJob(job1Id)!;
+      expect(job1Failed.slug).toBe('two-sum-variant');
+
+      // job2: fresh job, same topic — resolveSlug's fs probe finds no dir
+      // (job1 never created one) so it claims the SAME slug and completes
+      // fully, becoming the real owner of 'two-sum-variant'.
+      const job2Done = waitFor('generation-done');
+      engine.start({ category: 'leetcode-ds', difficulty: 'medium', topic: 'two sum variant' });
+      const { question: q2 } = await job2Done;
+      expect(q2.slug).toBe('two-sum-variant');
+      expect(q2.source).toBe('generated');
+      expect(q2.title).toBe(VALID_GENERATED_PAYLOAD.title);
+
+      // Retrying job1 must NOT upsert onto q2's row (that would silently
+      // overwrite q2's title/difficulty via ON CONFLICT and strand job1
+      // pointing at a question it doesn't own). It drops the now-stale
+      // reservation and gets a fresh, re-suffixed slug instead. Dropping the
+      // reservation means the persisted `result` is also stale for slug
+      // purposes but is still reused (no result was invalidated) — the llm
+      // is NOT called again; this is still a scaffold-only resume.
+      const job1Done = waitFor('generation-done');
+      engine.retry(job1Failed);
+      const { question: q1 } = await job1Done;
+
+      expect(q1.id).not.toBe(q2.id);
+      expect(q1.slug).toBe('two-sum-variant-2');
+      expect(q1.source).toBe('generated');
+
+      // q2 must be completely untouched by job1's retry.
+      const q2Reloaded = db.getQuestionById(q2.id)!;
+      expect(q2Reloaded.title).toBe(VALID_GENERATED_PAYLOAD.title);
+      expect(q2Reloaded.slug).toBe('two-sum-variant');
+
+      expect(
+        fs.existsSync(path.join(tempRoot, 'questions', 'leetcode-ds', 'two-sum-variant')),
+      ).toBe(true);
+      expect(
+        fs.existsSync(path.join(tempRoot, 'questions', 'leetcode-ds', 'two-sum-variant-2')),
+      ).toBe(true);
+
+      // Only 2 llm calls: job1's original attempt + job2's attempt. job1's
+      // retry reuses its persisted result (resumeFromResult) — the stale
+      // slug is corrected without spending a third llm call.
+      expect(calls).toHaveLength(2);
+
+      const job1Final = db.getGenerationJob(job1Id)!;
+      expect(job1Final.status).toBe('done');
+      expect(job1Final.slug).toBe('two-sum-variant-2');
+      expect(job1Final.questionId).toBe(q1.id);
+    });
+
     it('throws synchronously when retrying a job that is not in an error state', async () => {
       const pending = new Promise<unknown>(() => {
         // never resolves — job stays 'running'
       });
       const { llm } = makeFakeLlm([async () => pending]);
-      const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+      const engine = createGenerationEngine({
+        db,
+        bus,
+        workspaceRoot: tempRoot,
+        llm,
+        resolveProvider: FAKE_PROVIDER,
+      });
 
       const { jobId } = engine.start({
         category: 'leetcode-ds',

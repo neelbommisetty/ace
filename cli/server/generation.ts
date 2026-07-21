@@ -10,9 +10,9 @@ import {
   type CategorySlug,
 } from '../lib/categories.js';
 import { getImportMetaDirname } from '../lib/import-meta.js';
-import { chatObject, type LLMMessage } from '../lib/llm.js';
+import { chatObject, type LLMMessage, type LLMProvider } from '../lib/llm.js';
 import { scaffoldQuestionAt } from '../lib/scaffold.js';
-import { resolveProvider } from './settings.js';
+import { resolveProvider as resolveProviderFromSettings } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, Difficulty, GenerationJobRow } from './types.js';
 
@@ -25,12 +25,19 @@ const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
 /**
  * Resolves a safe, unique slug for a generated question: the LLM-supplied
  * slug is used only if it passes SLUG_RE, else we fall back to
- * slugify(title||topic) (which always produces a SLUG_RE-safe string given
- * non-empty input). Suffixes -2..-9 on a questions-dir collision, re-checking
- * SLUG_RE on every candidate before probing the filesystem. Throws if all 9
- * candidates are taken.
+ * slugify(title||topic) — falling back further to a fixed default when
+ * BOTH title and topic slugify to '' (e.g. neither contains any ASCII
+ * alphanumerics), since an empty base can never produce an SLUG_RE-safe
+ * candidate (every candidate, including the -2..-9 suffixed ones, starts
+ * with '-' or is '') and would otherwise make the job permanently
+ * unretryable with a misleading "too many collisions" error. Suffixes
+ * -2..-9 on a collision — checked against both the filesystem AND the db's
+ * question rows, since a slug can be reserved on a job row (patched before
+ * any file/db write) without yet existing in either place — re-checking
+ * SLUG_RE on every candidate first. Throws if all 9 candidates are taken.
  */
 function resolveSlug(
+  db: AceDb,
   workspaceRoot: string,
   category: CategorySlug,
   parsedSlug: string | null | undefined,
@@ -38,12 +45,12 @@ function resolveSlug(
   topic: string,
 ): string {
   const trimmed = parsedSlug?.trim();
-  const base = trimmed && SLUG_RE.test(trimmed) ? trimmed : slugify(title || topic);
+  const base = trimmed && SLUG_RE.test(trimmed) ? trimmed : slugify(title || topic) || 'question';
   for (let n = 1; n <= 9; n++) {
     const candidate = n === 1 ? base : `${base}-${n}`;
     if (!SLUG_RE.test(candidate)) continue;
     const dir = path.join(workspaceRoot, 'questions', category, candidate);
-    if (!fs.existsSync(dir)) return candidate;
+    if (!fs.existsSync(dir) && !db.getQuestion(category, candidate)) return candidate;
   }
   throw new Error(`could not find an available slug for "${base}" — too many collisions`);
 }
@@ -96,9 +103,18 @@ export function createGenerationEngine(opts: {
   bus: Bus;
   workspaceRoot: string;
   llm?: GenerationLlm;
+  /**
+   * Injectable seam alongside `llm`: without it, a keyless test env would hit
+   * settings.ts's resolveProvider() (real API-key config) before ever
+   * reaching the injected `llm` fake, making the `llm` seam alone
+   * insufficient to drive the pipeline without an API key. Defaults to the
+   * real settings-backed resolver.
+   */
+  resolveProvider?: () => LLMProvider | null;
 }): GenerationEngine {
   const { db, bus, workspaceRoot } = opts;
   const llm = opts.llm ?? { chatObject };
+  const resolveProvider = opts.resolveProvider ?? resolveProviderFromSettings;
   const inFlight = new Set<string>();
   let disposed = false;
 
@@ -174,20 +190,50 @@ Question type: ${config.type}`;
 
       // Slug: if this job already has one recorded (a prior attempt — full
       // run or retry — got at least as far as persisting it), reuse it as-is
-      // rather than re-resolving/re-suffixing. Otherwise resolve fresh: the
-      // LLM-supplied slug is validated/sanitized and, on a questions-dir
-      // collision, suffixed -2..-9. Recorded on the job row BEFORE any file
-      // I/O so a retry after a scaffold failure reuses the same slug rather
-      // than re-suffixing or spending a second LLM call.
+      // rather than re-resolving/re-suffixing — UNLESS a *generated* question
+      // already exists in the db under that (category, slug). An
+      // 'error'-state job's own `questionId` is always null (the only place
+      // that's ever set is the 'done' patch below, and 'done' jobs can't be
+      // retried), so an existing row with source 'generated' there can only
+      // be a DIFFERENT job's completed output that raced in after this job
+      // reserved the slug but before it scaffolded — reusing it would
+      // silently overwrite that job's question via upsertQuestion's ON
+      // CONFLICT. (A 'manual' row at this slug, by contrast, is exactly the
+      // boot-reconcile race this job's own leftover scaffold artifacts can
+      // produce — see the provenance re-assertion below — and must still be
+      // reused/corrected, not treated as a collision.) In the collision
+      // case, drop the stale reservation and resolve fresh instead.
+      // Otherwise resolve fresh: the LLM-supplied slug is validated/
+      // sanitized and, on a collision, suffixed -2..-9. Recorded on the job
+      // row BEFORE any file I/O so a retry after a scaffold failure reuses
+      // the same slug rather than re-suffixing or spending a second LLM call.
       let slug: string;
-      let dir = job.slug ? path.join(workspaceRoot, 'questions', category, job.slug) : '';
-      const dirAlreadyExists = job.slug ? fs.existsSync(dir) : false;
-      if (job.slug) {
+      let dir: string;
+      const staleSlugTaken = job.slug
+        ? db.getQuestion(category, job.slug)?.source === 'generated'
+        : false;
+      if (job.slug && !staleSlugTaken) {
         slug = job.slug;
+        dir = path.join(workspaceRoot, 'questions', category, slug);
       } else {
-        slug = resolveSlug(workspaceRoot, category, parsed.slug, title, job.topic);
+        slug = resolveSlug(db, workspaceRoot, category, parsed.slug, title, job.topic);
         dir = path.join(workspaceRoot, 'questions', category, slug);
         db.patchGenerationJob(jobId, { slug });
+      }
+
+      // If the dir already exists (a partial prior attempt got as far as
+      // writing files before failing later in the pipeline), reuse it as-is —
+      // idempotent, no re-suffix, no re-scaffold. But a dir that exists with
+      // zero files is not a completed scaffold — it's the leftover of a
+      // prior write failure right after the dir was created (e.g. disk full
+      // on the very first file) — wipe it so the scaffold step below runs
+      // fresh instead of the job landing 'done' with a permanently empty,
+      // unrecoverable question dir (patchGenerationJob rejects any patch
+      // once status is 'done').
+      let dirAlreadyExists = fs.existsSync(dir);
+      if (dirAlreadyExists && fs.readdirSync(dir).length === 0) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        dirAlreadyExists = false;
       }
 
       // LLM solutionCode is always discarded (anti-cheat rule) — the
@@ -196,10 +242,6 @@ Question type: ${config.type}`;
       // denied, a last-instant dir collision) never loses the already-persisted
       // result_json — the outer catch below patches status 'error' without
       // touching the `result` field, so it stays intact for a scaffold-only retry.
-      //
-      // If the dir already exists (a partial prior attempt got as far as
-      // writing files before failing later in the pipeline), reuse it as-is —
-      // idempotent, no re-suffix, no re-scaffold.
       if (!dirAlreadyExists) {
         try {
           ({ dir } = scaffoldQuestionAt(
