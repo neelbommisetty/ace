@@ -76,6 +76,15 @@ export interface GenerationEngine {
     topic: string;
     brainstormSessionId?: string | null;
   }): { jobId: string };
+  /**
+   * Resumes a job that landed on 'error'. Throws if `job.status` is anything
+   * else (concurrency-cap enforcement, like `start`, is the route's job — not
+   * this method's). If the job already has a persisted `result` (an LLM call
+   * already succeeded), this is a scaffold-only resume that never calls the
+   * llm again; otherwise it re-runs the full pipeline from scratch. Re-emits
+   * 'generation-started' with the SAME jobId.
+   */
+  retry(job: GenerationJobRow): { jobId: string };
   /** Number of jobs currently in flight, across all categories. */
   runningCount(): number;
   isAnyRunning(): boolean;
@@ -93,68 +102,93 @@ export function createGenerationEngine(opts: {
   const inFlight = new Set<string>();
   let disposed = false;
 
-  async function runJob(job: GenerationJobRow): Promise<void> {
+  // `resumeFromResult: true` is the retry-scaffold-only path: `job.result` is
+  // already a persisted, paid-for LLM output, so the llm call is skipped
+  // entirely and we jump straight to slug resolution + scaffolding.
+  async function runJob(
+    job: GenerationJobRow,
+    runOpts: { resumeFromResult?: boolean } = {},
+  ): Promise<void> {
     const jobId = job.id;
+    const category = job.category as CategorySlug;
+    const difficulty = job.difficulty;
     try {
-      const provider = resolveProvider();
-      if (!provider) throw new Error('no LLM API key configured — add one in Settings');
+      let parsed: GeneratedQuestion;
+      let title: string;
 
-      const category = job.category as CategorySlug;
-      const difficulty = job.difficulty;
-      const config = getCategoryConfig(category);
-      const systemPrompt = fs.readFileSync(
-        path.join(PROMPTS_DIR, 'generate', `${getPromptGroup(category)}.md`),
-        'utf8',
-      );
-      const userMessage = `Generate a ${difficulty} difficulty ${config.name} interview question about: ${job.topic}
+      if (runOpts.resumeFromResult && job.result) {
+        parsed = job.result as unknown as GeneratedQuestion;
+        title = job.title || parsed.title || job.topic;
+      } else {
+        const provider = resolveProvider();
+        if (!provider) throw new Error('no LLM API key configured — add one in Settings');
+
+        const config = getCategoryConfig(category);
+        const systemPrompt = fs.readFileSync(
+          path.join(PROMPTS_DIR, 'generate', `${getPromptGroup(category)}.md`),
+          'utf8',
+        );
+        const userMessage = `Generate a ${difficulty} difficulty ${config.name} interview question about: ${job.topic}
 
 Category slug: ${category}
 Question type: ${config.type}`;
 
-      const messages: LLMMessage[] = [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage },
-      ];
+        const messages: LLMMessage[] = [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userMessage },
+        ];
 
-      // Bound the single-shot call (generateObject has no stream to
-      // watchdog) so a stalled provider can't hold the in-flight slot (and
-      // any downstream concurrency cap) until server restart.
-      const abort = AbortSignal.timeout(180_000);
-      const parsed = await llm.chatObject(provider, messages, GeneratedQuestionSchema, {
-        abortSignal: abort,
-        maxOutputTokens: 8192,
-      });
-      // Mirrors the disputes/reviews/brainstorm engines' convention: a paid
-      // call that resolves after dispose() must not write through a db the
-      // session teardown may already be closing (or have closed).
-      if (disposed) return;
+        // Bound the single-shot call (generateObject has no stream to
+        // watchdog) so a stalled provider can't hold the in-flight slot (and
+        // any downstream concurrency cap) until server restart.
+        const abort = AbortSignal.timeout(180_000);
+        parsed = await llm.chatObject(provider, messages, GeneratedQuestionSchema, {
+          abortSignal: abort,
+          maxOutputTokens: 8192,
+        });
+        // Mirrors the disputes/reviews/brainstorm engines' convention: a paid
+        // call that resolves after dispose() must not write through a db the
+        // session teardown may already be closing (or have closed).
+        if (disposed) return;
 
-      const title = parsed.title || job.topic;
+        title = parsed.title || job.topic;
 
-      // Persist first: the LLM call is paid for, so the parsed result must
-      // land in the db BEFORE any file I/O is attempted. If the write
-      // itself throws, salvage the JSON to disk rather than lose it.
-      try {
-        db.patchGenerationJob(jobId, { status: 'llm_done', result: parsed, title });
-      } catch (persistErr) {
-        const salvagePath = path.join(workspaceRoot, '.ace', `generation-salvage-${jobId}.json`);
+        // Persist first: the LLM call is paid for, so the parsed result must
+        // land in the db BEFORE any file I/O is attempted. If the write
+        // itself throws, salvage the JSON to disk rather than lose it.
         try {
-          fs.writeFileSync(salvagePath, JSON.stringify(parsed, null, 2), 'utf8');
-        } catch {
-          // disk itself is failing; nothing more we can do
+          db.patchGenerationJob(jobId, { status: 'llm_done', result: parsed, title });
+        } catch (persistErr) {
+          const salvagePath = path.join(workspaceRoot, '.ace', `generation-salvage-${jobId}.json`);
+          try {
+            fs.writeFileSync(salvagePath, JSON.stringify(parsed, null, 2), 'utf8');
+          } catch {
+            // disk itself is failing; nothing more we can do
+          }
+          const reason = persistErr instanceof Error ? persistErr.message : String(persistErr);
+          throw new Error(
+            `generation completed but could not be saved (${reason}); result salvaged to ${salvagePath}`,
+          );
         }
-        const reason = persistErr instanceof Error ? persistErr.message : String(persistErr);
-        throw new Error(
-          `generation completed but could not be saved (${reason}); result salvaged to ${salvagePath}`,
-        );
       }
 
-      // Slug: LLM-supplied slug is validated/sanitized and, on a questions-dir
+      // Slug: if this job already has one recorded (a prior attempt — full
+      // run or retry — got at least as far as persisting it), reuse it as-is
+      // rather than re-resolving/re-suffixing. Otherwise resolve fresh: the
+      // LLM-supplied slug is validated/sanitized and, on a questions-dir
       // collision, suffixed -2..-9. Recorded on the job row BEFORE any file
       // I/O so a retry after a scaffold failure reuses the same slug rather
       // than re-suffixing or spending a second LLM call.
-      const slug = resolveSlug(workspaceRoot, category, parsed.slug, title, job.topic);
-      db.patchGenerationJob(jobId, { slug });
+      let slug: string;
+      let dir = job.slug ? path.join(workspaceRoot, 'questions', category, job.slug) : '';
+      const dirAlreadyExists = job.slug ? fs.existsSync(dir) : false;
+      if (job.slug) {
+        slug = job.slug;
+      } else {
+        slug = resolveSlug(workspaceRoot, category, parsed.slug, title, job.topic);
+        dir = path.join(workspaceRoot, 'questions', category, slug);
+        db.patchGenerationJob(jobId, { slug });
+      }
 
       // LLM solutionCode is always discarded (anti-cheat rule) — the
       // scaffold templates build a stub from the signature instead. Wrapped
@@ -162,29 +196,34 @@ Question type: ${config.type}`;
       // denied, a last-instant dir collision) never loses the already-persisted
       // result_json — the outer catch below patches status 'error' without
       // touching the `result` field, so it stays intact for a scaffold-only retry.
-      let dir: string;
-      try {
-        ({ dir } = scaffoldQuestionAt(
-          workspaceRoot,
-          {
-            title,
-            slug,
-            category,
-            difficulty,
-            description: parsed.description || '',
-            signature: parsed.signature ?? undefined,
-            testCode: parsed.testCode ?? undefined,
-          },
-          { writeScorecard: false },
-        ));
-      } catch (scaffoldErr) {
-        const reason = scaffoldErr instanceof Error ? scaffoldErr.message : String(scaffoldErr);
-        throw new Error(
-          `question files could not be written (${reason}) — result is saved, retry to resume`,
-        );
+      //
+      // If the dir already exists (a partial prior attempt got as far as
+      // writing files before failing later in the pipeline), reuse it as-is —
+      // idempotent, no re-suffix, no re-scaffold.
+      if (!dirAlreadyExists) {
+        try {
+          ({ dir } = scaffoldQuestionAt(
+            workspaceRoot,
+            {
+              title,
+              slug,
+              category,
+              difficulty,
+              description: parsed.description || '',
+              signature: parsed.signature ?? undefined,
+              testCode: parsed.testCode ?? undefined,
+            },
+            { writeScorecard: false },
+          ));
+        } catch (scaffoldErr) {
+          const reason = scaffoldErr instanceof Error ? scaffoldErr.message : String(scaffoldErr);
+          throw new Error(
+            `question files could not be written (${reason}) — result is saved, retry to resume`,
+          );
+        }
       }
 
-      const question = db.upsertQuestion({
+      const upserted = db.upsertQuestion({
         category,
         slug,
         title,
@@ -196,8 +235,12 @@ Question type: ${config.type}`;
       // Re-assert provenance: covers the crash window where boot-time
       // reconcile already inserted this scorecard-less dir as source
       // 'manual', which upsertQuestion's insert-only source semantics can
-      // never correct on its own.
-      db.setQuestionSource(question.id, 'generated');
+      // never correct on its own. `upserted.source` itself may still read
+      // stale ('manual') here — the ON CONFLICT branch never touches
+      // `source` — so the corrected value is applied locally too, rather
+      // than emitting/persisting-on-the-job a snapshot that's already wrong.
+      db.setQuestionSource(upserted.id, 'generated');
+      const question = { ...upserted, source: 'generated' as const };
 
       db.patchGenerationJob(jobId, { status: 'done', questionId: question.id });
       bus.emit('generation-done', { jobId, question });
@@ -235,6 +278,25 @@ Question type: ${config.type}`;
       bus.emit('generation-started', { job });
       void runJob(job);
       return { jobId: job.id };
+    },
+
+    retry(job) {
+      if (disposed) throw new Error('generation engine is disposed');
+      if (job.status !== 'error') {
+        throw new Error(
+          `generation job ${job.id} is not in an error state (status: ${job.status}) and cannot be retried`,
+        );
+      }
+
+      // Clears the stale error message on the way back to 'running'; every
+      // other field (result, title, slug, ...) is omitted from the patch and
+      // so is preserved as-is — that preserved `result`/`slug` is exactly
+      // what makes the scaffold-only resume path possible below.
+      const resumed = db.patchGenerationJob(job.id, { status: 'running', errorMessage: null });
+      inFlight.add(resumed.id);
+      bus.emit('generation-started', { job: resumed });
+      void runJob(resumed, { resumeFromResult: resumed.result != null });
+      return { jobId: resumed.id };
     },
 
     runningCount() {

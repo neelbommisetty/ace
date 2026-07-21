@@ -412,4 +412,162 @@ describe('createGenerationEngine', () => {
       expect(fs.existsSync(path.join(tempRoot, 'evil'))).toBe(false);
     });
   });
+
+  describe('retry', () => {
+    it('resumes scaffold-only from a persisted result_json — the llm is never called a second time', async () => {
+      const { llm, calls } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
+      const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+
+      // Force the first attempt to fail purely at the scaffold-I/O step, so
+      // result_json/title/slug are already persisted before it errors out.
+      const mkdirSpy = vi
+        .spyOn(fs, 'mkdirSync')
+        .mockImplementationOnce(() => {
+          throw new Error('EACCES: permission denied, mkdir');
+        });
+
+      const errored = waitFor('generation-error');
+      const { jobId } = engine.start({
+        category: 'leetcode-ds',
+        difficulty: 'medium',
+        topic: 'two sum variant',
+      });
+      await errored;
+      mkdirSpy.mockRestore();
+
+      const failedJob = db.getGenerationJob(jobId)!;
+      expect(failedJob.status).toBe('error');
+      expect(failedJob.result).toEqual(VALID_GENERATED_PAYLOAD);
+      expect(failedJob.slug).toBe('two-sum-variant');
+
+      const startedEvents: any[] = [];
+      bus.subscribe((name, data) => {
+        if (name === 'generation-started') startedEvents.push(data);
+      });
+
+      const done = waitFor('generation-done');
+      const { jobId: retryJobId } = engine.retry(failedJob);
+      expect(retryJobId).toBe(jobId); // same jobId, re-emitted
+
+      const { question } = await done;
+      expect(question.slug).toBe('two-sum-variant');
+      expect(question.source).toBe('generated');
+
+      const finalJob = db.getGenerationJob(jobId)!;
+      expect(finalJob.status).toBe('done');
+      expect(finalJob.questionId).toBe(question.id);
+      expect(finalJob.errorMessage).toBeNull();
+
+      // The llm fake's queue only ever had one handler — a second call would
+      // throw "no more handlers queued" and fail the job, so a 'done' status
+      // here already proves no second call happened; this is the direct count check.
+      expect(calls).toHaveLength(1);
+
+      expect(startedEvents.some((e) => e.job.id === jobId)).toBe(true);
+      expect(
+        fs.existsSync(path.join(tempRoot, 'questions', 'leetcode-ds', 'two-sum-variant')),
+      ).toBe(true);
+    });
+
+    it('re-runs the full pipeline (new llm call) when no result_json was ever persisted', async () => {
+      const { llm, calls } = makeFakeLlm([
+        () => {
+          throw new Error('simulated transient provider failure');
+        },
+        () => VALID_GENERATED_PAYLOAD,
+      ]);
+      const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+
+      const errored = waitFor('generation-error');
+      const { jobId } = engine.start({
+        category: 'leetcode-ds',
+        difficulty: 'medium',
+        topic: 'two sum variant',
+      });
+      await errored;
+
+      const failedJob = db.getGenerationJob(jobId)!;
+      expect(failedJob.status).toBe('error');
+      expect(failedJob.result).toBeNull();
+      expect(failedJob.slug).toBeNull();
+
+      const done = waitFor('generation-done');
+      const { jobId: retryJobId } = engine.retry(failedJob);
+      expect(retryJobId).toBe(jobId);
+
+      const { question } = await done;
+      expect(question.slug).toBe('two-sum-variant');
+
+      expect(calls).toHaveLength(2);
+      const finalJob = db.getGenerationJob(jobId)!;
+      expect(finalJob.status).toBe('done');
+      expect(finalJob.result).toEqual(VALID_GENERATED_PAYLOAD);
+    });
+
+    it('corrects provenance to generated when a question row was already pre-inserted as manual (boot-reconcile race)', async () => {
+      const { llm, calls } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
+      const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+
+      // First attempt fails at the scaffold step — result/slug persisted,
+      // no files/question row created yet.
+      const mkdirSpy = vi
+        .spyOn(fs, 'mkdirSync')
+        .mockImplementationOnce(() => {
+          throw new Error('EACCES: permission denied, mkdir');
+        });
+      const errored = waitFor('generation-error');
+      const { jobId } = engine.start({
+        category: 'leetcode-ds',
+        difficulty: 'medium',
+        topic: 'two sum variant',
+      });
+      await errored;
+      mkdirSpy.mockRestore();
+
+      const failedJob = db.getGenerationJob(jobId)!;
+      expect(failedJob.slug).toBe('two-sum-variant');
+
+      // Simulate boot-time reconcile racing the retry: it finds the
+      // scorecard-less dir on disk (from some earlier partial write in a
+      // real crash) and inserts it as 'manual' before the engine's own
+      // upsert runs.
+      const preInserted = db.upsertQuestion({
+        category: 'leetcode-ds',
+        slug: 'two-sum-variant',
+        title: 'stale title',
+        difficulty: 'medium',
+        suggestedMinutes: 30,
+        dirPath: path.join(tempRoot, 'questions', 'leetcode-ds', 'two-sum-variant'),
+        source: 'manual',
+      });
+      expect(preInserted.source).toBe('manual');
+
+      const done = waitFor('generation-done');
+      engine.retry(failedJob);
+      const { question } = await done;
+
+      expect(question.id).toBe(preInserted.id); // same row, re-asserted provenance
+      expect(question.source).toBe('generated');
+      expect(db.getQuestionById(question.id)!.source).toBe('generated');
+      expect(calls).toHaveLength(1);
+    });
+
+    it('throws synchronously when retrying a job that is not in an error state', async () => {
+      const pending = new Promise<unknown>(() => {
+        // never resolves — job stays 'running'
+      });
+      const { llm } = makeFakeLlm([async () => pending]);
+      const engine = createGenerationEngine({ db, bus, workspaceRoot: tempRoot, llm });
+
+      const { jobId } = engine.start({
+        category: 'leetcode-ds',
+        difficulty: 'medium',
+        topic: 'two sum variant',
+      });
+
+      const runningJob = db.getGenerationJob(jobId)!;
+      expect(runningJob.status).toBe('running');
+      expect(() => engine.retry(runningJob)).toThrow(/not in an error state/);
+    });
+  });
 });
