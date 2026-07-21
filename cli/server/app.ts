@@ -7,12 +7,7 @@ import { CATEGORIES, type CategoryConfig, type CategorySlug } from '../lib/categ
 import { getQuestionsDir } from '../lib/paths.js';
 import { getStubContent } from '../lib/scaffold.js';
 import { readBlob, saveBlob } from './blobs.js';
-import {
-  applyDispute,
-  DisputeApplyError,
-  getDisputeGuardError,
-  type DisputeEngine,
-} from './disputes.js';
+import { applyDispute, DisputeApplyError, getDisputeGuardError } from './disputes.js';
 import {
   ScopeError,
   readWorkspaceFile,
@@ -20,8 +15,8 @@ import {
   toWorkspaceRelPath,
   writeWorkspaceFile,
 } from './files.js';
-import { getReviewGuardError, type ReviewEngine } from './reviews.js';
-import type { Runner } from './runner.js';
+import { getReviewGuardError } from './reviews.js';
+import type { WorkspaceSession } from './session.js';
 import {
   getSettingsInfo,
   resolveProvider,
@@ -49,18 +44,16 @@ export interface ImporterApi {
 }
 
 export interface CreateAppOptions {
-  db: AceDb;
   bus: Bus;
   workspaceRoot: string;
   token: string;
   uiDir: string | null;
   version: string;
-  runner: Runner;
   importer: ImporterApi;
-  reviews: ReviewEngine;
-  disputes: DisputeEngine;
-  /** Latest reconcile's skipped dirs (dirs under unknown categories). */
-  getSkippedDirs?: () => string[];
+  /** Accessor for the current WorkspaceSession — handlers read db/engines from it at entry. */
+  getSession: () => WorkspaceSession;
+  /** True while a workspace reset is in flight. Defaults to always false. */
+  isResetting?: () => boolean;
 }
 
 const HOST_RE = /^(127\.0\.0\.1|localhost)(:\d+)?$/;
@@ -103,9 +96,8 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 export function createApp(opts: CreateAppOptions): Hono {
-  const { db, bus, workspaceRoot, token, uiDir, version, runner, importer, reviews, disputes } =
-    opts;
-  const getSkippedDirs = opts.getSkippedDirs ?? (() => []);
+  const { bus, workspaceRoot, token, uiDir, version, importer, getSession } = opts;
+  const isResetting = opts.isResetting ?? (() => false);
   const app = new Hono();
 
   app.onError((err, c) => {
@@ -136,6 +128,21 @@ export function createApp(opts: CreateAppOptions): Hono {
     await next();
   });
 
+  // While a workspace reset is in flight, block all other /api/* traffic —
+  // except health checks (so the UI can still poll) and the reset route
+  // itself, whose own route-level guard answers a concurrent reset with a
+  // more specific 409 instead of being swallowed here.
+  app.use('/api/*', async (c, next) => {
+    if (isResetting()) {
+      const isHealth = c.req.path === '/api/health';
+      const isResetRoute = c.req.path === '/api/workspace/reset' && c.req.method === 'POST';
+      if (!isHealth && !isResetRoute) {
+        return c.json({ error: 'workspace reset in progress — retry in a moment' }, 503);
+      }
+    }
+    await next();
+  });
+
   async function readJsonBody(c: {
     req: { json(): Promise<unknown> };
   }): Promise<Record<string, unknown> | null> {
@@ -156,6 +163,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   app.get('/api/health', (c) => c.json({ ok: true, version }));
 
   app.get('/api/workspace', (c) => {
+    const { db, skippedDirs } = getSession();
     const questions = db.listQuestions();
     let attempts = 0;
     let testRuns = 0;
@@ -179,16 +187,17 @@ export function createApp(opts: CreateAppOptions): Hono {
       questionsDir: getQuestionsDir(workspaceRoot),
       version,
       counts: { questions: questions.length, attempts, testRuns },
-      skippedDirs: getSkippedDirs(),
+      skippedDirs,
       legacyImport,
       activeAttempt: db.getLatestActiveAttempt(),
     };
     return c.json(info);
   });
 
-  app.get('/api/questions', (c) => c.json(db.listQuestions()));
+  app.get('/api/questions', (c) => c.json(getSession().db.listQuestions()));
 
   app.get('/api/questions/:category/:slug', (c) => {
+    const { db } = getSession();
     const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
     if (!question) return c.json({ error: 'question not found' }, 404);
 
@@ -236,6 +245,7 @@ export function createApp(opts: CreateAppOptions): Hono {
    * reset compare against / restore from.
    */
   function captureScaffoldBaseline(question: QuestionRow): void {
+    const { db } = getSession();
     const config = (CATEGORIES as Record<string, CategoryConfig | undefined>)[question.category];
     if (!config) return;
     for (const name of [...config.solutionFiles, ...config.testFiles]) {
@@ -259,6 +269,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   }
 
   app.post('/api/questions/:category/:slug/attempts', (c) => {
+    const { db } = getSession();
     const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
     if (!question) return c.json({ error: 'question not found' }, 404);
 
@@ -274,12 +285,14 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/attempts/:id', (c) => {
+    const { db } = getSession();
     const attempt = db.getAttempt(c.req.param('id'));
     if (!attempt) return c.json({ error: 'attempt not found' }, 404);
     return c.json({ attempt, events: db.listAttemptEvents(attempt.id) });
   });
 
   app.patch('/api/attempts/:id', async (c) => {
+    const { db } = getSession();
     const attempt = db.getAttempt(c.req.param('id'));
     if (!attempt) return c.json({ error: 'attempt not found' }, 404);
 
@@ -307,6 +320,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.post('/api/attempts/:id/events', async (c) => {
+    const { db } = getSession();
     const attempt = db.getAttempt(c.req.param('id'));
     if (!attempt) return c.json({ error: 'attempt not found' }, 404);
 
@@ -338,6 +352,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/resume', (c) => {
+    const { db } = getSession();
     const latest = db.getLatestActiveAttempt();
     if (!latest) return c.json({ attempt: null });
     return c.json({ attempt: latest.attempt, question: latest.question });
@@ -354,6 +369,7 @@ export function createApp(opts: CreateAppOptions): Hono {
 
   /** Records a 'save' snapshot when the written content is new for that file. */
   function snapshotOnWrite(relPath: string, content: string, hash: string): void {
+    const { db } = getSession();
     // relPath shape: questions/<category>/<slug>/<file...>
     const segments = relPath.split('/');
     if (segments.length < 4 || segments[0] !== 'questions') return;
@@ -391,6 +407,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.post('/api/attempts/:id/test-runs', async (c) => {
+    const { db, runner } = getSession();
     const attempt = db.getAttempt(c.req.param('id'));
     if (!attempt) return c.json({ error: 'attempt not found' }, 404);
 
@@ -409,6 +426,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/test-runs', (c) => {
+    const { db } = getSession();
     const questionId = c.req.query('questionId');
     if (!questionId) return c.json({ error: 'questionId query param is required' }, 400);
     const rawLimit = c.req.query('limit');
@@ -424,16 +442,17 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/import/preview', (c) =>
-    c.json({ items: importer.previewImport(db, workspaceRoot) }),
+    c.json({ items: importer.previewImport(getSession().db, workspaceRoot) }),
   );
 
-  app.post('/api/import/run', (c) => c.json(importer.runImport(db, workspaceRoot)));
+  app.post('/api/import/run', (c) => c.json(importer.runImport(getSession().db, workspaceRoot)));
 
   // -------------------------------------------------------------------------
   // Reviews
   // -------------------------------------------------------------------------
 
   app.post('/api/questions/:category/:slug/reviews', (c) => {
+    const { db, reviews } = getSession();
     const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
     if (!question) return c.json({ error: 'question not found' }, 404);
 
@@ -452,12 +471,14 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/questions/:category/:slug/reviews', (c) => {
+    const { db } = getSession();
     const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
     if (!question) return c.json({ error: 'question not found' }, 404);
     return c.json(db.listReviews(question.id));
   });
 
   app.get('/api/reviews/:id', (c) => {
+    const { db } = getSession();
     const review = db.getReview(c.req.param('id'));
     if (!review) return c.json({ error: 'review not found' }, 404);
     const snapshotContent = review.snapshotHash
@@ -471,6 +492,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   // -------------------------------------------------------------------------
 
   app.post('/api/test-runs/:runId/disputes', async (c) => {
+    const { db, disputes } = getSession();
     const run = db.getTestRun(c.req.param('runId'));
     if (!run) return c.json({ error: 'test run not found' }, 404);
     const question = db.getQuestionById(run.questionId);
@@ -500,12 +522,14 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/questions/:category/:slug/disputes', (c) => {
+    const { db } = getSession();
     const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
     if (!question) return c.json({ error: 'question not found' }, 404);
     return c.json(db.listDisputes(question.id));
   });
 
   app.post('/api/disputes/:id/apply', (c) => {
+    const { db } = getSession();
     const dispute = db.getDispute(c.req.param('id'));
     if (!dispute) return c.json({ error: 'dispute not found' }, 404);
     try {
@@ -521,6 +545,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   // -------------------------------------------------------------------------
 
   app.post('/api/attempts/:id/fresh', async (c) => {
+    const { db } = getSession();
     const attempt = db.getAttempt(c.req.param('id'));
     if (!attempt) return c.json({ error: 'attempt not found' }, 404);
 
@@ -596,6 +621,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   // -------------------------------------------------------------------------
 
   app.get('/api/history', (c) => {
+    const { db } = getSession();
     const q = c.req.query('q');
     const category = c.req.query('category');
 
@@ -706,7 +732,7 @@ export function createApp(opts: CreateAppOptions): Hono {
       try {
         await stream.writeSSE({
           event: 'hello',
-          data: JSON.stringify({ version, workspaceRoot }),
+          data: JSON.stringify({ version, workspaceRoot, epoch: getSession().epoch }),
         });
       } catch {
         stop();

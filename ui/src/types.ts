@@ -189,7 +189,7 @@ export type HistoryItem =
   | { type: 'dispute'; at: string; question: QuestionRow; dispute: DisputeRow };
 
 export interface SseEventMap {
-  hello: { version: string; workspaceRoot: string };
+  hello: { version: string; workspaceRoot: string; epoch: string };
   'file-changed': { relPath: string; hash: string };
   'questions-changed': Record<string, never>;
   'run-started': {

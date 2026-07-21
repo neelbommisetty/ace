@@ -209,7 +209,7 @@ export interface ImportResult {
 // ---------------------------------------------------------------------------
 
 export interface SseEventMap {
-  hello: { version: string; workspaceRoot: string };
+  hello: { version: string; workspaceRoot: string; epoch: string };
   /** A file changed on disk from OUTSIDE the server (VS Code etc.). */
   'file-changed': { relPath: string; hash: string };
   /** Question dirs were added/removed; clients should refetch the library. */
