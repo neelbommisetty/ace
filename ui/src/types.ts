@@ -272,6 +272,9 @@ export interface SseEventMap {
   'dispute-started': { disputeJobId: string; questionId: string; testRunId: string };
   'dispute-done': { disputeJobId: string; questionId: string; dispute: DisputeRow };
   'dispute-error': { disputeJobId: string; questionId: string; message: string };
+  'brainstorm-started': { sessionId: string };
+  'brainstorm-done': { sessionId: string; turn: BrainstormTurn };
+  'brainstorm-error': { sessionId: string; message: string };
   /**
    * `requestId` echoes back the initiating POST's own id (see
    * `resetWorkspace` in `api.ts`) so the initiating tab can recognize its
