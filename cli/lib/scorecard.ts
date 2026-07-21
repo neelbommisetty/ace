@@ -19,7 +19,23 @@ export function readScorecard(category: CategorySlug, slug: string): Scorecard |
 }
 
 export function writeScorecard(category: CategorySlug, slug: string, scorecard: Scorecard): void {
-  const filepath = getScorecardPath(category, slug);
+  writeScorecardAt(resolveWorkspaceRoot(), category, slug, scorecard);
+}
+
+/**
+ * Writes scorecard.json under the GIVEN workspace root, never resolving the
+ * root from process.cwd(). Used by the server (bound to workspaceRoot at
+ * boot) so scaffolded questions land under the right workspace regardless of
+ * the server process's cwd.
+ */
+export function writeScorecardAt(
+  root: string,
+  category: CategorySlug,
+  slug: string,
+  scorecard: Scorecard,
+): void {
+  const questionsDir = getQuestionsDir(root);
+  const filepath = path.join(questionsDir, category, slug, 'scorecard.json');
   fs.writeFileSync(filepath, JSON.stringify(scorecard, null, 2) + '\n', 'utf-8');
 }
 
