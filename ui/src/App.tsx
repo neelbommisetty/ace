@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom';
 import { getToken, setUnauthorizedHandler } from './api';
+import { Toast } from './components/Toast';
 import { consumeSuppressForReset, isSuppressArmed } from './lib/resetSuppress';
 import { History } from './screens/History';
 import { Library } from './screens/Library';
+import { NewQuestion } from './screens/NewQuestion';
 import { NotFound } from './screens/NotFound';
 import { Room } from './screens/Room';
 import { Settings } from './screens/Settings';
@@ -71,6 +73,7 @@ export function App() {
         <div className="app-main">
           <Routes>
             <Route path="/" element={<Library />} />
+            <Route path="/new" element={<NewQuestion />} />
             <Route path="/q/:category/:slug" element={<Room />} />
             <Route path="/history" element={<History />} />
             <Route path="/settings" element={<Settings />} />
@@ -78,6 +81,7 @@ export function App() {
           </Routes>
         </div>
       </div>
+      <Toast />
     </BrowserRouter>
   );
 }

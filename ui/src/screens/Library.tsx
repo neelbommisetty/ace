@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { getQuestions, getWorkspace } from '../api';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { getGenerationJobs, getQuestions, getWorkspace } from '../api';
 import { ImportBanner } from '../components/ImportBanner';
 import { QuestionTable } from '../components/QuestionTable';
 import { ResumeCard } from '../components/ResumeCard';
@@ -15,6 +16,16 @@ export function Library() {
   const [error, setError] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  // Tracked by job id (not a running +/-1 counter) so a missed/reordered SSE
+  // event can't permanently skew the count, and so the seed fetch below can
+  // merge with — rather than clobber — whatever the live SSE handlers have
+  // already applied.
+  const [activeJobIds, setActiveJobIds] = useState<Set<string>>(new Set());
+  // Ids whose 'generation-done'/'generation-error' arrived before the seed
+  // fetch resolved (mock mode can finish a job in a microtask, well inside
+  // the seed GET's round-trip) — consulted so the seed doesn't resurrect a
+  // job that has already finished.
+  const settledWhileSeedingRef = useRef<Set<string>>(new Set());
 
   const refetch = useCallback(() => {
     Promise.all([getWorkspace(), getQuestions()])
@@ -32,7 +43,49 @@ export function Library() {
     refetch();
   }, [refetch]);
 
+  useEffect(() => {
+    getGenerationJobs()
+      .then((res) => {
+        setActiveJobIds((prev) => {
+          const next = new Set(prev); // keep ids added via SSE mid-fetch
+          for (const j of res.jobs) {
+            const active = j.status === 'running' || j.status === 'llm_done';
+            if (active && !settledWhileSeedingRef.current.has(j.id)) next.add(j.id);
+          }
+          settledWhileSeedingRef.current.clear();
+          return next;
+        });
+      })
+      .catch(() => {
+        // best-effort seed; SSE keeps the pill live even if this fails
+      });
+  }, []);
+
   useSseEvent('questions-changed', refetch);
+
+  // No per-event fetch: the pill is driven purely by the start/finish SSE
+  // events, seeded once above from the server, and tracked by job id so a
+  // stray/duplicate event can't skew the count.
+  useSseEvent('generation-started', ({ job }) => {
+    setActiveJobIds((prev) => (prev.has(job.id) ? prev : new Set(prev).add(job.id)));
+  });
+  const settle = useCallback((jobId: string) => {
+    setActiveJobIds((prev) => {
+      if (!prev.has(jobId)) {
+        // Not seeded yet — this finished before the mount-time GET resolved;
+        // remember it so that GET doesn't re-add it once it lands.
+        settledWhileSeedingRef.current.add(jobId);
+        return prev;
+      }
+      const next = new Set(prev);
+      next.delete(jobId);
+      return next;
+    });
+  }, []);
+  useSseEvent('generation-done', ({ jobId }) => settle(jobId));
+  useSseEvent('generation-error', ({ jobId }) => settle(jobId));
+
+  const generatingCount = activeJobIds.size;
 
   const visible = useMemo(() => {
     if (questions == null) return [];
@@ -61,6 +114,15 @@ export function Library() {
           )}
         </div>
         <div className="topbar-right">
+          {generatingCount > 0 && (
+            <span className="chip generating-pill">
+              <span className="pulse-dot" aria-hidden="true" />
+              {generatingCount} generating…
+            </span>
+          )}
+          <Link className="btn btn-accent btn-small" to="/new">
+            New question
+          </Link>
           {workspace != null && (
             <span className="workspace-root mono" title="Workspace root">
               {workspace.root}
@@ -126,9 +188,11 @@ export function Library() {
               <div className="empty-state">
                 <p className="empty-title">No questions yet</p>
                 <p className="empty-hint">
-                  Generate one from the terminal with <code>ace generate</code>, then it shows up
-                  here.
+                  Describe what you want to practice and ACE will generate it for you.
                 </p>
+                <Link className="btn btn-accent" to="/new">
+                  Create your first question
+                </Link>
               </div>
             ) : visible.length === 0 ? (
               <div className="empty-state">

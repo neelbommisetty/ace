@@ -2183,3 +2183,236 @@ code {
 .settings-card-danger .settings-card-title {
   color: var(--crit-text);
 }
+
+/* ---- new question ---------------------------------------------------------- */
+
+.new-question-wrap {
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tab-row {
+  display: flex;
+  gap: 8px;
+}
+
+.new-question-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ---- generation job strip / toast ----------------------------------------- */
+
+.job-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.job-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--faint);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.job-card-running {
+  border-left-color: var(--accent);
+}
+
+.job-card-done {
+  border-left-color: var(--good);
+  justify-content: space-between;
+}
+
+.job-card-error {
+  border-left-color: var(--crit-text);
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.job-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.job-card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-card-meta {
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.job-card-error .job-card-meta.error-note {
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.generating-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  border-color: rgba(255, 178, 36, 0.4);
+}
+
+.empty-state .btn {
+  margin-top: 14px;
+}
+
+.toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 12px 14px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  z-index: 60;
+  max-width: 360px;
+}
+
+.toast-text {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.toast-action {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.toast-action:hover {
+  text-decoration: underline;
+}
+
+.toast-close {
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--faint);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+}
+
+.toast-close:hover {
+  color: var(--ink);
+}
+
+/* ---- brainstorm pane / idea cards ------------------------------------------ */
+
+.brainstorm-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.brainstorm-history {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.brainstorm-turn {
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.brainstorm-turn-user {
+  align-self: flex-end;
+  max-width: 80%;
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.brainstorm-turn-assistant {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.brainstorm-turn-assistant p {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+}
+
+.brainstorm-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.idea-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.idea-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.idea-card-title {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.idea-card-meta {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.idea-card-pitch {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+  line-height: 1.4;
+}
