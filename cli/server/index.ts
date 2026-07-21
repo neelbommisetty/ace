@@ -2,14 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { serve, type ServerType } from '@hono/node-server';
 import { createApp } from './app.js';
-import { openDb } from './db.js';
-import { createDisputeEngine } from './disputes.js';
 import { previewImport, runImport } from './importer.js';
-import { reconcile } from './reconciler.js';
-import { createReviewEngine } from './reviews.js';
-import { createRunner } from './runner.js';
+import { closeWorkspaceSession, createWorkspaceSession, type WorkspaceSession } from './session.js';
 import { createBus } from './sse.js';
-import { startWatcher } from './watcher.js';
 
 export interface StartAceServerOptions {
   workspaceRoot: string;
@@ -44,49 +39,36 @@ function readPackageVersion(): string {
 export async function startAceServer(opts: StartAceServerOptions): Promise<AceServer> {
   const { workspaceRoot, port, token, uiDir } = opts;
 
-  const db = openDb(workspaceRoot);
+  // The bus lives OUTSIDE the session for the process lifetime — a future
+  // reset rebuilds the session but connected EventSource clients (subscribed
+  // to this same bus) survive it and receive the completion event.
+  const bus = createBus();
 
-  // Clear stranded runner output files from previous (crashed) sessions.
-  const tmpDir = path.join(workspaceRoot, '.ace', 'tmp');
+  let session: WorkspaceSession | null = null;
   try {
-    for (const name of fs.readdirSync(tmpDir)) {
-      fs.rmSync(path.join(tmpDir, name), { force: true });
+    session = createWorkspaceSession({ workspaceRoot, bus });
+
+    // Clear stranded runner output files from previous (crashed) sessions.
+    const tmpDir = path.join(workspaceRoot, '.ace', 'tmp');
+    try {
+      for (const name of fs.readdirSync(tmpDir)) {
+        fs.rmSync(path.join(tmpDir, name), { force: true });
+      }
+    } catch {
+      // tmp dir may not exist yet
     }
-  } catch {
-    // tmp dir may not exist yet
-  }
 
-  let skippedDirs: string[] = [];
-  const doReconcile = () => {
-    const result = reconcile(db, workspaceRoot);
-    skippedDirs = result.skippedDirs;
-  };
-
-  let watcher: { close(): Promise<void> } | null = null;
-  let runner: ReturnType<typeof createRunner> | null = null;
-  let reviews: ReturnType<typeof createReviewEngine> | null = null;
-  let disputes: ReturnType<typeof createDisputeEngine> | null = null;
-  try {
-    doReconcile();
-
-    const bus = createBus();
-    runner = createRunner({ db, bus, workspaceRoot });
-    reviews = createReviewEngine({ db, bus, workspaceRoot });
-    disputes = createDisputeEngine({ db, bus, workspaceRoot });
-    watcher = startWatcher({ workspaceRoot, bus, onQuestionsChanged: doReconcile });
-
+    const activeSession = session;
     const app = createApp({
-      db,
       bus,
       workspaceRoot,
       token,
       uiDir,
       version: readPackageVersion(),
-      runner,
       importer: { previewImport, runImport },
-      reviews,
-      disputes,
-      getSkippedDirs: () => skippedDirs,
+      getSession: () => activeSession,
+      // No reset endpoint yet — always false until that subtask lands.
+      isResetting: () => false,
     });
 
     const server = await new Promise<ServerType>((resolve, reject) => {
@@ -97,38 +79,22 @@ export async function startAceServer(opts: StartAceServerOptions): Promise<AceSe
       srv.once('error', reject);
     });
 
-    const activeRunner = runner;
-    const activeWatcher = watcher;
-    const activeReviews = reviews;
-    const activeDisputes = disputes;
     return {
       url: `http://127.0.0.1:${port}`,
       port,
       async close() {
-        await activeWatcher.close();
-        activeRunner.dispose();
-        activeReviews.dispose();
-        activeDisputes.dispose();
+        await closeWorkspaceSession(activeSession);
         await new Promise<void>((resolve, reject) => {
           server.close((err) => (err ? reject(err) : resolve()));
           // Open SSE connections would keep close() waiting forever.
           const s = server as { closeAllConnections?: () => void };
           s.closeAllConnections?.();
         });
-        db.close();
       },
     };
   } catch (err) {
     // Listen (or boot) failed — release everything so the caller can retry.
-    if (watcher) await watcher.close().catch(() => {});
-    if (runner) runner.dispose();
-    if (reviews) reviews.dispose();
-    if (disputes) disputes.dispose();
-    try {
-      db.close();
-    } catch {
-      // already closed
-    }
+    if (session) await closeWorkspaceSession(session).catch(() => {});
     throw err;
   }
 }
