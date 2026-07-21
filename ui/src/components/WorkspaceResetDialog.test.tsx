@@ -3,6 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkspaceResetDialog } from './WorkspaceResetDialog';
 import { ApiError } from '../api';
 
+const { setSuppressNextReset } = vi.hoisted(() => ({ setSuppressNextReset: vi.fn() }));
+
+vi.mock('../lib/resetSuppress', () => ({ setSuppressNextReset }));
+
 const { resetWorkspace } = vi.hoisted(() => ({ resetWorkspace: vi.fn() }));
 
 vi.mock('../api', async (importOriginal) => {
@@ -66,6 +70,23 @@ describe('WorkspaceResetDialog', () => {
       restored: { questions: 3, files: 6 },
       workspace: {} as never,
     });
+  });
+
+  it('arms the shared suppress flag before the request, and disarms it if the request fails', async () => {
+    resetWorkspace.mockRejectedValue(new ApiError(409, 'a test run is in progress — wait for it to finish and try again'));
+    render(<WorkspaceResetDialog mode="progress" folderName={FOLDER} onClose={vi.fn()} />);
+
+    fireEvent.change(input(), { target: { value: FOLDER } });
+    fireEvent.click(confirmButton());
+
+    // Armed synchronously, before resetWorkspace's promise settles.
+    expect(setSuppressNextReset).toHaveBeenNthCalledWith(1, true);
+
+    await screen.findByText('a test run is in progress — wait for it to finish and try again');
+
+    // The request failed, so no reset actually happened — the flag must not
+    // be left armed for some unrelated future reset broadcast.
+    expect(setSuppressNextReset).toHaveBeenNthCalledWith(2, false);
   });
 
   it('renders the server message verbatim on a 409 rejection and re-enables the form', async () => {

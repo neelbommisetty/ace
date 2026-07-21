@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ApiError, resetWorkspace } from '../api';
+import { setSuppressNextReset } from '../lib/resetSuppress';
 import type { WorkspaceResetMode, WorkspaceResetResult } from '../types';
 
 const CONSEQUENCES: Record<WorkspaceResetMode, string[]> = {
@@ -52,11 +53,19 @@ export function WorkspaceResetDialog({
   const confirm = () => {
     if (!canConfirm) return;
     setState({ kind: 'busy' });
+    // Set before the request goes out: the server may broadcast the SSE
+    // `workspace-reset` event before (or racing) our own response arrives,
+    // and this tab should show the "done" state rather than being reloaded
+    // out from under itself by App's SSE handler.
+    setSuppressNextReset(true);
     resetWorkspace(mode, input)
       .then((result) => {
         setState({ kind: 'done', result });
       })
       .catch((e: unknown) => {
+        // No reset actually happened — don't leave a stray suppression
+        // armed for some unrelated future reset broadcast.
+        setSuppressNextReset(false);
         setInput('');
         setState({
           kind: 'error',

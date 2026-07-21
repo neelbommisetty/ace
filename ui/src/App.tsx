@@ -1,11 +1,32 @@
 import { useEffect, useState } from 'react';
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom';
 import { getToken, setUnauthorizedHandler } from './api';
+import { consumeSuppressNextReset } from './lib/resetSuppress';
 import { History } from './screens/History';
 import { Library } from './screens/Library';
 import { NotFound } from './screens/NotFound';
 import { Room } from './screens/Room';
 import { Settings } from './screens/Settings';
+import { useSseEvent } from './sse';
+
+// Epoch of the first `hello` seen since page load. A later `hello` (i.e.
+// after an SSE reconnect) carrying a different epoch means a workspace
+// reset happened while this tab was disconnected and missed the one-shot
+// `workspace-reset` broadcast entirely — treated identically to receiving
+// that event directly.
+let lastHelloEpoch: string | null = null;
+
+/**
+ * Shared handling for both the direct `workspace-reset` broadcast and the
+ * epoch-mismatch fallback: send every OTHER tab back to a fresh Library.
+ * The tab that initiated the reset suppresses this once (see
+ * `lib/resetSuppress.ts`) so its dialog can show the "done" state instead.
+ */
+function handleResetSignal(): void {
+  if (consumeSuppressNextReset()) return;
+  sessionStorage.removeItem('ace-last-room');
+  location.replace('/');
+}
 
 export function App() {
   const [authFailed, setAuthFailed] = useState(false);
@@ -14,6 +35,21 @@ export function App() {
     setUnauthorizedHandler(() => setAuthFailed(true));
     return () => setUnauthorizedHandler(() => {});
   }, []);
+
+  useSseEvent('workspace-reset', () => {
+    handleResetSignal();
+  });
+
+  useSseEvent('hello', ({ epoch }) => {
+    if (lastHelloEpoch == null) {
+      lastHelloEpoch = epoch;
+      return;
+    }
+    if (epoch !== lastHelloEpoch) {
+      lastHelloEpoch = epoch;
+      handleResetSignal();
+    }
+  });
 
   if (getToken() == null || authFailed) {
     return <TokenNotice expired={authFailed} />;
