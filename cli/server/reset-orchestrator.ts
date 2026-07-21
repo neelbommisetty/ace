@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import {
   closeWorkspaceSession,
   createWorkspaceSession,
@@ -34,6 +35,13 @@ export interface PerformWorkspaceResetOptions {
   setResetting: (resetting: boolean) => void;
   mode: WorkspaceResetMode;
   confirm: string;
+  /**
+   * Echoed back verbatim in the `workspace-reset` broadcast — lets the
+   * initiating client tell its own reset's broadcast apart from one a
+   * different tab triggered. Not inspected or validated here. Defaults to a
+   * freshly minted id if omitted (mirrors the route's own fallback).
+   */
+  requestId?: string;
   /** Defaults to the real engine factories; tests inject fakes here. */
   engines?: EngineFactories;
   /**
@@ -59,7 +67,7 @@ export interface PerformWorkspaceResetResult {
  *   -> createWorkspaceSession({ watch: false }) (fresh db + reconcile) ->
  *   applyRestorePlan -> setMeta('reset_archived_from', archivedTo) ->
  *   startSessionWatcher(newSession) -> swapSession(newSession) -> clear flag
- *   -> bus.emit('workspace-reset', { mode, archivedTo }).
+ *   -> bus.emit('workspace-reset', { mode, archivedTo, requestId }).
  *
  * Failure recovery has two regimes, split by whether `.ace` has been
  * renamed yet:
@@ -81,6 +89,7 @@ export async function performWorkspaceReset(
   opts: PerformWorkspaceResetOptions,
 ): Promise<PerformWorkspaceResetResult> {
   const { workspaceRoot, bus, getSession, swapSession, setResetting, mode, engines } = opts;
+  const requestId = opts.requestId ?? crypto.randomUUID();
   const drainRequests = opts.drainRequests ?? (async () => {});
 
   setResetting(true);
@@ -112,6 +121,7 @@ export async function performWorkspaceReset(
       swapSession,
       setResetting,
       mode,
+      requestId,
       plan,
       archivedTo,
       engines,
@@ -138,11 +148,13 @@ async function bringUpAfterArchive(opts: {
   swapSession: (session: WorkspaceSession) => void;
   setResetting: (resetting: boolean) => void;
   mode: WorkspaceResetMode;
+  requestId: string;
   plan: RestorePlan;
   archivedTo: string;
   engines?: EngineFactories;
 }): Promise<PerformWorkspaceResetResult> {
-  const { workspaceRoot, bus, swapSession, setResetting, mode, plan, archivedTo, engines } = opts;
+  const { workspaceRoot, bus, swapSession, setResetting, mode, requestId, plan, archivedTo, engines } =
+    opts;
 
   let newSession: WorkspaceSession | undefined;
   try {
@@ -153,7 +165,7 @@ async function bringUpAfterArchive(opts: {
 
     swapSession(newSession);
     setResetting(false);
-    bus.emit('workspace-reset', { mode, archivedTo });
+    bus.emit('workspace-reset', { mode, archivedTo, requestId });
 
     return { archivedTo, restored };
   } catch (err) {

@@ -28,6 +28,7 @@ const WORKSPACE_INFO: WorkspaceInfo = {
   skippedDirs: [],
   legacyImport: { available: false, questionCount: 0 },
   activeAttempt: null,
+  confirmName: 'my-prep',
 };
 
 function dangerButtons() {

@@ -121,6 +121,12 @@ export interface WorkspaceInfo {
   skippedDirs: string[];
   legacyImport: { available: boolean; questionCount: number };
   activeAttempt: { attempt: AttemptRow; question: QuestionRow } | null;
+  /**
+   * `path.basename(root)` as computed by the server — the exact string
+   * `POST /api/workspace/reset` requires in `confirm`. Use this verbatim
+   * instead of re-deriving a basename client-side (see server `types.ts`).
+   */
+  confirmName: string;
 }
 
 export interface ImportPreviewItem {
@@ -223,7 +229,12 @@ export interface SseEventMap {
   'dispute-started': { disputeJobId: string; questionId: string; testRunId: string };
   'dispute-done': { disputeJobId: string; questionId: string; dispute: DisputeRow };
   'dispute-error': { disputeJobId: string; questionId: string; message: string };
-  'workspace-reset': { mode: WorkspaceResetMode; archivedTo: string };
+  /**
+   * `requestId` echoes back the initiating POST's own id (see
+   * `resetWorkspace` in `api.ts`) so the initiating tab can recognize its
+   * own broadcast and distinguish it from a reset some other tab triggered.
+   */
+  'workspace-reset': { mode: WorkspaceResetMode; archivedTo: string; requestId: string };
 }
 
 export type SseEventName = keyof SseEventMap;

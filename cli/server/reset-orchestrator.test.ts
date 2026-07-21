@@ -87,9 +87,11 @@ describe('performWorkspaceReset — happy path (progress)', () => {
     const harness = makeHarness(bus);
     const oldEpoch = harness.session.epoch;
 
-    const events: Array<{ mode: string; archivedTo: string }> = [];
+    const events: Array<{ mode: string; archivedTo: string; requestId: string }> = [];
     bus.subscribe((name, data) => {
-      if (name === 'workspace-reset') events.push(data as { mode: string; archivedTo: string });
+      if (name === 'workspace-reset') {
+        events.push(data as { mode: string; archivedTo: string; requestId: string });
+      }
     });
 
     const result = await performWorkspaceReset({
@@ -100,6 +102,7 @@ describe('performWorkspaceReset — happy path (progress)', () => {
       setResetting: harness.setResetting,
       mode: 'progress',
       confirm: path.basename(tempRoot),
+      requestId: 'req-1',
       engines: fakeEngines(),
     });
 
@@ -120,7 +123,9 @@ describe('performWorkspaceReset — happy path (progress)', () => {
     // bookkeeping, not a restoration — the reported counts are zeros.
     expect(result.restored).toEqual({ questions: 0, files: 0 });
     expect(harness.isResetting()).toBe(false);
-    expect(events).toEqual([{ mode: 'progress', archivedTo: result.archivedTo }]);
+    expect(events).toEqual([
+      { mode: 'progress', archivedTo: result.archivedTo, requestId: 'req-1' },
+    ]);
 
     await harness.cleanup();
   });

@@ -44,6 +44,7 @@ const WORKSPACE_INFO: WorkspaceInfo = {
   skippedDirs: [],
   legacyImport: { available: false, questionCount: 0 },
   activeAttempt: null,
+  confirmName: 'my-prep',
 };
 
 vi.mock('./api', async (importOriginal) => {
@@ -98,6 +99,7 @@ afterEach(() => {
   sessionStorage.clear();
   sseHandlers.clear();
   if (originalLocation != null) {
+    // @ts-expect-error -- restoring the real Location object stubbed above
     window.location = originalLocation;
     originalLocation = undefined;
   }
@@ -110,30 +112,65 @@ describe('App SSE reset handling', () => {
     const { replaceSpy } = stubLocationReplace();
 
     act(() => {
-      emitSse('workspace-reset', { mode: 'progress', archivedTo: '/tmp/.ace-archive-2026-07-20' });
+      emitSse('workspace-reset', {
+        mode: 'progress',
+        archivedTo: '/tmp/.ace-archive-2026-07-20',
+        requestId: 'req-1',
+      });
     });
 
     expect(sessionStorage.getItem('ace-last-room')).toBeNull();
     expect(replaceSpy).toHaveBeenCalledWith('/');
   });
 
-  it('suppresses the reload when the initiating tab armed the suppress flag', async () => {
-    const { setSuppressNextReset } = await renderApp();
+  it('suppresses the reload when the broadcast requestId matches what this tab armed', async () => {
+    const { armSuppressNextReset } = await renderApp();
     sessionStorage.setItem('ace-last-room', '/q/arrays/two-sum');
     const { replaceSpy } = stubLocationReplace();
 
-    setSuppressNextReset(true);
+    armSuppressNextReset('req-1');
     act(() => {
-      emitSse('workspace-reset', { mode: 'full', archivedTo: '/tmp/.ace-archive-2026-07-20' });
+      emitSse('workspace-reset', {
+        mode: 'full',
+        archivedTo: '/tmp/.ace-archive-2026-07-20',
+        requestId: 'req-1',
+      });
     });
 
     expect(sessionStorage.getItem('ace-last-room')).toBe('/q/arrays/two-sum');
     expect(replaceSpy).not.toHaveBeenCalled();
 
-    // The flag is one-shot: a second broadcast (nothing suppressing it) reloads.
+    // The armed id is one-shot: a second broadcast (nothing matching it anymore) reloads.
     act(() => {
-      emitSse('workspace-reset', { mode: 'full', archivedTo: '/tmp/.ace-archive-2026-07-20' });
+      emitSse('workspace-reset', {
+        mode: 'full',
+        archivedTo: '/tmp/.ace-archive-2026-07-20',
+        requestId: 'req-2',
+      });
     });
+    expect(replaceSpy).toHaveBeenCalledWith('/');
+  });
+
+  it('does NOT suppress the reload when the broadcast requestId belongs to a different tab', async () => {
+    // Regression coverage for the race where tab A arms suppression for its
+    // own in-flight request, but a DIFFERENT tab's reset broadcast lands on
+    // A's SSE connection first (e.g. A's own request is about to 409
+    // because another tab's reset was already in progress). A must still
+    // reload — it must not silently swallow a real reset it didn't cause.
+    const { armSuppressNextReset } = await renderApp();
+    sessionStorage.setItem('ace-last-room', '/q/arrays/two-sum');
+    const { replaceSpy } = stubLocationReplace();
+
+    armSuppressNextReset('req-mine');
+    act(() => {
+      emitSse('workspace-reset', {
+        mode: 'full',
+        archivedTo: '/tmp/.ace-archive-2026-07-20',
+        requestId: 'req-someone-elses',
+      });
+    });
+
+    expect(sessionStorage.getItem('ace-last-room')).toBeNull();
     expect(replaceSpy).toHaveBeenCalledWith('/');
   });
 
@@ -182,15 +219,15 @@ describe('App SSE reset handling', () => {
     expect(replaceSpy).toHaveBeenCalledWith('/');
   });
 
-  it('honors the suppress flag on an epoch-mismatch hello too', async () => {
-    const { setSuppressNextReset } = await renderApp();
+  it('honors an armed suppression on an epoch-mismatch hello too', async () => {
+    const { armSuppressNextReset } = await renderApp();
     act(() => {
       emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
     });
     sessionStorage.setItem('ace-last-room', '/q/arrays/two-sum');
     const { replaceSpy } = stubLocationReplace();
 
-    setSuppressNextReset(true);
+    armSuppressNextReset('req-1');
     act(() => {
       emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-b' });
     });

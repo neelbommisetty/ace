@@ -279,9 +279,10 @@ export function putSettings(body: {
 export function resetWorkspace(
   mode: WorkspaceResetMode,
   confirm: string,
+  requestId: string,
 ): Promise<WorkspaceResetResult> {
   return request('/api/workspace/reset', {
     method: 'POST',
-    body: JSON.stringify({ mode, confirm }),
+    body: JSON.stringify({ mode, confirm, requestId }),
   });
 }

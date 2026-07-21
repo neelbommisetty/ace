@@ -3,9 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkspaceResetDialog } from './WorkspaceResetDialog';
 import { ApiError } from '../api';
 
-const { setSuppressNextReset } = vi.hoisted(() => ({ setSuppressNextReset: vi.fn() }));
+const { armSuppressNextReset, disarmSuppressNextReset } = vi.hoisted(() => ({
+  armSuppressNextReset: vi.fn(),
+  disarmSuppressNextReset: vi.fn(),
+}));
 
-vi.mock('../lib/resetSuppress', () => ({ setSuppressNextReset }));
+vi.mock('../lib/resetSuppress', () => ({ armSuppressNextReset, disarmSuppressNextReset }));
 
 const { resetWorkspace } = vi.hoisted(() => ({ resetWorkspace: vi.fn() }));
 
@@ -72,21 +75,26 @@ describe('WorkspaceResetDialog', () => {
     });
   });
 
-  it('arms the shared suppress flag before the request, and disarms it if the request fails', async () => {
+  it('arms the shared suppress flag (keyed by request id) before the request, and disarms it if the request fails', async () => {
     resetWorkspace.mockRejectedValue(new ApiError(409, 'a test run is in progress — wait for it to finish and try again'));
     render(<WorkspaceResetDialog mode="progress" folderName={FOLDER} onClose={vi.fn()} />);
 
     fireEvent.change(input(), { target: { value: FOLDER } });
     fireEvent.click(confirmButton());
 
-    // Armed synchronously, before resetWorkspace's promise settles.
-    expect(setSuppressNextReset).toHaveBeenNthCalledWith(1, true);
+    // Armed synchronously, before resetWorkspace's promise settles, with a
+    // freshly generated request id — and that same id is what's passed to
+    // resetWorkspace() so the server can echo it back in its broadcast.
+    expect(armSuppressNextReset).toHaveBeenCalledTimes(1);
+    const requestId = armSuppressNextReset.mock.calls[0][0];
+    expect(typeof requestId).toBe('string');
+    expect(resetWorkspace).toHaveBeenCalledWith('progress', FOLDER, requestId);
 
     await screen.findByText('a test run is in progress — wait for it to finish and try again');
 
-    // The request failed, so no reset actually happened — the flag must not
-    // be left armed for some unrelated future reset broadcast.
-    expect(setSuppressNextReset).toHaveBeenNthCalledWith(2, false);
+    // The request failed, so no reset actually happened — the armed id must
+    // not be left standing for some unrelated future reset broadcast.
+    expect(disarmSuppressNextReset).toHaveBeenCalledWith(requestId);
   });
 
   it('renders the server message verbatim on a 409 rejection and re-enables the form', async () => {
@@ -164,6 +172,7 @@ describe('WorkspaceResetDialog', () => {
     expect(sessionStorage.getItem('ace-last-room')).toBeNull();
     expect(replaceSpy).toHaveBeenCalledWith('/');
 
+    // @ts-expect-error -- restoring the real Location object stubbed above
     window.location = original;
   });
 });

@@ -10,11 +10,6 @@ const PROVIDER_LABELS: Record<ProviderKey, string> = {
   anthropic: 'Anthropic',
 };
 
-/** Basename of a workspace root, tolerant of both POSIX and Windows separators. */
-function folderNameOf(root: string): string {
-  return root.split(/[\\/]/).filter(Boolean).pop() ?? root;
-}
-
 /**
  * /settings — API keys and default provider. Keys are write-only: the server
  * only ever returns a masked suffix, and saves are validated against the
@@ -47,7 +42,11 @@ export function Settings() {
     let cancelled = false;
     getWorkspace()
       .then((ws) => {
-        if (!cancelled) setFolderName(folderNameOf(ws.root));
+        // Use the server's own basename verbatim — it's the exact string the
+        // reset endpoint validates `confirm` against, so re-deriving it here
+        // (e.g. splitting on separators) could disagree with the server for
+        // roots containing unusual characters.
+        if (!cancelled) setFolderName(ws.confirmName);
       })
       .catch((e: unknown) => {
         if (!cancelled) {

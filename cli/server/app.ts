@@ -243,6 +243,7 @@ export function createApp(opts: CreateAppOptions): Hono {
       skippedDirs,
       legacyImport,
       activeAttempt: db.getLatestActiveAttempt(),
+      confirmName: path.basename(workspaceRoot),
     };
   }
 
@@ -789,6 +790,17 @@ export function createApp(opts: CreateAppOptions): Hono {
       );
     }
 
+    // Echoed back in the `workspace-reset` broadcast so the initiating tab
+    // can tell its own reset's broadcast apart from one a different tab
+    // triggered (the HTTP response and the SSE broadcast race independently
+    // and can arrive in either order). A caller that omits it still gets a
+    // working reset — it just gets a server-minted id back with no client
+    // to match it against.
+    const requestId =
+      typeof body.requestId === 'string' && body.requestId.length > 0
+        ? body.requestId
+        : crypto.randomUUID();
+
     // Checked at route entry — reachable only because this route is exempt
     // from the mid-reset 503 gate above (a concurrent reset POST answers
     // from here, not the gate).
@@ -825,6 +837,7 @@ export function createApp(opts: CreateAppOptions): Hono {
         setResetting,
         mode,
         confirm,
+        requestId,
         engines,
         drainRequests: waitForRequestDrain,
       });
