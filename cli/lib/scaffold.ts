@@ -3,13 +3,13 @@ import path from 'node:path';
 import Handlebars from 'handlebars';
 import type { CategorySlug, Difficulty } from './categories.js';
 import { getCategoryConfig, getSuggestedTime, isDesignCategory } from './categories.js';
-import { createScorecard, writeScorecard } from './scorecard.js';
+import { createScorecard, writeScorecardAt } from './scorecard.js';
 import { resolveWorkspaceRoot, getQuestionsDir as getQuestionsDirPath } from './paths.js';
 import { getImportMetaDirname } from './import-meta.js';
 
 const TEMPLATES_DIR = path.resolve(getImportMetaDirname(import.meta), '../templates');
 
-interface ScaffoldOptions {
+export interface ScaffoldOptions {
   title: string;
   slug: string;
   category: CategorySlug;
@@ -19,6 +19,11 @@ interface ScaffoldOptions {
   testCode?: string;
   solutionCode?: string;
   notesTemplate?: string;
+}
+
+export interface ScaffoldResult {
+  dir: string;
+  files: string[];
 }
 
 function loadTemplate(templatePath: string): HandlebarsTemplateDelegate {
@@ -38,10 +43,24 @@ export function getQuestionDir(category: CategorySlug, slug: string): string {
   return path.join(questionsDir, category, slug);
 }
 
-export function scaffoldQuestion(opts: ScaffoldOptions): string {
+/**
+ * Scaffolds a question dir under the GIVEN workspace root, never resolving
+ * the root from process.cwd() — the server is bound to workspaceRoot at
+ * boot and must not depend on its own cwd. Throws if the question dir
+ * already exists (caller handles suffixing). Returns the created dir and
+ * the list of files written (basenames, relative to the dir).
+ */
+export function scaffoldQuestionAt(
+  workspaceRoot: string,
+  opts: ScaffoldOptions,
+  extras: { writeScorecard?: boolean } = {},
+): ScaffoldResult {
   const config = getCategoryConfig(opts.category);
-  const questionDir = getQuestionDir(opts.category, opts.slug);
+  const questionsDir = getQuestionsDirPath(workspaceRoot);
+  const questionDir = path.join(questionsDir, opts.category, opts.slug);
   const suggestedTime = getSuggestedTime(opts.category, opts.difficulty);
+  const shouldWriteScorecard = extras.writeScorecard ?? false;
+  const files: string[] = [];
 
   if (fs.existsSync(questionDir)) {
     throw new Error(`Question already exists: ${questionDir}`);
@@ -65,11 +84,13 @@ export function scaffoldQuestion(opts: ScaffoldOptions): string {
   // README.md
   const readmeTemplate = loadTemplate(path.join(TEMPLATES_DIR, 'readme.md.hbs'));
   fs.writeFileSync(path.join(questionDir, 'README.md'), readmeTemplate(templateData));
+  files.push('README.md');
 
   if (isDesignCategory(opts.category)) {
     // Design question: notes.md
     const notesTemplate = loadTemplate(path.join(TEMPLATES_DIR, 'design', 'notes.md.hbs'));
     fs.writeFileSync(path.join(questionDir, 'notes.md'), notesTemplate(templateData));
+    files.push('notes.md');
   } else {
     // Coding question: solution + test files
     const templateDir = path.join(TEMPLATES_DIR, config.templateDir);
@@ -81,8 +102,10 @@ export function scaffoldQuestion(opts: ScaffoldOptions): string {
       if (fs.existsSync(templatePath)) {
         const tmpl = loadTemplate(templatePath);
         fs.writeFileSync(path.join(questionDir, solutionFile), tmpl(templateData));
+        files.push(solutionFile);
       } else if (opts.solutionCode) {
         fs.writeFileSync(path.join(questionDir, solutionFile), opts.solutionCode);
+        files.push(solutionFile);
       }
     }
 
@@ -93,17 +116,28 @@ export function scaffoldQuestion(opts: ScaffoldOptions): string {
       if (fs.existsSync(templatePath)) {
         const tmpl = loadTemplate(templatePath);
         fs.writeFileSync(path.join(questionDir, testFile), tmpl(templateData));
+        files.push(testFile);
       } else if (opts.testCode) {
         fs.writeFileSync(path.join(questionDir, testFile), opts.testCode);
+        files.push(testFile);
       }
     }
   }
 
   // Scorecard
-  const scorecard = createScorecard(opts.title, opts.category, opts.difficulty);
-  writeScorecard(opts.category, opts.slug, scorecard);
+  if (shouldWriteScorecard) {
+    const scorecard = createScorecard(opts.title, opts.category, opts.difficulty);
+    writeScorecardAt(workspaceRoot, opts.category, opts.slug, scorecard);
+    files.push('scorecard.json');
+  }
 
-  return questionDir;
+  return { dir: questionDir, files };
+}
+
+/** Thin cwd-resolving wrapper preserving the legacy CLI behavior byte-for-byte. */
+export function scaffoldQuestion(opts: ScaffoldOptions): string {
+  const { dir } = scaffoldQuestionAt(resolveWorkspaceRoot(), opts, { writeScorecard: true });
+  return dir;
 }
 
 export function getStubContent(category: CategorySlug, file: string): string {

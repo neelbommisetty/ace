@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AceDb } from './types.js';
 import { openDb } from './db.js';
 import { reconcile } from './reconciler.js';
+import { scaffoldQuestionAt } from '../lib/scaffold.js';
+import { getSuggestedTime } from '../lib/categories.js';
 
 let tempRoot = '';
 let db: AceDb;
@@ -156,5 +158,94 @@ describe('reconcile', () => {
       missing: 0,
       skippedDirs: [],
     });
+  });
+
+  it('parses difficulty and suggested time from README.md when there is no scorecard', () => {
+    writeQuestion('js-ts', 'no-scorecard', {
+      readme: '# No Scorecard\n\n**Category:** JS/TS Puzzles\n**Difficulty:** hard\n**Suggested Time:** ~45 minutes\n\n---\n\nBody.\n',
+    });
+
+    reconcile(db, tempRoot);
+    const row = db.getQuestion('js-ts', 'no-scorecard');
+    expect(row?.difficulty).toBe('hard');
+    expect(row?.suggestedMinutes).toBe(45);
+    // Scorecard-less, so still classified as manually authored provenance.
+    expect(row?.source).toBe('manual');
+  });
+
+  it('prefers README metadata over a stale scorecard.json', () => {
+    writeQuestion('js-ts', 'readme-wins', {
+      readme: '# Readme Wins\n\n**Difficulty:** easy\n**Suggested Time:** ~10 minutes\n\n---\n',
+      scorecard: {
+        title: 'Readme Wins',
+        category: 'js-ts',
+        difficulty: 'hard',
+        suggestedTime: 45,
+        status: 'untouched',
+        attempts: [],
+        llmFeedback: null,
+      },
+    });
+
+    reconcile(db, tempRoot);
+    const row = db.getQuestion('js-ts', 'readme-wins');
+    expect(row?.difficulty).toBe('easy');
+    expect(row?.suggestedMinutes).toBe(10);
+  });
+
+  it('falls back to scorecard.json when README has no matching meta lines', () => {
+    writeQuestion('js-ts', 'scorecard-fallback', {
+      readme: '# Scorecard Fallback\n\nJust prose, no metadata lines.\n',
+      scorecard: {
+        title: 'Scorecard Fallback',
+        category: 'js-ts',
+        difficulty: 'hard',
+        suggestedTime: 45,
+        status: 'untouched',
+        attempts: [],
+        llmFeedback: null,
+      },
+    });
+
+    reconcile(db, tempRoot);
+    const row = db.getQuestion('js-ts', 'scorecard-fallback');
+    expect(row?.difficulty).toBe('hard');
+    expect(row?.suggestedMinutes).toBe(45);
+  });
+
+  it('falls back to defaults when README metadata lines are malformed', () => {
+    writeQuestion('js-ts', 'malformed-readme', {
+      readme: '# Malformed\n\n**Difficulty:** impossible\n**Suggested Time:** forever\n\n---\n',
+    });
+
+    reconcile(db, tempRoot);
+    const row = db.getQuestion('js-ts', 'malformed-readme');
+    expect(row?.difficulty).toBe('medium');
+    expect(row?.suggestedMinutes).toBe(30);
+  });
+
+  it('is difficulty-stable across repeated reconciles for a scaffoldQuestionAt-created question', () => {
+    scaffoldQuestionAt(
+      tempRoot,
+      {
+        title: 'Generated Hard One',
+        slug: 'generated-hard-one',
+        category: 'js-ts',
+        difficulty: 'hard',
+        description: 'A generated question with no scorecard.json.',
+      },
+      { writeScorecard: false },
+    );
+
+    reconcile(db, tempRoot);
+    let row = db.getQuestion('js-ts', 'generated-hard-one');
+    expect(row?.difficulty).toBe('hard');
+    expect(row?.source).toBe('manual'); // no scorecard.json -> provenance is a separate concern
+
+    // A second (watcher-triggered) rescan must not clobber difficulty back to medium.
+    reconcile(db, tempRoot);
+    row = db.getQuestion('js-ts', 'generated-hard-one');
+    expect(row?.difficulty).toBe('hard');
+    expect(row?.suggestedMinutes).toBe(getSuggestedTime('js-ts', 'hard'));
   });
 });
