@@ -122,14 +122,15 @@ afterEach(() => {
 });
 
 describe('Library', () => {
-  it('shows a New question button linking to /new', async () => {
+  it('does not show a top-bar New question button when questions are present', async () => {
     getWorkspace.mockResolvedValue(WORKSPACE_INFO);
-    getQuestions.mockResolvedValue([]);
+    getQuestions.mockResolvedValue([question()]);
     getGenerationJobs.mockResolvedValue({ jobs: [] });
     renderLibrary();
 
-    const link = await screen.findByRole('link', { name: 'New question' });
-    expect(link).toHaveAttribute('href', '/new');
+    await screen.findByText('Closures and Scope');
+    expect(screen.queryByRole('link', { name: 'New question' })).toBeNull();
+    expect(screen.getByText(WORKSPACE_INFO.root)).toBeInTheDocument();
   });
 
   it('shows the "Create your first question" empty-state CTA and drops the ace generate reference', async () => {

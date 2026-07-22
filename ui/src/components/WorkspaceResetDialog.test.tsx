@@ -145,8 +145,7 @@ describe('WorkspaceResetDialog', () => {
     expect(screen.queryByText(/questions were reset/)).not.toBeInTheDocument();
   });
 
-  it('"Go to Library" clears ace-last-room and navigates to /', async () => {
-    sessionStorage.setItem('ace-last-room', '/q/arrays/two-sum');
+  it('"Go to Library" navigates to /', async () => {
     resetWorkspace.mockResolvedValue({
       mode: 'progress',
       archivedTo: '/workspace/.ace-archive-2026-07-20',
@@ -169,7 +168,6 @@ describe('WorkspaceResetDialog', () => {
 
     fireEvent.click(goBtn);
 
-    expect(sessionStorage.getItem('ace-last-room')).toBeNull();
     expect(replaceSpy).toHaveBeenCalledWith('/');
 
     // @ts-expect-error -- restoring the real Location object stubbed above

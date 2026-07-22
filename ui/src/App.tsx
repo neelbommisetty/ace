@@ -23,7 +23,6 @@ let lastHelloEpoch: string | null = null;
 
 /** Sends this tab back to a fresh Library — used for every reset signal this tab did not itself initiate. */
 function forceReloadToLibrary(): void {
-  sessionStorage.removeItem('ace-last-room');
   location.replace('/');
 }
 
@@ -103,8 +102,6 @@ function TokenNotice({ expired }: { expired: boolean }) {
 
 function IconRail() {
   const location = useLocation();
-  const inRoom = location.pathname.startsWith('/q/');
-  const lastRoom = sessionStorage.getItem('ace-last-room');
 
   return (
     <nav className="rail">
@@ -112,26 +109,19 @@ function IconRail() {
         A
       </div>
       <Link
-        className={`rail-icon ${!inRoom && location.pathname === '/' ? 'active' : ''}`}
+        className={`rail-icon ${location.pathname === '/' ? 'active' : ''}`}
         to="/"
         title="Library"
       >
         <HomeIcon />
       </Link>
-      {inRoom || lastRoom != null ? (
-        <Link
-          className={`rail-icon ${inRoom ? 'active' : ''}`}
-          to={inRoom ? location.pathname : (lastRoom ?? '/')}
-          title="Room"
-        >
-          <CodeIcon />
-        </Link>
-      ) : (
-        <span className="rail-icon rail-icon-dim" title="Room — open a question from the library">
-          <CodeIcon />
-        </span>
-      )}
-      <div className="rail-spacer" />
+      <Link
+        className={`rail-icon ${location.pathname === '/new' ? 'active' : ''}`}
+        to="/new"
+        title="New question"
+      >
+        <PlusIcon />
+      </Link>
       <Link
         className={`rail-icon ${location.pathname.startsWith('/history') ? 'active' : ''}`}
         to="/history"
@@ -139,6 +129,7 @@ function IconRail() {
       >
         <ClockIcon />
       </Link>
+      <div className="rail-spacer" />
       <span className="rail-icon rail-icon-dim" title="Stats — coming in M3">
         <ChartIcon />
       </span>
@@ -162,11 +153,11 @@ function HomeIcon() {
   );
 }
 
-function CodeIcon() {
+function PlusIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="m8 6-6 6 6 6" />
-      <path d="m16 6 6 6-6 6" />
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
     </svg>
   );
 }

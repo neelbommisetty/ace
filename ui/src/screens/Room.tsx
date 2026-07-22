@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { OnMount } from '@monaco-editor/react';
-import { useLocation, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import {
   ApiError,
   createOrResumeAttempt,
@@ -44,7 +44,6 @@ const HISTORY_LIMIT = 50;
 
 export function Room() {
   const { category = '', slug = '' } = useParams();
-  const location = useLocation();
   const [loaded, setLoaded] = useState<{
     detail: QuestionDetail;
     // null when the question is solved and opened as a readonly reference —
@@ -57,10 +56,6 @@ export function Room() {
   const [error, setError] = useState<string | null>(null);
   // bumped after a fresh attempt: refetches detail + attempt, remounts RoomInner
   const [reloadKey, setReloadKey] = useState(0);
-
-  useEffect(() => {
-    sessionStorage.setItem('ace-last-room', location.pathname);
-  }, [location.pathname]);
 
   useEffect(() => {
     let cancelled = false;

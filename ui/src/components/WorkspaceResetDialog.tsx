@@ -80,7 +80,6 @@ export function WorkspaceResetDialog({
   };
 
   const goToLibrary = () => {
-    sessionStorage.removeItem('ace-last-room');
     location.replace('/');
   };
 
@@ -89,9 +88,8 @@ export function WorkspaceResetDialog({
       className="modal-overlay"
       onMouseDown={(e) => {
         // Blocked while busy (mid-request) AND while done: the done state's
-        // only exit is the "Go to Library" button, which runs cleanup
-        // (clears `ace-last-room`, navigates away) that a stray backdrop
-        // click must not be able to skip.
+        // only exit is the "Go to Library" button, which navigates away —
+        // a stray backdrop click must not be able to skip that.
         if (e.target === e.currentTarget && !busy && !done) onClose();
       }}
     >
