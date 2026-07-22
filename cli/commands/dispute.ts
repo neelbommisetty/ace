@@ -79,7 +79,7 @@ export async function run(args: string[]): Promise<void> {
   // If no slug provided, show interactive picker
   let selectedSlug = parsed.slug;
   if (!selectedSlug) {
-    selectedSlug = await promptForSlug();
+    selectedSlug = (await promptForSlug()) ?? undefined;
     if (!selectedSlug) return;
   }
 
