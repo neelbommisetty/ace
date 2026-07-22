@@ -107,9 +107,8 @@ afterEach(() => {
 });
 
 describe('App SSE reset handling', () => {
-  it('clears ace-last-room and reloads to / on a workspace-reset broadcast', async () => {
+  it('reloads to / on a workspace-reset broadcast', async () => {
     await renderApp();
-    sessionStorage.setItem('ace-last-room', '/q/arrays/two-sum');
     const { replaceSpy } = stubLocationReplace();
 
     act(() => {
@@ -120,13 +119,11 @@ describe('App SSE reset handling', () => {
       });
     });
 
-    expect(sessionStorage.getItem('ace-last-room')).toBeNull();
     expect(replaceSpy).toHaveBeenCalledWith('/');
   });
 
   it('suppresses the reload when the broadcast requestId matches what this tab armed', async () => {
     const { armSuppressNextReset } = await renderApp();
-    sessionStorage.setItem('ace-last-room', '/q/arrays/two-sum');
     const { replaceSpy } = stubLocationReplace();
 
     armSuppressNextReset('req-1');
@@ -138,7 +135,6 @@ describe('App SSE reset handling', () => {
       });
     });
 
-    expect(sessionStorage.getItem('ace-last-room')).toBe('/q/arrays/two-sum');
     expect(replaceSpy).not.toHaveBeenCalled();
 
     // The armed id is one-shot: a second broadcast (nothing matching it anymore) reloads.
@@ -159,7 +155,6 @@ describe('App SSE reset handling', () => {
     // because another tab's reset was already in progress). A must still
     // reload — it must not silently swallow a real reset it didn't cause.
     const { armSuppressNextReset } = await renderApp();
-    sessionStorage.setItem('ace-last-room', '/q/arrays/two-sum');
     const { replaceSpy } = stubLocationReplace();
 
     armSuppressNextReset('req-mine');
@@ -171,20 +166,17 @@ describe('App SSE reset handling', () => {
       });
     });
 
-    expect(sessionStorage.getItem('ace-last-room')).toBeNull();
     expect(replaceSpy).toHaveBeenCalledWith('/');
   });
 
   it('takes no action on the first hello (records the epoch only)', async () => {
     await renderApp();
-    sessionStorage.setItem('ace-last-room', '/q/arrays/two-sum');
     const { replaceSpy } = stubLocationReplace();
 
     act(() => {
       emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
     });
 
-    expect(sessionStorage.getItem('ace-last-room')).toBe('/q/arrays/two-sum');
     expect(replaceSpy).not.toHaveBeenCalled();
   });
 
@@ -193,14 +185,12 @@ describe('App SSE reset handling', () => {
     act(() => {
       emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
     });
-    sessionStorage.setItem('ace-last-room', '/q/arrays/two-sum');
     const { replaceSpy } = stubLocationReplace();
 
     act(() => {
       emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
     });
 
-    expect(sessionStorage.getItem('ace-last-room')).toBe('/q/arrays/two-sum');
     expect(replaceSpy).not.toHaveBeenCalled();
   });
 
@@ -209,14 +199,12 @@ describe('App SSE reset handling', () => {
     act(() => {
       emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
     });
-    sessionStorage.setItem('ace-last-room', '/q/arrays/two-sum');
     const { replaceSpy } = stubLocationReplace();
 
     act(() => {
       emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-b' });
     });
 
-    expect(sessionStorage.getItem('ace-last-room')).toBeNull();
     expect(replaceSpy).toHaveBeenCalledWith('/');
   });
 
@@ -225,7 +213,6 @@ describe('App SSE reset handling', () => {
     act(() => {
       emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
     });
-    sessionStorage.setItem('ace-last-room', '/q/arrays/two-sum');
     const { replaceSpy } = stubLocationReplace();
 
     armSuppressNextReset('req-1');
@@ -233,7 +220,6 @@ describe('App SSE reset handling', () => {
       emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-b' });
     });
 
-    expect(sessionStorage.getItem('ace-last-room')).toBe('/q/arrays/two-sum');
     expect(replaceSpy).not.toHaveBeenCalled();
   });
 });

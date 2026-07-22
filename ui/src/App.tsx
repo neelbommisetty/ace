@@ -23,7 +23,6 @@ let lastHelloEpoch: string | null = null;
 
 /** Sends this tab back to a fresh Library — used for every reset signal this tab did not itself initiate. */
 function forceReloadToLibrary(): void {
-  sessionStorage.removeItem('ace-last-room');
   location.replace('/');
 }
 
