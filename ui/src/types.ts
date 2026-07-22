@@ -6,7 +6,7 @@
 export type Difficulty = 'easy' | 'medium' | 'hard';
 export type QuestionSource = 'generated' | 'imported' | 'manual';
 export type QuestionStatus = 'not-attempted' | 'in-progress' | 'solved';
-export type AttemptEndReason = 'green' | 'submitted' | 'abandoned' | 'superseded';
+export type AttemptEndReason = 'solved' | 'submitted' | 'abandoned' | 'superseded';
 export type AttemptEventType =
   | 'reveal'
   | 'first_edit'

@@ -229,13 +229,13 @@ describe('attempt lifecycle', () => {
     expect(db.patchAttempt(attempt.id, { activeSecondsDelta: 15 }).activeSeconds).toBe(15);
     expect(db.patchAttempt(attempt.id, { activeSecondsDelta: 10 }).activeSeconds).toBe(25);
 
-    const ended = db.patchAttempt(attempt.id, { end: { reason: 'green' } });
+    const ended = db.patchAttempt(attempt.id, { end: { reason: 'solved' } });
     expect(ended.endedAt).not.toBeNull();
-    expect(ended.endReason).toBe('green');
+    expect(ended.endReason).toBe('solved');
 
     // a second end must not overwrite the first
     const again = db.patchAttempt(attempt.id, { end: { reason: 'abandoned' } });
-    expect(again.endReason).toBe('green');
+    expect(again.endReason).toBe('solved');
     expect(again.endedAt).toBe(ended.endedAt);
     expect(db.getActiveAttempt(q.id)).toBeNull();
   });
@@ -254,6 +254,21 @@ describe('attempt lifecycle', () => {
 
     db.patchAttempt(newer.id, { end: { reason: 'submitted' } });
     expect(db.getLatestActiveAttempt()?.question.id).toBe(qa.id);
+  });
+
+  it('getLatestAttempt returns the newest attempt regardless of ended state', () => {
+    const q = makeQuestion();
+    expect(db.getLatestAttempt(q.id)).toBeNull();
+
+    const first = db.createAttempt(q.id, { startedAt: '2026-07-01T10:00:00.000Z' });
+    expect(db.getLatestAttempt(q.id)?.id).toBe(first.id);
+
+    db.patchAttempt(first.id, { end: { reason: 'submitted' } });
+    // still the newest even though it's now ended
+    expect(db.getLatestAttempt(q.id)?.id).toBe(first.id);
+
+    const second = db.createAttempt(q.id, { startedAt: '2026-07-02T10:00:00.000Z' });
+    expect(db.getLatestAttempt(q.id)?.id).toBe(second.id);
   });
 });
 
@@ -349,6 +364,34 @@ describe('test runs', () => {
     expect(db.listTestRuns(q.id, 2).map((r) => r.id)).toEqual([r3.id, r2.id]);
     expect(db.getLatestTestRun(q.id)?.id).toBe(r3.id);
     expect(db.getLatestTestRun('nope')).toBeNull();
+  });
+
+  it('getLatestCompletedTestRun returns the newest done run, skipping running/error rows', () => {
+    const q = makeQuestion();
+    expect(db.getLatestCompletedTestRun(q.id)).toBeNull();
+
+    const r1 = db.createTestRun({ questionId: q.id, attemptId: null, trigger: 'manual' });
+    db.finishTestRun(r1.id, {
+      status: 'done',
+      summary: { total: 2, passed: 1, failed: 1, skipped: 0, durationMs: 10 },
+    });
+
+    // a still-running run must not shadow the completed one
+    db.createTestRun({ questionId: q.id, attemptId: null, trigger: 'save' });
+    expect(db.getLatestCompletedTestRun(q.id)?.id).toBe(r1.id);
+
+    // an errored run must not shadow the completed one either
+    const errored = db.createTestRun({ questionId: q.id, attemptId: null, trigger: 'save' });
+    db.finishTestRun(errored.id, { status: 'error', errorMessage: 'boom' });
+    expect(db.getLatestCompletedTestRun(q.id)?.id).toBe(r1.id);
+
+    const r2 = db.createTestRun({ questionId: q.id, attemptId: null, trigger: 'manual' });
+    db.finishTestRun(r2.id, {
+      status: 'done',
+      summary: { total: 2, passed: 2, failed: 0, skipped: 0, durationMs: 10 },
+    });
+    expect(db.getLatestCompletedTestRun(q.id)?.id).toBe(r2.id);
+    expect(db.getLatestCompletedTestRun('nope')).toBeNull();
   });
 });
 

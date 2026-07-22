@@ -9,7 +9,7 @@
 export type Difficulty = 'easy' | 'medium' | 'hard';
 export type QuestionSource = 'generated' | 'imported' | 'manual';
 export type QuestionStatus = 'not-attempted' | 'in-progress' | 'solved';
-export type AttemptEndReason = 'green' | 'submitted' | 'abandoned' | 'superseded';
+export type AttemptEndReason = 'solved' | 'submitted' | 'abandoned' | 'superseded';
 export type AttemptEventType =
   | 'reveal'
   | 'first_edit'
@@ -349,6 +349,8 @@ export interface AceDb {
   getActiveAttempt(questionId: string): AttemptRow | null;
   /** Most recently active attempt across all questions (for instant resume). */
   getLatestActiveAttempt(): { attempt: AttemptRow; question: QuestionRow } | null;
+  /** Newest attempt for a question regardless of ended state, or null if none exist yet. */
+  getLatestAttempt(questionId: string): AttemptRow | null;
   createAttempt(questionId: string, opts?: { imported?: boolean; startedAt?: string }): AttemptRow;
   getAttempt(id: string): AttemptRow | null;
   patchAttempt(
@@ -382,6 +384,12 @@ export interface AceDb {
   getTestRun(id: string): TestRunRow | null;
   listTestRuns(questionId: string, limit?: number): TestRunRow[];
   getLatestTestRun(questionId: string): TestRunRow | null;
+  /**
+   * Newest completed ('done') run, or null if none — the same ORDER BY
+   * (`at DESC, id DESC`) as `listQuestions`' latestDone subquery, so
+   * solve-detection here and question-status derivation there never disagree.
+   */
+  getLatestCompletedTestRun(questionId: string): TestRunRow | null;
 
   createReview(r: {
     questionId: string;

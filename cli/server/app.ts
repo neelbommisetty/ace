@@ -36,6 +36,7 @@ import type {
   AceDb,
   AttemptEndReason,
   AttemptEventType,
+  AttemptRow,
   ImportPreviewItem,
   ImportResult,
   QuestionDetail,
@@ -82,12 +83,37 @@ const ATTEMPT_EVENT_TYPES: ReadonlySet<string> = new Set<AttemptEventType>([
   'resume',
 ]);
 const END_REASONS: ReadonlySet<string> = new Set<AttemptEndReason>([
-  'green',
+  'solved',
   'submitted',
   'abandoned',
   'superseded',
 ]);
 const TRIGGERS: ReadonlySet<string> = new Set<TestRunTrigger>(['manual', 'save']);
+
+/**
+ * Question-level solved check: the latest *completed* run (by the same
+ * ORDER BY as `listQuestions`' latestDone subquery) exists and passed
+ * everything. Deliberately NOT the 'all_green' attempt event (runner.ts):
+ * that event persists after later failing runs, so it would report solved
+ * while the question's derived status reads in-progress — this predicate
+ * keeps end-verify and status derivation consistent.
+ */
+export function isQuestionSolved(db: AceDb, questionId: string): boolean {
+  const run = db.getLatestCompletedTestRun(questionId);
+  return run != null && run.total != null && run.total > 0 && run.passed === run.total;
+}
+
+/**
+ * Attempt-scoped solved check: the question is solved AND the passing run
+ * does not predate the attempt being ended. This is what stops a stale green
+ * run left over from a previous attempt (e.g. before a fresh re-attempt was
+ * started) from closing a new attempt as 'solved' the instant it's created.
+ */
+export function isAttemptSolved(db: AceDb, attempt: AttemptRow): boolean {
+  if (!isQuestionSolved(db, attempt.questionId)) return false;
+  const run = db.getLatestCompletedTestRun(attempt.questionId);
+  return run != null && run.at >= attempt.startedAt;
+}
 
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -374,7 +400,16 @@ export function createApp(opts: CreateAppOptions): Hono {
       if (typeof reason !== 'string' || !END_REASONS.has(reason)) {
         return c.json({ error: 'end.reason must be a valid attempt end reason' }, 400);
       }
-      patch.end = { reason: reason as AttemptEndReason };
+      // 'solved' is never trusted from the client — re-verify from
+      // test_runs here. If the check fails, LOAD-BEARING: silently drop the
+      // end (do not 400). The client fires this via a fire-and-forget
+      // keepalive fetch on pagehide/unmount and cannot react to an error
+      // response, and a combined delta+end body must still apply the delta
+      // even when the end itself is rejected. A future "stricter validation"
+      // pass must not turn this into a 400.
+      if (reason !== 'solved' || isAttemptSolved(db, attempt)) {
+        patch.end = { reason: reason as AttemptEndReason };
+      }
     }
 
     return c.json({ attempt: db.patchAttempt(attempt.id, patch) });
