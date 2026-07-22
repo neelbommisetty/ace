@@ -105,6 +105,12 @@ function patchAttempt(app: ReturnType<typeof buildApp>, attemptId: string, body:
   });
 }
 
+function postAttempts(app: ReturnType<typeof buildApp>, category: string, slug: string) {
+  return request(app, `http://localhost/api/questions/${category}/${slug}/attempts?t=${TOKEN}`, {
+    method: 'POST',
+  });
+}
+
 function makeQuestion(): QuestionRow {
   return session.db.upsertQuestion({
     category: 'js-ts',
@@ -257,5 +263,59 @@ describe('PATCH /api/attempts/:id — other end reasons', () => {
     const app = buildApp();
     const res = await patchAttempt(app, attempt.id, { end: { reason: 'green' } });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /api/questions/:category/:slug/attempts', () => {
+  it('returns a readonly response with the latest attempt for a solved question with no active attempt', async () => {
+    const q = makeQuestion();
+    const first = session.db.createAttempt(q.id);
+    makeDoneRun(q.id, PASSING);
+    session.db.patchAttempt(first.id, { end: { reason: 'solved' } });
+
+    const app = buildApp();
+    const res = await postAttempts(app, q.category, q.slug);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      attempt: AttemptRow | null;
+      readonly?: boolean;
+      latestAttempt?: AttemptRow | null;
+    };
+    expect(body.attempt).toBeNull();
+    expect(body.readonly).toBe(true);
+    expect(body.latestAttempt?.id).toBe(first.id);
+
+    // No new attempt was minted — the latest attempt on the question is
+    // still the one that was just solved.
+    expect(session.db.getLatestAttempt(q.id)?.id).toBe(first.id);
+  });
+
+  it('resumes the open attempt on a solved question that still has one active', async () => {
+    const q = makeQuestion();
+    const attempt = session.db.createAttempt(q.id);
+    makeDoneRun(q.id, PASSING);
+    // Deliberately do NOT end the attempt — solved-but-still-open, the
+    // "keep polishing" case: resumes rather than going readonly.
+
+    const app = buildApp();
+    const res = await postAttempts(app, q.category, q.slug);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { attempt: AttemptRow };
+    expect(body.attempt.id).toBe(attempt.id);
+    expect(body.attempt.endedAt).toBeNull();
+  });
+
+  it('creates attempt #1 and captures the scaffold baseline for an unsolved question', async () => {
+    const q = makeQuestion();
+    const dir = path.join(tempRoot, 'questions', 'js-ts', 'debounce');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'solution.js'), 'module.exports = () => {};\n');
+
+    const app = buildApp();
+    const res = await postAttempts(app, q.category, q.slug);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { attempt: AttemptRow };
+    expect(body.attempt.number).toBe(1);
+    expect(body.attempt.endedAt).toBeNull();
   });
 });

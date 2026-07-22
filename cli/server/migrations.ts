@@ -149,4 +149,48 @@ CREATE TABLE brainstorm_sessions (
 CREATE INDEX idx_generation_jobs_created_at ON generation_jobs (created_at);
 CREATE INDEX idx_brainstorm_sessions_updated_at ON brainstorm_sessions (updated_at);
 `,
+  // Migration 4 (NEE-178): backfill — close stale open attempts on questions
+  // that are actually solved (latest completed run fully passing), reason
+  // 'solved'. Pure UPDATE only.
+  //
+  // Both subqueries are scoped to `t.at >= attempts.started_at` (attempt-
+  // scoped, mirrors isAttemptSolved in app.ts): without this clause, a user
+  // who solved a question and then clicked "New attempt" (no run yet on the
+  // fresh attempt) would have that live, in-progress re-attempt closed using
+  // the old solve's run — and since that run predates the new attempt's
+  // started_at, ended_at would end up before started_at. Scoping to the
+  // latest completed run *at or after* started_at ensures only a run that
+  // actually happened within (or after the start of) this attempt can close
+  // it.
+  //
+  // status = 'done' stays inside every subquery: error/running rows carry
+  // NULL total/passed and must never be treated as a pass.
+  //
+  // This intentionally DOES close an attempt the user was actively polishing
+  // on a solved-and-still-green question — per the ticket's decision, the
+  // "solve moment" is leaving the room with tests passing, and a stale open
+  // attempt with a passing run already on record means that moment has
+  // already happened, backfill or not.
+  //
+  // ORDER BY is byte-consistent with listQuestions' latestDone subquery and
+  // AceDb.getLatestCompletedTestRun.
+  `
+UPDATE attempts
+SET end_reason = 'solved',
+    ended_at = (
+      SELECT t.at FROM test_runs t
+      WHERE t.question_id = attempts.question_id
+        AND t.status = 'done'
+        AND t.at >= attempts.started_at
+      ORDER BY t.at DESC, t.id DESC LIMIT 1
+    )
+WHERE ended_at IS NULL
+  AND (
+    SELECT t.total > 0 AND t.passed = t.total FROM test_runs t
+    WHERE t.question_id = attempts.question_id
+      AND t.status = 'done'
+      AND t.at >= attempts.started_at
+    ORDER BY t.at DESC, t.id DESC LIMIT 1
+  ) = 1;
+`,
 ];

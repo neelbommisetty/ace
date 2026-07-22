@@ -363,6 +363,20 @@ export function createApp(opts: CreateAppOptions): Hono {
     const existing = db.getActiveAttempt(question.id);
     if (existing) return c.json({ attempt: existing });
 
+    // Solved with no active attempt: open read-only on the latest attempt
+    // instead of minting a fresh one — the user explicitly starts a new
+    // attempt from the Room's "Start new attempt" button. Deliberately uses
+    // the question-level isQuestionSolved (no attempt-recency clause), to
+    // match listQuestions' status derivation of "solved".
+    if (isQuestionSolved(db, question.id)) {
+      const latestAttempt = db.getLatestAttempt(question.id);
+      if (latestAttempt) {
+        return c.json({ attempt: null, readonly: true, latestAttempt });
+      }
+      // Solved with zero attempts (hand-edited data only) — fall through to
+      // normal creation below.
+    }
+
     const attempt = db.createAttempt(question.id);
     db.addAttemptEvent(attempt.id, 'reveal');
     // number 1 = first-ever attempt (imported history counts, so a legacy
