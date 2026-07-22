@@ -103,8 +103,6 @@ function TokenNotice({ expired }: { expired: boolean }) {
 
 function IconRail() {
   const location = useLocation();
-  const inRoom = location.pathname.startsWith('/q/');
-  const lastRoom = sessionStorage.getItem('ace-last-room');
 
   return (
     <nav className="rail">
@@ -112,25 +110,12 @@ function IconRail() {
         A
       </div>
       <Link
-        className={`rail-icon ${!inRoom && location.pathname === '/' ? 'active' : ''}`}
+        className={`rail-icon ${location.pathname === '/' ? 'active' : ''}`}
         to="/"
         title="Library"
       >
         <HomeIcon />
       </Link>
-      {inRoom || lastRoom != null ? (
-        <Link
-          className={`rail-icon ${inRoom ? 'active' : ''}`}
-          to={inRoom ? location.pathname : (lastRoom ?? '/')}
-          title="Room"
-        >
-          <CodeIcon />
-        </Link>
-      ) : (
-        <span className="rail-icon rail-icon-dim" title="Room — open a question from the library">
-          <CodeIcon />
-        </span>
-      )}
       <div className="rail-spacer" />
       <Link
         className={`rail-icon ${location.pathname.startsWith('/history') ? 'active' : ''}`}
@@ -158,15 +143,6 @@ function HomeIcon() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M3 10.5 12 3l9 7.5" />
       <path d="M5 9.5V21h5v-6h4v6h5V9.5" />
-    </svg>
-  );
-}
-
-function CodeIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="m8 6-6 6 6 6" />
-      <path d="m16 6 6 6-6 6" />
     </svg>
   );
 }

@@ -237,3 +237,14 @@ describe('App SSE reset handling', () => {
     expect(replaceSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('IconRail Room icon removal', () => {
+  it('renders no Room icon, even when a stale ace-last-room key is present', async () => {
+    sessionStorage.setItem('ace-last-room', '/q/arrays/two-sum');
+    await renderApp();
+
+    expect(screen.queryByTitle('Room')).toBeNull();
+    expect(screen.queryByTitle('Room — open a question from the library')).toBeNull();
+    expect(document.querySelector('a[href="/q/arrays/two-sum"]')).toBeNull();
+  });
+});
