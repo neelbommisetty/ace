@@ -42,9 +42,14 @@ const HISTORY_LIMIT = 50;
 export function Room() {
   const { category = '', slug = '' } = useParams();
   const location = useLocation();
-  const [loaded, setLoaded] = useState<{ detail: QuestionDetail; attempt: AttemptRow } | null>(
-    null,
-  );
+  const [loaded, setLoaded] = useState<{
+    detail: QuestionDetail;
+    // null when the question is solved and opened as a readonly reference —
+    // there's no active attempt to resume.
+    attempt: AttemptRow | null;
+    // the ended attempt to base "Start new attempt" off of; only set alongside attempt=null.
+    latestAttempt: AttemptRow | null;
+  } | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // bumped after a fresh attempt: refetches detail + attempt, remounts RoomInner
@@ -62,8 +67,15 @@ export function Room() {
     (async () => {
       try {
         const detail = await getQuestionDetail(category, slug);
-        const { attempt } = await createOrResumeAttempt(category, slug);
-        if (!cancelled) setLoaded({ detail, attempt });
+        const res = await createOrResumeAttempt(category, slug);
+        if (cancelled) return;
+        if (res.readonly) {
+          setLoaded({ detail, attempt: null, latestAttempt: res.latestAttempt ?? null });
+        } else if (res.attempt) {
+          setLoaded({ detail, attempt: res.attempt, latestAttempt: null });
+        } else {
+          throw new Error('Server did not return an attempt to resume');
+        }
       } catch (e) {
         if (cancelled) return;
         if (e instanceof ApiError && e.status === 404) setNotFound(true);
@@ -92,9 +104,10 @@ export function Room() {
   }
   return (
     <RoomInner
-      key={`${loaded.detail.question.id}:${loaded.attempt.id}`}
+      key={`${loaded.detail.question.id}:${loaded.attempt?.id ?? 'readonly'}`}
       detail={loaded.detail}
       attempt={loaded.attempt}
+      latestAttempt={loaded.latestAttempt}
       onReload={() => setReloadKey((k) => k + 1)}
     />
   );
@@ -145,17 +158,28 @@ function appendCapped(prev: string, chunk: string): string {
 function RoomInner({
   detail,
   attempt,
+  latestAttempt,
   onReload,
 }: {
   detail: QuestionDetail;
-  attempt: AttemptRow;
+  attempt: AttemptRow | null;
+  latestAttempt: AttemptRow | null;
   onReload: () => void;
 }) {
   const question = detail.question;
   const questionId = question.id;
   const connected = useSseConnected();
 
-  const editorFiles = useMemo(() => detail.files.filter((f) => f.kind !== 'readme'), [detail.files]);
+  // Solved question opened as a read-only reference: no active attempt.
+  const readonly = attempt == null;
+
+  const editorFiles = useMemo(
+    () =>
+      detail.files
+        .filter((f) => f.kind !== 'readme')
+        .map((f) => (readonly ? { ...f, readonly: true } : f)),
+    [detail.files, readonly],
+  );
   const hasTests = useMemo(() => editorFiles.some((f) => f.kind === 'test'), [editorFiles]);
 
   // ---- file buffers -------------------------------------------------------
@@ -247,7 +271,7 @@ function RoomInner({
 
   const startRun = useCallback(
     (trigger: TestRunTrigger) => {
-      if (!hasTests) return;
+      if (!hasTests || attempt == null) return;
       setRunError(null);
       void (async () => {
         try {
@@ -260,7 +284,7 @@ function RoomInner({
         }
       })();
     },
-    [attempt.id, hasTests],
+    [attempt, hasTests],
   );
   const startRunRef = useRef(startRun);
   useEffect(() => {
@@ -404,15 +428,20 @@ function RoomInner({
   }, [flushSaves]);
 
   useEffect(() => {
+    // readonly mode: every file is readonly, so nothing can ever be dirty —
+    // skip registering the flush (a keepalive PATCH/PUT here would be inert
+    // anyway, but there's also no attempt to end).
+    if (readonly) return;
     return () => {
       // leaving the room: push any dirty buffers to disk (cancels the timers)
       void flushSavesRef.current();
     };
-  }, []);
+  }, [readonly]);
 
   // Tab close / navigation away: regular fetches may be dropped mid-unload,
   // so push dirty buffers with keepalive requests.
   useEffect(() => {
+    if (readonly) return;
     const onPageHide = () => {
       const timers = saveTimers.current;
       for (const timer of timers.values()) window.clearTimeout(timer);
@@ -425,11 +454,14 @@ function RoomInner({
     };
     window.addEventListener('pagehide', onPageHide);
     return () => window.removeEventListener('pagehide', onPageHide);
-  }, []);
+  }, [readonly]);
 
   const firstEditSent = useRef(false);
   const handleChange = useCallback(
     (relPath: string, value: string) => {
+      // Belt-and-suspenders: every file is readonly in this mode so Monaco
+      // shouldn't fire onChange at all, but guard against attempt.id anyway.
+      if (attempt == null) return;
       updateFile(relPath, (f) => ({
         buffer: value,
         saveState:
@@ -442,7 +474,7 @@ function RoomInner({
         postAttemptEvent(attempt.id, 'first_edit').catch(() => {});
       }
     },
-    [attempt.id, scheduleSave, updateFile],
+    [attempt, scheduleSave, updateFile],
   );
 
   // ---- external file changes ---------------------------------------------
@@ -682,19 +714,25 @@ function RoomInner({
   }, [question.category, question.slug, editorFiles, updateFile]);
 
   // ---- fresh attempt ------------------------------------------------------
+  // The attempt "Start new attempt" (readonly banner) or "↺ New attempt"
+  // (active TopBar) mints attempt N+1 off of: the live attempt when editable,
+  // or the ended latestAttempt when this is a readonly reference.
+  const refAttempt = attempt ?? latestAttempt;
   const [freshOpen, setFreshOpen] = useState(false);
   const [freshBusy, setFreshBusy] = useState(false);
   const [freshError, setFreshError] = useState<string | null>(null);
 
   const confirmFresh = useCallback(
     (resetToStub: boolean) => {
+      if (refAttempt == null) return;
       setFreshBusy(true);
       setFreshError(null);
       void (async () => {
         try {
           // the snapshot must capture what's on screen, not stale disk state
+          // (no-op in readonly mode — nothing can be dirty)
           await flushSavesRef.current();
-          await startFreshAttempt(attempt.id, resetToStub);
+          await startFreshAttempt(refAttempt.id, resetToStub);
           onReload();
         } catch (e) {
           setFreshBusy(false);
@@ -702,11 +740,11 @@ function RoomInner({
         }
       })();
     },
-    [attempt.id, onReload],
+    [refAttempt, onReload],
   );
 
   // ---- timer + layout -----------------------------------------------------
-  const timer = useActiveTimer(attempt.id, attempt.activeSeconds);
+  const timer = useActiveTimer(attempt?.id ?? null, attempt?.activeSeconds ?? 0);
   const [problemOpen, setProblemOpen] = useState(true);
   const [consoleOpen, setConsoleOpen] = useState(true);
   const [aiOpen, setAiOpen] = useState(() => localStorage.getItem('ace-ai-open') !== 'false');
@@ -722,19 +760,42 @@ function RoomInner({
         seconds={timer.seconds}
         timerActive={timer.active}
         running={running != null}
-        onRun={hasTests ? () => startRun('manual') : undefined}
-        onFreshAttempt={() => {
-          setFreshError(null);
-          setFreshOpen(true);
-        }}
+        readonly={readonly}
+        onRun={hasTests && !readonly ? () => startRun('manual') : undefined}
+        onFreshAttempt={
+          readonly
+            ? undefined
+            : () => {
+                setFreshError(null);
+                setFreshOpen(true);
+              }
+        }
       />
+      {readonly && (
+        <div className="room-solved-banner">
+          <span className="room-solved-banner-text">
+            <span className="room-solved-badge">✓ Solved</span> — read-only reference
+          </span>
+          {latestAttempt != null && (
+            <button
+              className="btn btn-small btn-accent"
+              onClick={() => {
+                setFreshError(null);
+                setFreshOpen(true);
+              }}
+            >
+              Start new attempt
+            </button>
+          )}
+        </div>
+      )}
       {!connected && <div className="sse-strip">reconnecting…</div>}
       <div className="room-body">
         {problemOpen ? (
           <ProblemPane
             readme={detail.readme}
-            attemptId={attempt.id}
-            attemptNumber={attempt.number}
+            attemptId={refAttempt?.id ?? ''}
+            attemptNumber={refAttempt?.number ?? 0}
             history={history}
             disputes={disputes}
             onCollapse={() => setProblemOpen(false)}
@@ -798,7 +859,7 @@ function RoomInner({
             stream={reviewStream}
             notice={reviewNotice}
             justDoneId={justDoneId}
-            onRequest={requestReview}
+            onRequest={readonly ? undefined : requestReview}
             onCollapse={() => toggleAi(false)}
           />
         ) : (
@@ -820,9 +881,9 @@ function RoomInner({
           onApplied={handleDisputeApplied}
         />
       )}
-      {freshOpen && (
+      {freshOpen && refAttempt != null && (
         <FreshAttemptDialog
-          nextNumber={attempt.number + 1}
+          nextNumber={refAttempt.number + 1}
           busy={freshBusy}
           error={freshError}
           onConfirm={confirmFresh}

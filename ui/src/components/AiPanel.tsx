@@ -32,7 +32,8 @@ export function AiPanel({
   notice: ReviewNotice | null;
   /** id of a review that finished streaming this session — its body opens expanded */
   justDoneId: string | null;
-  onRequest: () => void;
+  /** Absent in the readonly reference mode — hides the "Request review" action. */
+  onRequest?: () => void;
   onCollapse: () => void;
 }) {
   const running = stream != null && stream.error == null;
@@ -60,15 +61,17 @@ export function AiPanel({
       <div className="pane-header">
         <span className="pane-title">AI review</span>
         <div className="ai-header-actions">
-          <button
-            className="btn btn-small btn-accent"
-            disabled={running}
-            onClick={onRequest}
-            title="runs an LLM review — needs an API key in Settings"
-          >
-            {running && <span className="pulse-dot pulse-dot-on-accent" />}
-            {running ? 'Reviewing…' : 'Request review'}
-          </button>
+          {onRequest && (
+            <button
+              className="btn btn-small btn-accent"
+              disabled={running}
+              onClick={onRequest}
+              title="runs an LLM review — needs an API key in Settings"
+            >
+              {running && <span className="pulse-dot pulse-dot-on-accent" />}
+              {running ? 'Reviewing…' : 'Request review'}
+            </button>
+          )}
           <button className="icon-btn" onClick={onCollapse} title="Collapse AI panel">
             ▸
           </button>

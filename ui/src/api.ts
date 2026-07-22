@@ -95,10 +95,16 @@ export function getQuestionDetail(category: string, slug: string): Promise<Quest
   return request(`/api/questions/${encodeURIComponent(category)}/${encodeURIComponent(slug)}`);
 }
 
+/**
+ * `attempt` is null when the question is solved and there's no active
+ * attempt to resume — the server returns a readonly-mode response instead of
+ * auto-creating a fresh attempt. `latestAttempt` (the ended attempt to base a
+ * "Start new attempt" off of) is only present in that case.
+ */
 export function createOrResumeAttempt(
   category: string,
   slug: string,
-): Promise<{ attempt: AttemptRow }> {
+): Promise<{ attempt: AttemptRow | null; readonly?: boolean; latestAttempt?: AttemptRow | null }> {
   return request(
     `/api/questions/${encodeURIComponent(category)}/${encodeURIComponent(slug)}/attempts`,
     { method: 'POST' },
