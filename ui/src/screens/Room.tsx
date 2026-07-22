@@ -4,12 +4,14 @@ import { useLocation, useParams } from 'react-router-dom';
 import {
   ApiError,
   createOrResumeAttempt,
+  flushAttemptEnd,
   flushFileSave,
   getDisputes,
   getFile,
   getQuestionDetail,
   getReviews,
   getTestRuns,
+  patchAttempt,
   postAttemptEvent,
   putFile,
   startFreshAttempt,
@@ -24,6 +26,7 @@ import { ProblemPane } from '../components/ProblemPane';
 import { TestConsole, type RunDisplay } from '../components/TestConsole';
 import { TopBar } from '../components/TopBar';
 import { useActiveTimer } from '../hooks/useActiveTimer';
+import { isFullyPassing } from '../lib/run';
 import { useSseConnected, useSseEvent } from '../sse';
 import type {
   AttemptRow,
@@ -247,6 +250,10 @@ function RoomInner({
       ? runRowToDisplay(detail.lastRun)
       : null,
   );
+  const lastRunRef = useRef(lastRun);
+  useEffect(() => {
+    lastRunRef.current = lastRun;
+  }, [lastRun]);
   const [history, setHistory] = useState<TestRunRow[]>([]);
   const [output, setOutput] = useState('');
   const [runError, setRunError] = useState<string | null>(null);
@@ -455,6 +462,40 @@ function RoomInner({
     window.addEventListener('pagehide', onPageHide);
     return () => window.removeEventListener('pagehide', onPageHide);
   }, [readonly]);
+
+  // ---- claim 'solved' on leaving the room ----------------------------------
+  // Deliberately NOT the moment tests go green — only leaving the room ends
+  // the attempt (ticket decision), so the user can keep polishing within the
+  // attempt after tests pass. The `r.at >= attempt.startedAt` gate guards the
+  // Start-new-attempt case: the fresh attempt N+1 seeds lastRun from the OLD
+  // passing run (see the lastRun initializer above), so without this gate,
+  // leaving before any new run would instantly close the brand-new attempt.
+  // Either way this is only a client-side hint — the server re-verifies from
+  // test_runs (isAttemptSolved) before honoring the claim, so a stale or
+  // forged value here is harmless.
+  const shouldClaimSolved = useCallback(() => {
+    if (attempt == null) return false;
+    const r = lastRunRef.current;
+    return r != null && isFullyPassing(r) && r.at >= attempt.startedAt;
+  }, [attempt]);
+
+  useEffect(() => {
+    if (attempt == null) return;
+    const attemptId = attempt.id;
+    const onPageHide = () => {
+      if (shouldClaimSolved()) flushAttemptEnd(attemptId, 'solved');
+    };
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      // SPA navigation away. Accepted race: an auto-run still in flight at
+      // leave time can finish failing right after the attempt closes
+      // 'solved' — left as-is, same as any other end-reason race.
+      if (shouldClaimSolved()) {
+        patchAttempt(attemptId, { end: { reason: 'solved' } }).catch(() => {});
+      }
+    };
+  }, [attempt, shouldClaimSolved]);
 
   const firstEditSent = useRef(false);
   const handleChange = useCallback(

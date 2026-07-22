@@ -143,6 +143,23 @@ export function flushActiveSeconds(attemptId: string, delta: number): void {
   ).catch(() => {});
 }
 
+/**
+ * Fire-and-forget attempt-end flush for pagehide — same keepalive rationale
+ * as flushActiveSeconds. The server re-verifies 'solved' from `test_runs`
+ * before honoring it, so a stale or forged claim here is harmless.
+ */
+export function flushAttemptEnd(attemptId: string, reason: 'solved'): void {
+  void fetch(
+    `/api/attempts/${encodeURIComponent(attemptId)}?t=${encodeURIComponent(token ?? '')}`,
+    {
+      method: 'PATCH',
+      keepalive: true,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ end: { reason } }),
+    },
+  ).catch(() => {});
+}
+
 export function postAttemptEvent(
   attemptId: string,
   type: AttemptEventType,

@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useEffect, useRef } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Room } from './Room';
-import type { AttemptRow, QuestionDetail, QuestionRow } from '../types';
+import type { AttemptRow, QuestionDetail, QuestionRow, TestRunRow } from '../types';
 
 // Node 22+ defines a global `localStorage` accessor that reads as `undefined`
 // unless the process is started with --localstorage-file, and it shadows
@@ -64,11 +65,37 @@ vi.mock('@monaco-editor/react', () => ({
   },
 }));
 
-// Room subscribes to SSE for run/review updates and connection state; none
-// of the readonly-mode cases below drive a live event, so a no-op stub is
-// enough (same seam as NewQuestion.test.tsx).
+// Room subscribes to SSE for run/review updates and connection state. Most
+// readonly-mode cases below don't drive a live event, but the 'end on leave'
+// tests need to feed a real run-done event, so use the same module-level
+// handler registry as Library.test.tsx / GenerationJobStrip.test.tsx (mirrors
+// the real hook's mount/unmount lifecycle) instead of a no-op stub.
+const { sseHandlers, emitSse } = vi.hoisted(() => {
+  const sseHandlers = new Map<string, Set<(payload: unknown) => void>>();
+  const emitSse = (name: string, payload: unknown) => {
+    const set = sseHandlers.get(name);
+    if (set) for (const fn of [...set]) fn(payload);
+  };
+  return { sseHandlers, emitSse };
+});
+
 vi.mock('../sse', () => ({
-  useSseEvent: () => {},
+  useSseEvent: (name: string, handler: (payload: unknown) => void) => {
+    const ref = useRef(handler);
+    ref.current = handler;
+    useEffect(() => {
+      let set = sseHandlers.get(name);
+      if (!set) {
+        set = new Set();
+        sseHandlers.set(name, set);
+      }
+      const fn = (payload: unknown) => ref.current(payload);
+      set.add(fn);
+      return () => {
+        set!.delete(fn);
+      };
+    }, [name]);
+  },
   useSseConnected: () => true,
 }));
 
@@ -90,6 +117,7 @@ const {
   startDispute,
   flushFileSave,
   flushActiveSeconds,
+  flushAttemptEnd,
   patchAttempt,
 } = vi.hoisted(() => {
   class ApiErrorMock extends Error {
@@ -118,6 +146,7 @@ const {
     startDispute: vi.fn(),
     flushFileSave: vi.fn(),
     flushActiveSeconds: vi.fn(),
+    flushAttemptEnd: vi.fn(),
     patchAttempt: vi.fn(),
   };
 });
@@ -143,6 +172,7 @@ vi.mock('../api', () => ({
   startDispute,
   flushFileSave,
   flushActiveSeconds,
+  flushAttemptEnd,
   patchAttempt,
   getToken: () => 'test-token',
 }));
@@ -175,6 +205,27 @@ function attemptRow(overrides: Partial<AttemptRow> = {}): AttemptRow {
     activeSeconds: 42,
     hintsUsed: 0,
     imported: false,
+    ...overrides,
+  };
+}
+
+function testRunRow(overrides: Partial<TestRunRow> = {}): TestRunRow {
+  return {
+    id: 'run-1',
+    attemptId: 'att-1',
+    questionId: 'q-1',
+    at: new Date().toISOString(),
+    trigger: 'manual',
+    status: 'done',
+    total: 2,
+    passed: 2,
+    failed: 0,
+    skipped: 0,
+    durationMs: 10,
+    results: null,
+    stdout: null,
+    stderr: null,
+    errorMessage: null,
     ...overrides,
   };
 }
@@ -212,6 +263,7 @@ beforeEach(() => {
   getReviews.mockResolvedValue([]);
   getDisputes.mockResolvedValue([]);
   getAttempt.mockResolvedValue({ attempt: attemptRow(), events: [] });
+  patchAttempt.mockResolvedValue({ attempt: attemptRow() });
 });
 
 afterEach(() => {
@@ -290,5 +342,103 @@ describe('Room readonly reference mode', () => {
     // the editable solution file has no lock badge; only the test file does
     expect(screen.getAllByTitle('Test file — read-only in M1')).toHaveLength(1);
     expect(screen.getByText('00:42')).toBeInTheDocument();
+  });
+});
+
+describe('Room ends the attempt as solved on leaving', () => {
+  it('claims solved on unmount when the last run (live run-done) fully passes and postdates the attempt', async () => {
+    const attempt = attemptRow({
+      id: 'att-1',
+      startedAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    createOrResumeAttempt.mockResolvedValue({ attempt });
+
+    const { unmount } = renderRoom();
+    await screen.findByTestId('editor-file:///solution.ts');
+
+    act(() => {
+      emitSse('run-done', {
+        questionId: 'q-1',
+        runId: 'run-pass',
+        status: 'done',
+        summary: { total: 2, passed: 2, failed: 0, skipped: 0, durationMs: 10 },
+        results: null,
+        errorMessage: null,
+      });
+    });
+
+    unmount();
+
+    await waitFor(() => {
+      expect(patchAttempt).toHaveBeenCalledWith('att-1', { end: { reason: 'solved' } });
+    });
+  });
+
+  it('does not claim solved when the last run had failures', async () => {
+    const attempt = attemptRow({
+      id: 'att-1',
+      startedAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    createOrResumeAttempt.mockResolvedValue({ attempt });
+
+    const { unmount } = renderRoom();
+    await screen.findByTestId('editor-file:///solution.ts');
+
+    act(() => {
+      emitSse('run-done', {
+        questionId: 'q-1',
+        runId: 'run-fail',
+        status: 'done',
+        summary: { total: 2, passed: 1, failed: 1, skipped: 0, durationMs: 10 },
+        results: null,
+        errorMessage: null,
+      });
+    });
+
+    unmount();
+    // give any stray timers/effects a tick, then assert the end claim never fired
+    await new Promise((r) => setTimeout(r, 0));
+    expect(patchAttempt).not.toHaveBeenCalledWith('att-1', { end: { reason: 'solved' } });
+  });
+
+  it('does not claim solved when the only passing run predates the attempt (fresh-attempt scenario)', async () => {
+    const attemptStart = new Date();
+    const attempt = attemptRow({ id: 'att-4', startedAt: attemptStart.toISOString() });
+    // the fresh attempt N+1 seeds lastRun from detail.lastRun, which is the
+    // OLD passing run from the attempt it superseded
+    const staleRun = testRunRow({
+      at: new Date(attemptStart.getTime() - 60_000).toISOString(),
+      status: 'done',
+      total: 2,
+      passed: 2,
+      failed: 0,
+    });
+    createOrResumeAttempt.mockResolvedValue({ attempt });
+    getQuestionDetail.mockResolvedValue(questionDetail({ lastRun: staleRun }));
+
+    const { unmount } = renderRoom();
+    await screen.findByTestId('editor-file:///solution.ts');
+
+    unmount();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(patchAttempt).not.toHaveBeenCalledWith('att-4', { end: { reason: 'solved' } });
+  });
+
+  it('never claims solved in readonly mode', async () => {
+    const latestAttempt = attemptRow({
+      id: 'att-3',
+      number: 3,
+      endedAt: new Date().toISOString(),
+      endReason: 'solved',
+    });
+    createOrResumeAttempt.mockResolvedValue({ attempt: null, readonly: true, latestAttempt });
+
+    const { unmount } = renderRoom();
+    await screen.findByText(/Solved/);
+
+    unmount();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(patchAttempt).not.toHaveBeenCalled();
+    expect(flushAttemptEnd).not.toHaveBeenCalled();
   });
 });
