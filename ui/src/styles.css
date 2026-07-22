@@ -329,7 +329,7 @@ code {
   border-color: rgba(208, 59, 59, 0.4);
 }
 
-.chip-status-not-started {
+.chip-status-not-attempted {
   color: var(--dim);
   background: var(--panel-2);
 }
@@ -340,7 +340,7 @@ code {
   background: rgba(255, 178, 36, 0.08);
 }
 
-.chip-status-green {
+.chip-status-solved {
   color: var(--good-text);
   border-color: rgba(12, 163, 12, 0.4);
   background: rgba(12, 163, 12, 0.1);

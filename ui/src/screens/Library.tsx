@@ -179,9 +179,9 @@ export function Library() {
                 title="Filter by status"
               >
                 <option value="all">All statuses</option>
-                <option value="not-started">Not started</option>
+                <option value="not-attempted">Not attempted</option>
                 <option value="in-progress">In progress</option>
-                <option value="green">Green</option>
+                <option value="solved">Solved</option>
               </select>
             </div>
             {questions.length === 0 ? (

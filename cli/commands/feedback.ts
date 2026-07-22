@@ -5,7 +5,7 @@ import chalk from 'chalk';
 import { findQuestion, readScorecard, writeScorecard, getAllQuestions, promptForSlug } from '../lib/scorecard.js';
 import { CATEGORIES, isDesignCategory, getPromptGroup } from '../lib/categories.js';
 import { chatStream, requireProvider } from '../lib/llm.js';
-import type { LLMMessage } from '../lib/llm.js';
+import type { LLMMessage, LLMProvider } from '../lib/llm.js';
 import { resolveWorkspaceRoot, isWorkspaceInitialized } from '../lib/paths.js';
 import { getImportMetaDirname } from '../lib/import-meta.js';
 
@@ -41,7 +41,7 @@ export function hasMeaningfulDesignNotes(notes: string): boolean {
     .some((line) => line.length > 0 && !line.startsWith('#') && !line.startsWith('<!--'));
 }
 
-async function runFeedbackForSlug(slug: string, provider: string): Promise<void> {
+async function runFeedbackForSlug(slug: string, provider: LLMProvider): Promise<void> {
   const question = findQuestion(slug);
   if (!question) {
     console.error(chalk.red(`Question not found: ${slug}`));
@@ -201,7 +201,7 @@ export async function run(args: string[]): Promise<void> {
   // If no slug provided, show interactive picker
   let selectedSlug = parsed.slug;
   if (!selectedSlug) {
-    selectedSlug = await promptForSlug();
+    selectedSlug = (await promptForSlug()) ?? undefined;
     if (!selectedSlug) return;
   }
 

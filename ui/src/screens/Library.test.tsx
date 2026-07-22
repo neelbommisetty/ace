@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useEffect, useRef } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -80,6 +80,30 @@ function job(overrides: Partial<GenerationJobRow> = {}): GenerationJobRow {
     questionId: null,
     createdAt: new Date().toISOString(),
     finishedAt: null,
+    ...overrides,
+  };
+}
+
+function question(overrides: Partial<QuestionWithStats> = {}): QuestionWithStats {
+  return {
+    id: 'q-1',
+    category: 'js-ts',
+    slug: 'closures-and-scope',
+    title: 'Closures and Scope',
+    difficulty: 'medium',
+    suggestedMinutes: 30,
+    dirPath: 'questions/js-ts/closures-and-scope',
+    source: 'generated',
+    createdAt: new Date().toISOString(),
+    archivedAt: null,
+    missingAt: null,
+    stats: {
+      attemptCount: 0,
+      lastRun: null,
+      lastActivityAt: null,
+      status: 'not-attempted',
+      imported: false,
+    },
     ...overrides,
   };
 }
@@ -169,5 +193,50 @@ describe('Library', () => {
 
     await waitFor(() => expect(getGenerationJobs).toHaveBeenCalled());
     expect(screen.queryByText(/generating…/)).toBeNull();
+  });
+
+  it('filters by the user-centric status labels', async () => {
+    getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+    getQuestions.mockResolvedValue([
+      question({
+        id: 'q-solved',
+        slug: 'solved-question',
+        title: 'Solved Question',
+        stats: {
+          attemptCount: 1,
+          lastRun: null,
+          lastActivityAt: null,
+          status: 'solved',
+          imported: false,
+        },
+      }),
+      question({
+        id: 'q-not-attempted',
+        slug: 'not-attempted-question',
+        title: 'Not Attempted Question',
+        stats: {
+          attemptCount: 0,
+          lastRun: null,
+          lastActivityAt: null,
+          status: 'not-attempted',
+          imported: false,
+        },
+      }),
+    ] as QuestionWithStats[]);
+    getGenerationJobs.mockResolvedValue({ jobs: [] });
+    renderLibrary();
+
+    await screen.findByText('Solved Question');
+    expect(screen.getByText('Not Attempted Question')).toBeInTheDocument();
+
+    const select = screen.getByTitle('Filter by status');
+    expect(screen.getByRole('option', { name: 'Not attempted' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'In progress' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Solved' })).toBeInTheDocument();
+
+    fireEvent.change(select, { target: { value: 'solved' } });
+
+    expect(screen.getByText('Solved Question')).toBeInTheDocument();
+    expect(screen.queryByText('Not Attempted Question')).toBeNull();
   });
 });

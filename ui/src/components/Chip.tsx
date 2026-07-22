@@ -10,9 +10,9 @@ export function DifficultyChip({ difficulty }: { difficulty: Difficulty }) {
 }
 
 const STATUS_LABELS: Record<QuestionStatus, string> = {
-  'not-started': 'not started',
+  'not-attempted': 'not attempted',
   'in-progress': 'in progress',
-  green: 'green',
+  solved: 'solved',
 };
 
 export function StatusChip({ status }: { status: QuestionStatus }) {

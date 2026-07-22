@@ -284,9 +284,9 @@ class SqliteAceDb implements AceDb {
               at: r.last_done_at as string,
             }
           : null;
-      let status: QuestionStatus = 'not-started';
+      let status: QuestionStatus = 'not-attempted';
       if (lastRun && lastRun.total > 0 && lastRun.passed === lastRun.total) {
-        status = 'green';
+        status = 'solved';
       } else if (attemptCount > 0) {
         status = 'in-progress';
       }

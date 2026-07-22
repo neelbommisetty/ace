@@ -353,13 +353,13 @@ describe('test runs', () => {
 });
 
 describe('question stats', () => {
-  it('derives not-started → in-progress → green', () => {
+  it('derives not-attempted → in-progress → solved', () => {
     const q = makeQuestion();
     expect(db.listQuestions()[0].stats).toEqual({
       attemptCount: 0,
       lastRun: null,
       lastActivityAt: null,
-      status: 'not-started',
+      status: 'not-attempted',
       imported: false,
     });
 
@@ -380,18 +380,18 @@ describe('question stats', () => {
       results: [],
     });
     stats = db.listQuestions()[0].stats;
-    expect(stats.status).toBe('green');
+    expect(stats.status).toBe('solved');
     expect(stats.lastRun?.passed).toBe(3);
     expect(stats.lastRun?.total).toBe(3);
     // run happened after the attempt started → run.at wins last activity
     expect(stats.lastActivityAt).toBe(stats.lastRun?.at);
   });
 
-  it('a later failing run takes status back off green', () => {
+  it('a later failing run takes status back off solved', () => {
     const q = makeQuestion();
     const attempt = db.createAttempt(q.id);
-    const green = db.createTestRun({ questionId: q.id, attemptId: attempt.id, trigger: 'manual' });
-    db.finishTestRun(green.id, {
+    const solved = db.createTestRun({ questionId: q.id, attemptId: attempt.id, trigger: 'manual' });
+    db.finishTestRun(solved.id, {
       status: 'done',
       summary: { total: 2, passed: 2, failed: 0, skipped: 0, durationMs: 10 },
       results: [],
@@ -408,7 +408,7 @@ describe('question stats', () => {
     expect(stats.lastRun?.passed).toBe(1);
   });
 
-  it('an all-pass run with zero tests is not green', () => {
+  it('an all-pass run with zero tests is not solved', () => {
     const q = makeQuestion();
     db.createAttempt(q.id);
     const run = db.createTestRun({ questionId: q.id, attemptId: null, trigger: 'manual' });
