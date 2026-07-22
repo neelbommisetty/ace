@@ -95,10 +95,16 @@ export function getQuestionDetail(category: string, slug: string): Promise<Quest
   return request(`/api/questions/${encodeURIComponent(category)}/${encodeURIComponent(slug)}`);
 }
 
+/**
+ * `attempt` is null when the question is solved and there's no active
+ * attempt to resume — the server returns a readonly-mode response instead of
+ * auto-creating a fresh attempt. `latestAttempt` (the ended attempt to base a
+ * "Start new attempt" off of) is only present in that case.
+ */
 export function createOrResumeAttempt(
   category: string,
   slug: string,
-): Promise<{ attempt: AttemptRow }> {
+): Promise<{ attempt: AttemptRow | null; readonly?: boolean; latestAttempt?: AttemptRow | null }> {
   return request(
     `/api/questions/${encodeURIComponent(category)}/${encodeURIComponent(slug)}/attempts`,
     { method: 'POST' },
@@ -133,6 +139,23 @@ export function flushActiveSeconds(attemptId: string, delta: number): void {
       keepalive: true,
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ activeSecondsDelta: delta }),
+    },
+  ).catch(() => {});
+}
+
+/**
+ * Fire-and-forget attempt-end flush for pagehide — same keepalive rationale
+ * as flushActiveSeconds. The server re-verifies 'solved' from `test_runs`
+ * before honoring it, so a stale or forged claim here is harmless.
+ */
+export function flushAttemptEnd(attemptId: string, reason: 'solved'): void {
+  void fetch(
+    `/api/attempts/${encodeURIComponent(attemptId)}?t=${encodeURIComponent(token ?? '')}`,
+    {
+      method: 'PATCH',
+      keepalive: true,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ end: { reason } }),
     },
   ).catch(() => {});
 }

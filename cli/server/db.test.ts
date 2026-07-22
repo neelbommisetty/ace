@@ -55,7 +55,7 @@ describe('openDb', () => {
   it('creates .ace and .ace/tmp and tracks schema_version', () => {
     expect(fs.existsSync(path.join(tempRoot, '.ace', 'ace.db'))).toBe(true);
     expect(fs.statSync(path.join(tempRoot, '.ace', 'tmp')).isDirectory()).toBe(true);
-    expect(db.getMeta('schema_version')).toBe('3');
+    expect(db.getMeta('schema_version')).toBe('4');
   });
 
   it('reopens an existing db without re-running migrations', () => {
@@ -64,7 +64,7 @@ describe('openDb', () => {
     db.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('3');
+    expect(db.getMeta('schema_version')).toBe('4');
     expect(db.getMeta('custom')).toBe('kept');
     expect(db.getQuestionById(q.id)?.slug).toBe('debounce');
   });
@@ -72,7 +72,7 @@ describe('openDb', () => {
 
 describe('migration 3 (generation jobs + brainstorm sessions)', () => {
   it('lands schema_version=3 and creates the new tables + indexes', () => {
-    expect(db.getMeta('schema_version')).toBe('3');
+    expect(db.getMeta('schema_version')).toBe('4');
 
     const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
     try {
@@ -136,7 +136,9 @@ describe('migration 3 (generation jobs + brainstorm sessions)', () => {
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('3');
+    // openDb runs every migration after the seeded version, so this now also
+    // picks up migration 4 (NEE-178 backfill) on top of migration 3.
+    expect(db.getMeta('schema_version')).toBe('4');
     expect(db.getQuestionById('seed-q1')?.slug).toBe('debounce');
 
     const raw = new DatabaseSync(dbPath);
@@ -151,6 +153,98 @@ describe('migration 3 (generation jobs + brainstorm sessions)', () => {
     } finally {
       raw.close();
     }
+  });
+});
+
+describe('migration 4 (NEE-178 backfill: close stale solved-question attempts)', () => {
+  it('closes only attempts whose question is solved by a run at/after started_at, leaves the rest alone', () => {
+    // Rebuild the db file from scratch at schema_version 3 (all pre-NEE-178
+    // migrations applied), hand-seed questions/attempts/test_runs, then
+    // reopen so openDb applies migration 4 and we assert on the result.
+    db.close();
+    const dbPath = path.join(tempRoot, '.ace', 'ace.db');
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(`${dbPath}-wal`, { force: true });
+    fs.rmSync(`${dbPath}-shm`, { force: true });
+
+    const seed = new DatabaseSync(dbPath);
+    seed.exec('PRAGMA journal_mode = WAL');
+    for (const m of MIGRATIONS.slice(0, 3)) seed.exec(m);
+    seed.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('schema_version', '3');
+
+    const insertQuestion = seed.prepare(
+      `INSERT INTO questions
+        (id, category, slug, title, difficulty, suggested_minutes, dir_path, source, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const insertAttempt = seed.prepare(
+      `INSERT INTO attempts
+        (id, question_id, number, started_at, ended_at, end_reason, active_seconds, hints_used, imported)
+       VALUES (?, ?, 1, ?, ?, ?, 0, 0, 0)`,
+    );
+    const insertRun = seed.prepare(
+      `INSERT INTO test_runs
+        (id, attempt_id, question_id, at, "trigger", status, total, passed, failed, skipped)
+       VALUES (?, NULL, ?, ?, 'manual', ?, ?, ?, ?, ?)`,
+    );
+
+    for (const slug of ['q1', 'q2', 'q3', 'q4', 'q5', 'q6']) {
+      insertQuestion.run(slug, 'js-ts', slug, slug, 'medium', 30, `/tmp/${slug}`, 'manual', '2026-01-01T00:00:00.000Z');
+    }
+
+    // q1: open attempt, fully-passing done run AFTER started_at -> closed 'solved'.
+    insertAttempt.run('a1', 'q1', '2026-01-01T00:00:00.000Z', null, null);
+    insertRun.run('r1', 'q1', '2026-01-01T00:10:00.000Z', 'done', 5, 5, 0, 0);
+
+    // q2: open attempt, failing done run -> stays open.
+    insertAttempt.run('a2', 'q2', '2026-01-01T00:00:00.000Z', null, null);
+    insertRun.run('r2', 'q2', '2026-01-01T00:10:00.000Z', 'done', 5, 3, 2, 0);
+
+    // q3: open attempt, passing done run followed by newer failing done run -> stays open.
+    insertAttempt.run('a3', 'q3', '2026-01-01T00:00:00.000Z', null, null);
+    insertRun.run('r3a', 'q3', '2026-01-01T00:10:00.000Z', 'done', 5, 5, 0, 0);
+    insertRun.run('r3b', 'q3', '2026-01-01T00:20:00.000Z', 'done', 5, 2, 3, 0);
+
+    // q4: already-ended attempt on a green question -> original end_reason untouched.
+    insertAttempt.run('a4', 'q4', '2026-01-01T00:00:00.000Z', '2026-01-01T00:05:00.000Z', 'abandoned');
+    insertRun.run('r4', 'q4', '2026-01-01T00:10:00.000Z', 'done', 5, 5, 0, 0);
+
+    // q5 (stale-run case): attempt started AFTER the question's only passing
+    // done run, no newer runs -> stays open (this is the re-attempt case the
+    // t.at >= attempts.started_at clause protects).
+    insertRun.run('r5', 'q5', '2026-01-01T00:00:00.000Z', 'done', 5, 5, 0, 0);
+    insertAttempt.run('a5', 'q5', '2026-01-01T00:10:00.000Z', null, null);
+
+    // q6: 'done' run with NULL total -> attempt stays open (NULL falls out
+    // of the `t.total > 0 AND t.passed = t.total` = 1 comparison).
+    insertAttempt.run('a6', 'q6', '2026-01-01T00:00:00.000Z', null, null);
+    seed
+      .prepare(
+        `INSERT INTO test_runs
+          (id, attempt_id, question_id, at, "trigger", status, total, passed, failed, skipped)
+         VALUES (?, NULL, ?, ?, 'manual', 'done', NULL, NULL, NULL, NULL)`,
+      )
+      .run('r6', 'q6', '2026-01-01T00:10:00.000Z');
+
+    seed.close();
+
+    db = openDb(tempRoot);
+    expect(db.getMeta('schema_version')).toBe('4');
+
+    const a1 = db.getAttempt('a1')!;
+    expect(a1.endReason).toBe('solved');
+    expect(a1.endedAt).toBe('2026-01-01T00:10:00.000Z');
+    expect(a1.endedAt! >= a1.startedAt).toBe(true);
+
+    expect(db.getAttempt('a2')!.endedAt).toBeNull();
+    expect(db.getAttempt('a3')!.endedAt).toBeNull();
+
+    const a4 = db.getAttempt('a4')!;
+    expect(a4.endReason).toBe('abandoned');
+    expect(a4.endedAt).toBe('2026-01-01T00:05:00.000Z');
+
+    expect(db.getAttempt('a5')!.endedAt).toBeNull();
+    expect(db.getAttempt('a6')!.endedAt).toBeNull();
   });
 });
 
@@ -229,13 +323,13 @@ describe('attempt lifecycle', () => {
     expect(db.patchAttempt(attempt.id, { activeSecondsDelta: 15 }).activeSeconds).toBe(15);
     expect(db.patchAttempt(attempt.id, { activeSecondsDelta: 10 }).activeSeconds).toBe(25);
 
-    const ended = db.patchAttempt(attempt.id, { end: { reason: 'green' } });
+    const ended = db.patchAttempt(attempt.id, { end: { reason: 'solved' } });
     expect(ended.endedAt).not.toBeNull();
-    expect(ended.endReason).toBe('green');
+    expect(ended.endReason).toBe('solved');
 
     // a second end must not overwrite the first
     const again = db.patchAttempt(attempt.id, { end: { reason: 'abandoned' } });
-    expect(again.endReason).toBe('green');
+    expect(again.endReason).toBe('solved');
     expect(again.endedAt).toBe(ended.endedAt);
     expect(db.getActiveAttempt(q.id)).toBeNull();
   });
@@ -254,6 +348,21 @@ describe('attempt lifecycle', () => {
 
     db.patchAttempt(newer.id, { end: { reason: 'submitted' } });
     expect(db.getLatestActiveAttempt()?.question.id).toBe(qa.id);
+  });
+
+  it('getLatestAttempt returns the newest attempt regardless of ended state', () => {
+    const q = makeQuestion();
+    expect(db.getLatestAttempt(q.id)).toBeNull();
+
+    const first = db.createAttempt(q.id, { startedAt: '2026-07-01T10:00:00.000Z' });
+    expect(db.getLatestAttempt(q.id)?.id).toBe(first.id);
+
+    db.patchAttempt(first.id, { end: { reason: 'submitted' } });
+    // still the newest even though it's now ended
+    expect(db.getLatestAttempt(q.id)?.id).toBe(first.id);
+
+    const second = db.createAttempt(q.id, { startedAt: '2026-07-02T10:00:00.000Z' });
+    expect(db.getLatestAttempt(q.id)?.id).toBe(second.id);
   });
 });
 
@@ -349,6 +458,34 @@ describe('test runs', () => {
     expect(db.listTestRuns(q.id, 2).map((r) => r.id)).toEqual([r3.id, r2.id]);
     expect(db.getLatestTestRun(q.id)?.id).toBe(r3.id);
     expect(db.getLatestTestRun('nope')).toBeNull();
+  });
+
+  it('getLatestCompletedTestRun returns the newest done run, skipping running/error rows', () => {
+    const q = makeQuestion();
+    expect(db.getLatestCompletedTestRun(q.id)).toBeNull();
+
+    const r1 = db.createTestRun({ questionId: q.id, attemptId: null, trigger: 'manual' });
+    db.finishTestRun(r1.id, {
+      status: 'done',
+      summary: { total: 2, passed: 1, failed: 1, skipped: 0, durationMs: 10 },
+    });
+
+    // a still-running run must not shadow the completed one
+    db.createTestRun({ questionId: q.id, attemptId: null, trigger: 'save' });
+    expect(db.getLatestCompletedTestRun(q.id)?.id).toBe(r1.id);
+
+    // an errored run must not shadow the completed one either
+    const errored = db.createTestRun({ questionId: q.id, attemptId: null, trigger: 'save' });
+    db.finishTestRun(errored.id, { status: 'error', errorMessage: 'boom' });
+    expect(db.getLatestCompletedTestRun(q.id)?.id).toBe(r1.id);
+
+    const r2 = db.createTestRun({ questionId: q.id, attemptId: null, trigger: 'manual' });
+    db.finishTestRun(r2.id, {
+      status: 'done',
+      summary: { total: 2, passed: 2, failed: 0, skipped: 0, durationMs: 10 },
+    });
+    expect(db.getLatestCompletedTestRun(q.id)?.id).toBe(r2.id);
+    expect(db.getLatestCompletedTestRun('nope')).toBeNull();
   });
 });
 

@@ -222,6 +222,29 @@ code {
   padding: 3px 16px;
 }
 
+.room-solved-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(12, 163, 12, 0.1);
+  border-bottom: 1px solid rgba(12, 163, 12, 0.4);
+  color: var(--good-text);
+  font-size: 13px;
+  padding: 6px 16px;
+}
+
+.room-solved-banner-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.room-solved-badge {
+  font-weight: 600;
+}
+
 /* ---- buttons, chips, pills ---------------------------------------------- */
 
 .btn {

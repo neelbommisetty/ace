@@ -403,6 +403,16 @@ class SqliteAceDb implements AceDb {
     return { attempt, question };
   }
 
+  getLatestAttempt(questionId: string): AttemptRow | null {
+    const r = this.db
+      .prepare(
+        `SELECT * FROM attempts WHERE question_id = ?
+         ORDER BY started_at DESC, id DESC LIMIT 1`,
+      )
+      .get(questionId) as SqlRow | undefined;
+    return r ? rowToAttempt(r) : null;
+  }
+
   createAttempt(
     questionId: string,
     opts?: { imported?: boolean; startedAt?: string },
@@ -584,6 +594,16 @@ class SqliteAceDb implements AceDb {
   getLatestTestRun(questionId: string): TestRunRow | null {
     const runs = this.listTestRuns(questionId, 1);
     return runs.length > 0 ? runs[0] : null;
+  }
+
+  getLatestCompletedTestRun(questionId: string): TestRunRow | null {
+    const r = this.db
+      .prepare(
+        `SELECT * FROM test_runs WHERE question_id = ? AND status = 'done'
+         ORDER BY at DESC, id DESC LIMIT 1`,
+      )
+      .get(questionId) as SqlRow | undefined;
+    return r ? rowToTestRun(r) : null;
   }
 
   // -- reviews --------------------------------------------------------------

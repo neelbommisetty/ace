@@ -9,9 +9,14 @@ const FLUSH_INTERVAL_MS = 15_000;
  * and there was input (keydown/mousedown/scroll) within the last 90s.
  * Flushes the accumulated delta via PATCH every 15s, and on pagehide/unmount
  * with a keepalive fetch (sendBeacon can't carry the auth header).
+ *
+ * `attemptId` is null for the readonly reference mode (solved question, no
+ * active attempt) — no listeners/intervals/flushes are registered and the
+ * timer reports a stopped 0, but the hook itself stays unconditional so
+ * callers can keep it at the top of the component regardless of mode.
  */
 export function useActiveTimer(
-  attemptId: string,
+  attemptId: string | null,
   baseSeconds: number,
 ): { seconds: number; active: boolean } {
   const [seconds, setSeconds] = useState(baseSeconds);
@@ -20,6 +25,12 @@ export function useActiveTimer(
   const lastInputRef = useRef(Date.now());
 
   useEffect(() => {
+    if (attemptId == null) {
+      setSeconds(0);
+      setActive(false);
+      return;
+    }
+
     setSeconds(baseSeconds);
     pendingRef.current = 0;
     lastInputRef.current = Date.now();

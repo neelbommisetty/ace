@@ -7,6 +7,7 @@ export function TopBar({
   seconds,
   timerActive,
   running,
+  readonly,
   onRun,
   onFreshAttempt,
 }: {
@@ -14,7 +15,9 @@ export function TopBar({
   seconds: number;
   timerActive: boolean;
   running: boolean;
-  /** Absent for design categories (no test files → no run). */
+  /** Solved question opened as a read-only reference — hides the timer. */
+  readonly?: boolean;
+  /** Absent for design categories (no test files → no run) or in readonly mode. */
   onRun?: () => void;
   onFreshAttempt?: () => void;
 }) {
@@ -40,13 +43,15 @@ export function TopBar({
             ↺ New attempt
           </button>
         )}
-        <span
-          className={`timer ${timerActive ? '' : 'timer-paused'}`}
-          title={timerActive ? 'Active time this attempt' : 'Paused — idle or tab hidden'}
-        >
-          {!timerActive && <span className="timer-pause-glyph">⏸</span>}
-          {formatClock(seconds)}
-        </span>
+        {!readonly && (
+          <span
+            className={`timer ${timerActive ? '' : 'timer-paused'}`}
+            title={timerActive ? 'Active time this attempt' : 'Paused — idle or tab hidden'}
+          >
+            {!timerActive && <span className="timer-pause-glyph">⏸</span>}
+            {formatClock(seconds)}
+          </span>
+        )}
         {onRun && (
           <button className="btn btn-accent" onClick={onRun} title="Run tests (⌘/Ctrl+Enter)">
             {running && <span className="pulse-dot pulse-dot-on-accent" />}
