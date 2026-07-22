@@ -115,7 +115,13 @@ function IconRail() {
       >
         <HomeIcon />
       </Link>
-      <div className="rail-spacer" />
+      <Link
+        className={`rail-icon ${location.pathname === '/new' ? 'active' : ''}`}
+        to="/new"
+        title="New question"
+      >
+        <PlusIcon />
+      </Link>
       <Link
         className={`rail-icon ${location.pathname.startsWith('/history') ? 'active' : ''}`}
         to="/history"
@@ -123,6 +129,7 @@ function IconRail() {
       >
         <ClockIcon />
       </Link>
+      <div className="rail-spacer" />
       <span className="rail-icon rail-icon-dim" title="Stats — coming in M3">
         <ChartIcon />
       </span>
@@ -142,6 +149,15 @@ function HomeIcon() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M3 10.5 12 3l9 7.5" />
       <path d="M5 9.5V21h5v-6h4v6h5V9.5" />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
     </svg>
   );
 }

@@ -120,9 +120,6 @@ export function Library() {
               {generatingCount} generating…
             </span>
           )}
-          <Link className="btn btn-accent btn-small" to="/new">
-            New question
-          </Link>
           {workspace != null && (
             <span className="workspace-root mono" title="Workspace root">
               {workspace.root}
