@@ -229,11 +229,11 @@ function ProviderCard({
       <div className="settings-card-head">
         <h2 className="settings-card-title">{PROVIDER_LABELS[provider]}</h2>
         {settings.configured ? (
-          <span className="chip chip-status-green mono" title="A key is configured">
+          <span className="chip chip-status-solved mono" title="A key is configured">
             {settings.masked ?? 'configured'}
           </span>
         ) : (
-          <span className="chip chip-status-not-started">not configured</span>
+          <span className="chip chip-status-not-attempted">not configured</span>
         )}
       </div>
       <div className="settings-row">

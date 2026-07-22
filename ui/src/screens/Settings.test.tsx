@@ -54,6 +54,20 @@ describe('Settings danger zone', () => {
     expect(dangerButtons().reset).toBeEnabled();
   });
 
+  it('gives the configured-key chip the solved status styling', async () => {
+    getSettings.mockResolvedValue({
+      ...SETTINGS_INFO,
+      openai: { configured: true, masked: 'sk-...abcd' },
+    });
+    getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+    render(<Settings />);
+
+    const configured = await screen.findByText('sk-...abcd');
+    expect(configured).toHaveClass('chip-status-solved');
+    const notConfigured = screen.getByText('not configured');
+    expect(notConfigured).toHaveClass('chip-status-not-attempted');
+  });
+
   it('disables the danger buttons while workspace info is loading', () => {
     getSettings.mockResolvedValue(SETTINGS_INFO);
     getWorkspace.mockReturnValue(new Promise(() => {})); // never resolves
