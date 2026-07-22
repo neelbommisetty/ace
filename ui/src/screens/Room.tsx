@@ -343,7 +343,7 @@ function RoomInner({
   });
 
   // ---- autosave -----------------------------------------------------------
-  const [autorun, setAutorun] = useState(() => localStorage.getItem('ace-autorun') !== 'false');
+  const [autorun, setAutorun] = useState(() => localStorage.getItem('ace-autorun') === 'true');
   const autorunRef = useRef(autorun);
   useEffect(() => {
     autorunRef.current = autorun;
