@@ -3,17 +3,11 @@ import path from 'node:path';
 import prompts from 'prompts';
 import chalk from 'chalk';
 import { findQuestion, readScorecard, writeScorecard, getAllQuestions, promptForSlug } from '../lib/scorecard.js';
-import { CATEGORIES, isDesignCategory, getPromptGroup } from '../lib/categories.js';
+import { CATEGORIES, isDesignCategory } from '../lib/categories.js';
 import { chatStream, requireProvider } from '../lib/llm.js';
 import type { LLMMessage, LLMProvider } from '../lib/llm.js';
+import { buildSystemPrompt } from '../lib/prompt-builder.js';
 import { resolveWorkspaceRoot, isWorkspaceInitialized } from '../lib/paths.js';
-import { getImportMetaDirname } from '../lib/import-meta.js';
-
-const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
-
-function loadPrompt(name: string): string {
-  return fs.readFileSync(path.join(PROMPTS_DIR, name), 'utf-8');
-}
 
 function parseArgs(args: string[]): { slug?: string; provider?: string; all: boolean } {
   let slug: string | undefined;
@@ -59,7 +53,7 @@ async function runFeedbackForSlug(slug: string, provider: LLMProvider): Promise<
   let userContent: string;
 
   if (isDesign) {
-    systemPrompt = loadPrompt(`review/${getPromptGroup(question.category)}.md`);
+    systemPrompt = buildSystemPrompt('review', question.category);
     const notesPath = path.join(question.dir, 'notes.md');
     const notes = fs.existsSync(notesPath) ? fs.readFileSync(notesPath, 'utf-8') : '';
 
@@ -83,7 +77,7 @@ ${readme}
 ## Candidate's Design Notes
 ${notes}`;
   } else {
-    systemPrompt = loadPrompt(`review/${getPromptGroup(question.category)}.md`);
+    systemPrompt = buildSystemPrompt('review', question.category);
 
     // Find the solution file
     const solutionFiles = config.solutionFiles;
