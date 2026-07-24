@@ -170,6 +170,7 @@ ${buildFailureOutput(run)}
       const abort = AbortSignal.timeout(180_000);
       const result = await chatObject(provider, messages, DisputeResultSchema, {
         abortSignal: abort,
+        purpose: 'dispute',
       });
       if (disposed) return;
 

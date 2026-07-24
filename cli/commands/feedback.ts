@@ -128,7 +128,7 @@ ${testContent}`;
     { role: 'user', content: userContent },
   ];
 
-  const stream = await chatStream(provider, messages);
+  const stream = await chatStream(provider, messages, { purpose: 'review' });
   let fullResponse = '';
 
   for await (const chunk of stream) {

@@ -70,6 +70,14 @@ function getBrainstormMockPayload() {
   };
 }
 
+function getReviewExtractionMockPayload() {
+  return {
+    score: 4,
+    verdict: 'Hire',
+    dimensions: { Correctness: 4, 'Code Quality': 4, 'Edge Case Handling': 3 },
+  };
+}
+
 function getMockResponse(): string {
   const mode = process.env.ACE_MOCK_LLM_MODE || '';
 
@@ -98,6 +106,7 @@ const MOCK_OBJECT_CANDIDATES: Array<() => unknown> = [
   getGenerateMockPayload,
   getDisputeMockPayload,
   getBrainstormMockPayload,
+  getReviewExtractionMockPayload,
 ];
 
 // Load config once at module level
@@ -171,16 +180,55 @@ export function requireProvider(preferred?: string): LLMProvider {
   return provider;
 }
 
-const OPENAI_MODEL = 'gpt-5.2';
-const ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929';
+/** What a given LLM call is for — selects the model via MODELS below. */
+export type LLMPurpose =
+  | 'generate'
+  | 'edge-audit'
+  | 'review'
+  | 'review-extract'
+  | 'brainstorm'
+  | 'dispute';
 
-function getModel(provider: LLMProvider): LanguageModel {
+// Per-purpose model map: flagship models for every generative step. The sole
+// non-flagship entry is anthropic 'review-extract' (mechanical extraction of
+// already-written review prose — quality lives in the review call itself).
+// Swapping a step's model is a one-line change here.
+// NOTE: claude-opus-4-8 rejects temperature/top_p/top_k with a 400 — never
+// add sampling params to these calls (none are set anywhere today).
+const MODELS: Record<LLMProvider, Record<LLMPurpose, string>> = {
+  openai: {
+    generate: 'gpt-5.6-sol',
+    'edge-audit': 'gpt-5.6-sol',
+    review: 'gpt-5.6-sol',
+    'review-extract': 'gpt-5.6-sol',
+    brainstorm: 'gpt-5.6-sol',
+    dispute: 'gpt-5.6-sol',
+  },
+  anthropic: {
+    generate: 'claude-opus-4-8',
+    'edge-audit': 'claude-opus-4-8',
+    review: 'claude-opus-4-8',
+    'review-extract': 'claude-haiku-4-5',
+    brainstorm: 'claude-opus-4-8',
+    dispute: 'claude-opus-4-8',
+  },
+};
+
+/**
+ * The model id a provider/purpose pair resolves to — for callers that persist
+ * which model produced an output (e.g. review rows) without re-stating ids.
+ */
+export function getModelId(provider: LLMProvider, purpose: LLMPurpose): string {
+  return MODELS[provider][purpose];
+}
+
+function getModel(provider: LLMProvider, purpose: LLMPurpose): LanguageModel {
   const config = getConfig();
   if (provider === 'openai') {
     // .chat() pins the Chat Completions API rather than the Responses API.
-    return createOpenAI({ apiKey: config.OPENAI_API_KEY }).chat(OPENAI_MODEL);
+    return createOpenAI({ apiKey: config.OPENAI_API_KEY }).chat(MODELS.openai[purpose]);
   }
-  return createAnthropic({ apiKey: config.ANTHROPIC_API_KEY })(ANTHROPIC_MODEL);
+  return createAnthropic({ apiKey: config.ANTHROPIC_API_KEY })(MODELS.anthropic[purpose]);
 }
 
 function toCallInput(
@@ -208,7 +256,7 @@ function toCallInput(
 export async function chatStream(
   provider: LLMProvider,
   messages: LLMMessage[],
-  opts?: { abortSignal?: AbortSignal },
+  opts?: { abortSignal?: AbortSignal; purpose?: LLMPurpose },
 ): Promise<AsyncIterable<string>> {
   if (mockLlm) {
     const response = getMockResponse();
@@ -220,7 +268,7 @@ export async function chatStream(
   }
 
   const result = streamText({
-    model: getModel(provider),
+    model: getModel(provider, opts?.purpose ?? 'generate'),
     ...toCallInput(messages),
     abortSignal: opts?.abortSignal,
   });
@@ -231,7 +279,7 @@ export async function chatObject<T>(
   provider: LLMProvider,
   messages: LLMMessage[],
   schema: z.ZodType<T>,
-  opts?: { abortSignal?: AbortSignal; maxOutputTokens?: number },
+  opts?: { abortSignal?: AbortSignal; maxOutputTokens?: number; purpose?: LLMPurpose },
 ): Promise<T> {
   if (mockLlm) {
     if (process.env.ACE_MOCK_LLM_MODE) {
@@ -251,7 +299,7 @@ export async function chatObject<T>(
   }
 
   const result = await generateObject({
-    model: getModel(provider),
+    model: getModel(provider, opts?.purpose ?? 'generate'),
     ...toCallInput(messages, opts?.maxOutputTokens),
     schema,
     abortSignal: opts?.abortSignal,

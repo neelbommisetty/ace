@@ -46,8 +46,9 @@ const IdeaListSchema = z.object({
 // otherwise have matched a different (earlier-tried) candidate.
 const PermissiveSchema = z.record(z.string(), z.unknown());
 
-// Matches none of the mock candidates (generate/dispute/brainstorm all lack
-// a `foo` field), so it exercises the existing parse-failure fallback.
+// Matches none of the mock candidates (generate/dispute/brainstorm/
+// review-extraction all lack a `foo` field), so it exercises the existing
+// parse-failure fallback.
 const UnmatchedSchema = z.object({ foo: z.string() });
 
 const originalMode = process.env.ACE_MOCK_LLM_MODE;

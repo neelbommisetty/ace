@@ -68,7 +68,7 @@ Question type: ${categoryConfig.type}`;
     parsed = await chatObject(provider, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage },
-    ], GeneratedQuestionSchema);
+    ], GeneratedQuestionSchema, { purpose: 'generate' });
   } catch (err) {
     console.error(chalk.red('Failed to parse LLM response as JSON. Raw response:'));
     console.error(NoObjectGeneratedError.isInstance(err) ? err.text : err);
@@ -124,7 +124,7 @@ async function brainstormMode(provider: LLMProvider): Promise<void> {
   while (true) {
     console.log(chalk.dim('\nThinking...\n'));
 
-    const stream = await chatStream(provider, messages);
+    const stream = await chatStream(provider, messages, { purpose: 'brainstorm' });
     let fullResponse = '';
 
     for await (const chunk of stream) {
@@ -207,6 +207,7 @@ ${brainstormSummary}`,
         },
       ],
       GeneratedQuestionSchema,
+      { purpose: 'generate' },
     );
   } catch (err) {
     console.error(chalk.red('Failed to parse LLM response. Raw:'));
