@@ -114,6 +114,14 @@ ${solutionContent}
 ${testContent}`;
   }
 
+  // Generated questions carry a hidden interviewer packet (grading key) —
+  // inject it so the reviewer grades against it, mirroring the server engine.
+  const packetPath = path.join(question.dir, '.interviewer.md');
+  if (fs.existsSync(packetPath)) {
+    const packet = fs.readFileSync(packetPath, 'utf-8').trim();
+    if (packet) userContent += `\n\n## Interviewer Packet\n${packet}`;
+  }
+
   console.log(chalk.cyan(`\n--- LLM ${isDesign ? 'Design' : 'Code'} Review: ${slug} ---`));
   console.log(chalk.dim(`Provider: ${provider}\n`));
 

@@ -14,6 +14,7 @@ import { getQuestionsDir } from '../lib/paths.js';
 import { getStubContent } from '../lib/scaffold.js';
 import { readBlob, saveBlob } from './blobs.js';
 import { applyDispute, DisputeApplyError, getDisputeGuardError } from './disputes.js';
+import { redactGenerationJob } from './generation.js';
 import {
   ScopeError,
   readWorkspaceFile,
@@ -600,6 +601,30 @@ export function createApp(opts: CreateAppOptions): Hono {
     return c.json({ ...review, snapshotContent });
   });
 
+  // Post-review debrief: the hidden interviewer packet + reference solution
+  // written at generation time. Server-side gated — 404 until the question
+  // has at least one review, so nothing can render it pre-review. Nulls for
+  // manual/pre-overhaul questions that have no debrief files.
+  app.get('/api/questions/:category/:slug/debrief', (c) => {
+    const { db } = getSession();
+    const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
+    if (!question) return c.json({ error: 'question not found' }, 404);
+    if (db.listReviews(question.id).length === 0) {
+      return c.json({ error: 'the debrief unlocks after your first review' }, 404);
+    }
+    const readOrNull = (name: string): string | null => {
+      try {
+        return fs.readFileSync(path.join(question.dirPath, name), 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    return c.json({
+      interviewerPacket: readOrNull('.interviewer.md'),
+      referenceSolution: readOrNull('.reference.md'),
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Disputes
   // -------------------------------------------------------------------------
@@ -716,14 +741,16 @@ export function createApp(opts: CreateAppOptions): Hono {
       }
       limit = Math.min(parsed, 100);
     }
-    return c.json({ jobs: db.listGenerationJobs(limit) });
+    // Redacted: job results carry the hidden reference solution/interviewer
+    // packet, which must only ever surface through the review-gated debrief.
+    return c.json({ jobs: db.listGenerationJobs(limit).map(redactGenerationJob) });
   });
 
   app.get('/api/generation/jobs/:id', (c) => {
     const { db } = getSession();
     const job = db.getGenerationJob(c.req.param('id'));
     if (!job) return c.json({ error: 'generation job not found' }, 404);
-    return c.json({ job });
+    return c.json({ job: redactGenerationJob(job) });
   });
 
   app.post('/api/generation/jobs/:id/retry', (c) => {

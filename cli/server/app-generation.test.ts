@@ -314,6 +314,49 @@ describe('GET /api/generation/jobs', () => {
   });
 });
 
+describe('generation-job result redaction', () => {
+  it('strips referenceSolution/interviewerPacket/solutionCode from both job routes', async () => {
+    const job = session.db.createGenerationJob({
+      category: 'js-ts',
+      difficulty: 'easy',
+      topic: 'secrets',
+    });
+    session.db.patchGenerationJob(job.id, {
+      status: 'llm_done',
+      result: {
+        title: 'T',
+        description: 'visible',
+        testCode: 'visible tests',
+        referenceSolution: 'SECRET_REFERENCE',
+        interviewerPacket: 'SECRET_PACKET',
+        solutionCode: 'SECRET_SOLUTION',
+      },
+    });
+    const app = buildApp();
+
+    const listRes = await request(app, `http://localhost/api/generation/jobs?t=${TOKEN}`);
+    const listBody = JSON.stringify(await listRes.json());
+    expect(listBody).toContain('visible tests');
+    expect(listBody).not.toContain('SECRET_REFERENCE');
+    expect(listBody).not.toContain('SECRET_PACKET');
+    expect(listBody).not.toContain('SECRET_SOLUTION');
+
+    const oneRes = await request(app, `http://localhost/api/generation/jobs/${job.id}?t=${TOKEN}`);
+    const oneBody = JSON.stringify(await oneRes.json());
+    expect(oneBody).toContain('visible tests');
+    expect(oneBody).not.toContain('SECRET_REFERENCE');
+    expect(oneBody).not.toContain('SECRET_PACKET');
+    expect(oneBody).not.toContain('SECRET_SOLUTION');
+
+    // The db row itself keeps the full result — retry's scaffold-only
+    // resume depends on it. Only the API boundary redacts.
+    const stored = session.db.getGenerationJob(job.id)!;
+    expect((stored.result as { referenceSolution?: string }).referenceSolution).toBe(
+      'SECRET_REFERENCE',
+    );
+  });
+});
+
 describe('GET /api/generation/jobs/:id', () => {
   it('returns the job', async () => {
     const job = session.db.createGenerationJob({

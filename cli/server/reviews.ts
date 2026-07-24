@@ -226,6 +226,14 @@ ${solutionContent}
 ${testContent}`;
   }
 
+  // Generated questions carry a hidden interviewer packet (grading key:
+  // capability tested, Staff-level bar, rubric) — inject it so the reviewer
+  // grades against it. Pre-overhaul/manual questions simply have none.
+  const packet = readFileOr(path.join(question.dirPath, '.interviewer.md'), '').trim();
+  if (packet) {
+    userContent += `\n\n## Interviewer Packet\n${packet}`;
+  }
+
   return [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userContent },

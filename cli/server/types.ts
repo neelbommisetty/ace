@@ -307,6 +307,15 @@ export interface SseEventMap {
    * createdAt) without a follow-up fetch.
    */
   'generation-started': { job: GenerationJobRow };
+  /**
+   * Ephemeral pipeline-phase progress for active generation cards. Not
+   * persisted anywhere — a reload falls back to the generic running label.
+   */
+  'generation-progress': {
+    jobId: string;
+    phase: 'generating' | 'auditing' | 'verifying' | 'repairing';
+    attempt: number;
+  };
   'generation-done': { jobId: string; question: QuestionRow };
   'generation-error': { jobId: string; message: string };
   /**

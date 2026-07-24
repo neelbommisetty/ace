@@ -1,13 +1,18 @@
 import prompts from 'prompts';
 import chalk from 'chalk';
-import { z } from 'zod';
 import { NoObjectGeneratedError } from 'ai';
 import { CATEGORIES, CATEGORY_SLUGS, slugify } from '../lib/categories.js';
 import type { CategorySlug, Difficulty } from '../lib/categories.js';
-import { chatObject, chatStream, requireProvider } from '../lib/llm.js';
+import {
+  generateVerifiedQuestion,
+  GenerationVerifyError,
+  type GeneratedQuestion,
+  type GenerationPhase,
+} from '../lib/gen-pipeline.js';
+import { chatStream, requireProvider } from '../lib/llm.js';
 import type { LLMMessage, LLMProvider } from '../lib/llm.js';
-import { buildBrainstormPrompt, buildSystemPrompt } from '../lib/prompt-builder.js';
-import { scaffoldQuestion } from '../lib/scaffold.js';
+import { buildBrainstormPrompt } from '../lib/prompt-builder.js';
+import { formatReferenceSolutionMd, scaffoldQuestion } from '../lib/scaffold.js';
 import { resolveWorkspaceRoot, isWorkspaceInitialized } from '../lib/paths.js';
 
 function parseArgs(args: string[]): Record<string, string> {
@@ -28,16 +33,74 @@ function parseArgs(args: string[]): Record<string, string> {
   return result;
 }
 
-const GeneratedQuestionSchema = z.object({
-  title: z.string(),
-  slug: z.string().nullish(),
-  description: z.string().nullish(),
-  signature: z.string().nullish(),
-  testCode: z.string().nullish(),
-  solutionCode: z.string().nullish(),
-});
+function printPhase(phase: GenerationPhase, attempt: number): void {
+  const labels: Record<GenerationPhase, string> = {
+    generating: 'Writing question…',
+    auditing: 'Auditing edge cases…',
+    verifying: 'Running the generated tests…',
+    repairing: `Fixing tests (attempt ${attempt}/3)…`,
+  };
+  console.log(chalk.dim(labels[phase]));
+}
 
-type GeneratedQuestion = z.infer<typeof GeneratedQuestionSchema>;
+/**
+ * Runs the shared verified pipeline and scaffolds the result. Returns true
+ * when a question dir was created; false when generation/verification failed
+ * (nothing is scaffolded on a verify failure — unverified tests never ship).
+ */
+async function generateAndScaffold(
+  provider: LLMProvider,
+  userMessage: string,
+  category: CategorySlug,
+  difficulty: Difficulty,
+  fallbackTitle: string,
+): Promise<boolean> {
+  let parsed: GeneratedQuestion;
+  try {
+    ({ question: parsed } = await generateVerifiedQuestion(
+      { provider, category, difficulty, userMessage, workspaceRoot: resolveWorkspaceRoot() },
+      { onProgress: printPhase },
+    ));
+  } catch (err) {
+    if (err instanceof GenerationVerifyError) {
+      console.error(
+        chalk.red('\nGenerated tests failed verification after 3 attempts — nothing scaffolded.'),
+      );
+      console.error(chalk.dim(err.failureReport));
+      return false;
+    }
+    console.error(chalk.red('Failed to generate question. Raw response:'));
+    console.error(NoObjectGeneratedError.isInstance(err) ? err.text : err);
+    return false;
+  }
+
+  const slug = parsed.slug || slugify(parsed.title || fallbackTitle);
+
+  // Never pass solutionCode from LLM — it may contain a full implementation.
+  // Templates will build a proper stub from the signature instead. (The
+  // verified referenceSolution goes only to the hidden .reference.md.)
+  if (parsed.solutionCode) {
+    console.log(chalk.dim('Note: Discarded LLM solutionCode; using signature-based stub.'));
+  }
+
+  const questionDir = scaffoldQuestion({
+    title: parsed.title || fallbackTitle,
+    slug,
+    category,
+    difficulty,
+    description: parsed.description || '',
+    signature: parsed.signature ?? undefined,
+    testCode: parsed.testCode ?? undefined,
+    interviewerPacket: parsed.interviewerPacket ?? undefined,
+    referenceSolutionMd: parsed.referenceSolution
+      ? formatReferenceSolutionMd(parsed.referenceSolution)
+      : undefined,
+  });
+
+  console.log(chalk.green(`\nCreated: questions/${category}/${slug}/`));
+  console.log(chalk.dim(`  ${questionDir}`));
+  return true;
+}
 
 async function directMode(
   provider: LLMProvider,
@@ -45,7 +108,6 @@ async function directMode(
   category: CategorySlug,
   difficulty: Difficulty,
 ): Promise<void> {
-  const systemPrompt = buildSystemPrompt('generate', category);
   const categoryConfig = CATEGORIES[category];
 
   console.log(chalk.cyan(`\nGenerating ${categoryConfig.name} question: "${topic}" (${difficulty})...`));
@@ -55,38 +117,7 @@ async function directMode(
 Category slug: ${category}
 Question type: ${categoryConfig.type}`;
 
-  let parsed: GeneratedQuestion;
-  try {
-    parsed = await chatObject(provider, [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userMessage },
-    ], GeneratedQuestionSchema, { purpose: 'generate' });
-  } catch (err) {
-    console.error(chalk.red('Failed to parse LLM response as JSON. Raw response:'));
-    console.error(NoObjectGeneratedError.isInstance(err) ? err.text : err);
-    return;
-  }
-
-  const slug = parsed.slug || slugify(parsed.title || topic);
-
-  // Never pass solutionCode from LLM — it may contain a full implementation.
-  // Templates will build a proper stub from the signature instead.
-  if (parsed.solutionCode) {
-    console.log(chalk.dim('Note: Discarded LLM solutionCode; using signature-based stub.'));
-  }
-
-  const questionDir = scaffoldQuestion({
-    title: parsed.title || topic,
-    slug,
-    category,
-    difficulty,
-    description: parsed.description || '',
-    signature: parsed.signature ?? undefined,
-    testCode: parsed.testCode ?? undefined,
-  });
-
-  console.log(chalk.green(`\nCreated: questions/${category}/${slug}/`));
-  console.log(chalk.dim(`  ${questionDir}`));
+  await generateAndScaffold(provider, userMessage, category, difficulty, topic);
 }
 
 async function brainstormMode(provider: LLMProvider): Promise<void> {
@@ -173,59 +204,28 @@ async function brainstormMode(provider: LLMProvider): Promise<void> {
 
   if (!category || !difficulty) return;
 
-  // Use the category's generate prompt to create structured output
+  // Finalize through the shared verified pipeline
   const categoryConfig = CATEGORIES[category as CategorySlug];
-  const generatePrompt = buildSystemPrompt('generate', category as CategorySlug);
   const brainstormSummary = messages
     .filter((m) => m.role !== 'system')
     .map((m) => `${m.role}: ${m.content}`)
     .join('\n\n');
 
-  let parsed: GeneratedQuestion;
-  try {
-    parsed = await chatObject(
-      provider,
-      [
-        { role: 'system', content: generatePrompt },
-        {
-          role: 'user',
-          content: `Based on the following brainstorm conversation, generate a structured ${difficulty} ${categoryConfig.name} interview question.
+  const userMessage = `Based on the following brainstorm conversation, generate a structured ${difficulty} ${categoryConfig.name} interview question.
 
 Category slug: ${category}
 Question type: ${categoryConfig.type}
 
 Brainstorm conversation:
-${brainstormSummary}`,
-        },
-      ],
-      GeneratedQuestionSchema,
-      { purpose: 'generate' },
-    );
-  } catch (err) {
-    console.error(chalk.red('Failed to parse LLM response. Raw:'));
-    console.error(NoObjectGeneratedError.isInstance(err) ? err.text : err);
-    return;
-  }
+${brainstormSummary}`;
 
-  const slug = parsed.slug || slugify(parsed.title || 'brainstorm-question');
-
-  // Never pass solutionCode from LLM — it may contain a full implementation.
-  if (parsed.solutionCode) {
-    console.log(chalk.dim('Note: Discarded LLM solutionCode; using signature-based stub.'));
-  }
-
-  const questionDir = scaffoldQuestion({
-    title: parsed.title,
-    slug,
-    category: category as CategorySlug,
-    difficulty: difficulty as Difficulty,
-    description: parsed.description || '',
-    signature: parsed.signature ?? undefined,
-    testCode: parsed.testCode ?? undefined,
-  });
-
-  console.log(chalk.green(`\nCreated: questions/${category}/${slug}/`));
-  console.log(chalk.dim(`  ${questionDir}`));
+  await generateAndScaffold(
+    provider,
+    userMessage,
+    category as CategorySlug,
+    difficulty as Difficulty,
+    'brainstorm-question',
+  );
 }
 
 export async function run(args: string[]): Promise<void> {
