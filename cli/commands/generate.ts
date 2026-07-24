@@ -1,18 +1,14 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import prompts from 'prompts';
 import chalk from 'chalk';
 import { z } from 'zod';
 import { NoObjectGeneratedError } from 'ai';
-import { CATEGORIES, CATEGORY_SLUGS, slugify, getPromptGroup } from '../lib/categories.js';
+import { CATEGORIES, CATEGORY_SLUGS, slugify } from '../lib/categories.js';
 import type { CategorySlug, Difficulty } from '../lib/categories.js';
 import { chatObject, chatStream, requireProvider } from '../lib/llm.js';
 import type { LLMMessage, LLMProvider } from '../lib/llm.js';
+import { buildBrainstormPrompt, buildSystemPrompt } from '../lib/prompt-builder.js';
 import { scaffoldQuestion } from '../lib/scaffold.js';
 import { resolveWorkspaceRoot, isWorkspaceInitialized } from '../lib/paths.js';
-import { getImportMetaDirname } from '../lib/import-meta.js';
-
-const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
 
 function parseArgs(args: string[]): Record<string, string> {
   const result: Record<string, string> = {};
@@ -32,10 +28,6 @@ function parseArgs(args: string[]): Record<string, string> {
   return result;
 }
 
-function loadPrompt(name: string): string {
-  return fs.readFileSync(path.join(PROMPTS_DIR, name), 'utf-8');
-}
-
 const GeneratedQuestionSchema = z.object({
   title: z.string(),
   slug: z.string().nullish(),
@@ -53,7 +45,7 @@ async function directMode(
   category: CategorySlug,
   difficulty: Difficulty,
 ): Promise<void> {
-  const systemPrompt = loadPrompt(`generate/${getPromptGroup(category)}.md`);
+  const systemPrompt = buildSystemPrompt('generate', category);
   const categoryConfig = CATEGORIES[category];
 
   console.log(chalk.cyan(`\nGenerating ${categoryConfig.name} question: "${topic}" (${difficulty})...`));
@@ -98,7 +90,7 @@ Question type: ${categoryConfig.type}`;
 }
 
 async function brainstormMode(provider: LLMProvider): Promise<void> {
-  const systemPrompt = loadPrompt('question-brainstorm.md');
+  const systemPrompt = buildBrainstormPrompt();
   const messages: LLMMessage[] = [
     { role: 'system', content: systemPrompt },
   ];
@@ -181,9 +173,9 @@ async function brainstormMode(provider: LLMProvider): Promise<void> {
 
   if (!category || !difficulty) return;
 
-  // Use the group-specific generate prompt to create structured output
+  // Use the category's generate prompt to create structured output
   const categoryConfig = CATEGORIES[category as CategorySlug];
-  const generatePrompt = loadPrompt(`generate/${getPromptGroup(category as CategorySlug)}.md`);
+  const generatePrompt = buildSystemPrompt('generate', category as CategorySlug);
   const brainstormSummary = messages
     .filter((m) => m.role !== 'system')
     .map((m) => `${m.role}: ${m.content}`)

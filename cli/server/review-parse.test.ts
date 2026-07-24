@@ -149,7 +149,7 @@ describe('parseReviewDimensions', () => {
   });
 
   it('parses the shipped prompt format: bare 1–5 without "/5"', () => {
-    // cli/prompts/review/*.md request exactly "- Name: X"
+    // the pre-overhaul review rubrics requested exactly "- Name: X"
     expect(parseReviewDimensions('- Correctness: 4\n- Edge Case Handling: 2')).toEqual({
       Correctness: 4,
       'Edge Case Handling': 2,

@@ -128,7 +128,11 @@ describe('createBrainstormEngine', () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0].messages[0].role).toBe('system');
-    expect(calls[0].messages[0].content).toContain('Collaborative Interview Question Designer');
+    // Builder-assembled prompt: charter first, then the brainstorm skeleton,
+    // with the structured-output addendum appended by the engine.
+    expect(calls[0].messages[0].content).toContain('# Interviewer Charter');
+    expect(calls[0].messages[0].content).toContain('Question Design Partner');
+    expect(calls[0].messages[0].content).toContain('## Output Format');
 
     expect(engine.isThinking(sessionId)).toBe(false);
     expect(engine.isAnyRunning()).toBe(false);

@@ -175,7 +175,3 @@ export function slugify(text: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '');
 }
-
-export function getPromptGroup(slug: CategorySlug): CategoryGroup {
-  return CATEGORIES[slug].group;
-}

@@ -1,15 +1,11 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { NoObjectGeneratedError } from 'ai';
 import { z } from 'zod';
 import { CATEGORY_SLUGS } from '../lib/categories.js';
-import { getImportMetaDirname } from '../lib/import-meta.js';
 import { chatObject, type LLMMessage } from '../lib/llm.js';
+import { buildBrainstormPrompt } from '../lib/prompt-builder.js';
 import { resolveProvider } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, BrainstormTurn } from './types.js';
-
-const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
 
 // Mirrors the shape documented in STRUCTURED_OUTPUT_ADDENDUM below, and is
 // duplicated (intentionally, for a keyless test that must not import server
@@ -30,9 +26,9 @@ export const IdeaListSchema = z.object({
     .max(5),
 });
 
-// Appended to cli/prompts/question-brainstorm.md's freeform persona prompt so
-// the model returns the structured shape chatObject/IdeaListSchema expects,
-// while keeping the persona prompt itself schema-agnostic and readable.
+// Appended to the builder-assembled brainstorm prompt so the model returns
+// the structured shape chatObject/IdeaListSchema expects, while keeping the
+// persona prompt itself schema-agnostic and readable.
 const STRUCTURED_OUTPUT_ADDENDUM = `
 ## Output Format
 
@@ -101,13 +97,10 @@ export function createBrainstormEngine(opts: {
   const inFlight = new Set<string>();
   let disposed = false;
 
-  const systemPrompt =
-    fs.readFileSync(path.join(PROMPTS_DIR, 'question-brainstorm.md'), 'utf8') +
-    '\n' +
-    STRUCTURED_OUTPUT_ADDENDUM;
-
   async function runTurn(sessionId: string): Promise<void> {
     try {
+      // Rebuilt per turn: the charter is user-editable and reads are cheap.
+      const systemPrompt = buildBrainstormPrompt() + '\n' + STRUCTURED_OUTPUT_ADDENDUM;
       const provider = resolveProvider();
       if (!provider) throw new Error('no LLM API key configured — add one in Settings');
 

@@ -1,14 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import {
   CATEGORIES,
-  getPromptGroup,
   isDesignCategory,
   type CategoryConfig,
   type CategorySlug,
 } from '../lib/categories.js';
-import { getImportMetaDirname } from '../lib/import-meta.js';
-import { chatStream, getModelId, type LLMMessage } from '../lib/llm.js';
+import { chatObject, chatStream, getModelId, type LLMMessage } from '../lib/llm.js';
+import { buildSystemPrompt } from '../lib/prompt-builder.js';
 import { getStubContent } from '../lib/scaffold.js';
 import { saveBlob } from './blobs.js';
 import { sha1, toWorkspaceRelPath } from './files.js';
@@ -17,9 +17,28 @@ import { resolveProvider } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, QuestionRow } from './types.js';
 
-const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
 const CHUNK_FLUSH_MS = 50;
-const STREAM_IDLE_TIMEOUT_MS = 120_000;
+// 180s: the charter-driven review prompt is beefier than its predecessor.
+const STREAM_IDLE_TIMEOUT_MS = 180_000;
+const EXTRACT_TIMEOUT_MS = 60_000;
+
+// Post-stream structured extraction of the persisted score fields. The regex
+// parsers below remain the fallback contract — extraction failing (or
+// returning nulls) must never fail or degrade a paid review.
+const ReviewExtractionSchema = z.object({
+  score: z.number().nullable(),
+  verdict: z.enum(['Strong Hire', 'Hire', 'Lean Hire', 'No Hire']).nullable(),
+  dimensions: z.record(z.string(), z.number()).nullable(),
+});
+
+const EXTRACTION_PROMPT = `You extract structured scores from a completed interview review.
+
+Given the review text, return:
+- "score": the overall score out of 5 (at most one decimal), or null if the review states none
+- "verdict": the hire recommendation, exactly one of "Strong Hire" | "Hire" | "Lean Hire" | "No Hire", or null if none is stated
+- "dimensions": a map from each scored dimension's name (as written) to its 1-5 integer score, or null if there are none
+
+Extract only what the review actually states — never invent or infer values.`;
 
 // ---------------------------------------------------------------------------
 // Pure parsers over a finished review body (unit-tested in review-parse.test.ts).
@@ -44,7 +63,7 @@ export function parseReviewVerdict(body: string): string | null {
   return match ? match[0] : null;
 }
 
-// The shipped rubrics (cli/prompts/review/*.md) request score lists like
+// The pre-overhaul rubrics (and today's review skeleton) request score lists like
 // "- Correctness: 4" or "- Deep Dive / Trade-offs: 3" — bare 1–5, no "/5".
 // Match any full line of that shape (optional bullet/numbering/bold, name
 // starting uppercase, lone 1–5 value with optional "/5" at end of line).
@@ -165,8 +184,7 @@ function buildReviewMessages(
   config: CategoryConfig,
   kind: 'code' | 'design',
 ): LLMMessage[] {
-  const group = getPromptGroup(question.category as CategorySlug);
-  const systemPrompt = fs.readFileSync(path.join(PROMPTS_DIR, 'review', `${group}.md`), 'utf8');
+  const systemPrompt = buildSystemPrompt('review', question.category as CategorySlug);
   const readme = readFileOr(path.join(question.dirPath, 'README.md'), '');
 
   let userContent: string;
@@ -285,7 +303,7 @@ export function createReviewEngine(opts: {
       let lastChunkAt = Date.now();
       const watchdog = setInterval(() => {
         if (Date.now() - lastChunkAt > STREAM_IDLE_TIMEOUT_MS) {
-          abort.abort(new Error('review stream stalled — no output for 2 minutes'));
+          abort.abort(new Error('review stream stalled — no output for 3 minutes'));
         }
       }, 15_000);
 
@@ -308,15 +326,60 @@ export function createReviewEngine(opts: {
       flushChunks();
       if (disposed) return;
 
+      // Structured extraction of {score, verdict, dimensions} from the
+      // finished prose. Any failure — timeout, parse error, out-of-range
+      // score — falls back to the regex parsers per field; a paid review is
+      // never lost or delayed indefinitely over its metadata.
+      let extracted: z.infer<typeof ReviewExtractionSchema> | null = null;
+      try {
+        extracted = await chatObject(
+          provider,
+          [
+            { role: 'system', content: EXTRACTION_PROMPT },
+            { role: 'user', content: fullText },
+          ],
+          ReviewExtractionSchema,
+          { purpose: 'review-extract', abortSignal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS) },
+        );
+        if (extracted.score !== null && (extracted.score < 0 || extracted.score > 5)) {
+          extracted.score = null;
+        }
+        // Hold dimensions to the same contract the regex parser guarantees
+        // structurally (lone 1–5 integers); drop anything else so a
+        // hallucinated {Correctness: 47} can never reach the db/UI.
+        if (extracted.dimensions !== null) {
+          const sane = Object.fromEntries(
+            Object.entries(extracted.dimensions).filter(
+              ([, v]) => Number.isInteger(v) && v >= 1 && v <= 5,
+            ),
+          );
+          extracted.dimensions = Object.keys(sane).length > 0 ? sane : null;
+        }
+      } catch {
+        extracted = null;
+      }
+      if (disposed) {
+        // The stream is paid for and fully buffered — never silently drop it
+        // just because teardown landed during the extraction await. (.ace/tmp
+        // is wiped at boot, so salvage lives directly under .ace/.)
+        const salvagePath = path.join(workspaceRoot, '.ace', `review-salvage-${jobId}.md`);
+        try {
+          fs.writeFileSync(salvagePath, fullText, 'utf8');
+        } catch {
+          // disk itself is failing; the SSE chunks are the last copy
+        }
+        return;
+      }
+
       let review;
       try {
         review = db.createReview({
           questionId: question.id,
           attemptId,
           bodyMd: fullText,
-          verdict: parseReviewVerdict(fullText),
-          score: parseReviewScore(fullText),
-          dimensions: parseReviewDimensions(fullText),
+          verdict: extracted?.verdict ?? parseReviewVerdict(fullText),
+          score: extracted?.score ?? parseReviewScore(fullText),
+          dimensions: extracted?.dimensions ?? parseReviewDimensions(fullText),
           snapshotHash,
           model: getModelId(provider, 'review'),
           source: 'user',

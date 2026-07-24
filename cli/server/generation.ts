@@ -4,19 +4,16 @@ import { NoObjectGeneratedError } from 'ai';
 import { z } from 'zod';
 import {
   getCategoryConfig,
-  getPromptGroup,
   getSuggestedTime,
   slugify,
   type CategorySlug,
 } from '../lib/categories.js';
-import { getImportMetaDirname } from '../lib/import-meta.js';
 import { chatObject, type LLMMessage, type LLMProvider } from '../lib/llm.js';
+import { buildSystemPrompt } from '../lib/prompt-builder.js';
 import { scaffoldQuestionAt } from '../lib/scaffold.js';
 import { resolveProvider as resolveProviderFromSettings } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, Difficulty, GenerationJobRow } from './types.js';
-
-const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
 
 // Path-traversal guard for LLM-supplied slugs (e.g. a malicious/malformed
 // '../evil' or 'Foo Bar' must never reach fs.mkdirSync as-is).
@@ -140,10 +137,7 @@ export function createGenerationEngine(opts: {
         if (!provider) throw new Error('no LLM API key configured — add one in Settings');
 
         const config = getCategoryConfig(category);
-        const systemPrompt = fs.readFileSync(
-          path.join(PROMPTS_DIR, 'generate', `${getPromptGroup(category)}.md`),
-          'utf8',
-        );
+        const systemPrompt = buildSystemPrompt('generate', category);
         const userMessage = `Generate a ${difficulty} difficulty ${config.name} interview question about: ${job.topic}
 
 Category slug: ${category}
