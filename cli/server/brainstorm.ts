@@ -122,6 +122,7 @@ export function createBrainstormEngine(opts: {
       const abort = AbortSignal.timeout(120_000);
       const result = await llm.chatObject(provider, messages, IdeaListSchema, {
         abortSignal: abort,
+        purpose: 'brainstorm',
       });
       // Mirrors the disputes/reviews engines' convention: a paid call that
       // resolves after dispose() must not write through a db the session

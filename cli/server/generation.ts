@@ -161,6 +161,7 @@ Question type: ${config.type}`;
         parsed = await llm.chatObject(provider, messages, GeneratedQuestionSchema, {
           abortSignal: abort,
           maxOutputTokens: 8192,
+          purpose: 'generate',
         });
         // Mirrors the disputes/reviews/brainstorm engines' convention: a paid
         // call that resolves after dispose() must not write through a db the

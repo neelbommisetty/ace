@@ -180,7 +180,7 @@ ${testOutput}
   let result: z.infer<typeof DisputeResultSchema> | undefined;
   let chatError: unknown;
   try {
-    result = await chatObject(provider, messages, DisputeResultSchema);
+    result = await chatObject(provider, messages, DisputeResultSchema, { purpose: 'dispute' });
   } catch (err) {
     chatError = err;
   } finally {

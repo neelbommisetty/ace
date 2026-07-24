@@ -8,7 +8,7 @@ import {
   type CategorySlug,
 } from '../lib/categories.js';
 import { getImportMetaDirname } from '../lib/import-meta.js';
-import { chatStream, type LLMMessage, type LLMProvider } from '../lib/llm.js';
+import { chatStream, getModelId, type LLMMessage } from '../lib/llm.js';
 import { getStubContent } from '../lib/scaffold.js';
 import { saveBlob } from './blobs.js';
 import { sha1, toWorkspaceRelPath } from './files.js';
@@ -20,13 +20,6 @@ import type { AceDb, QuestionRow } from './types.js';
 const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
 const CHUNK_FLUSH_MS = 50;
 const STREAM_IDLE_TIMEOUT_MS = 120_000;
-
-// Mirrors the (unexported) model constants in cli/lib/llm.ts so persisted
-// reviews record which model produced them.
-const PROVIDER_MODELS: Record<LLMProvider, string> = {
-  openai: 'gpt-5.2',
-  anthropic: 'claude-sonnet-4-5-20250929',
-};
 
 // ---------------------------------------------------------------------------
 // Pure parsers over a finished review body (unit-tested in review-parse.test.ts).
@@ -298,7 +291,10 @@ export function createReviewEngine(opts: {
 
       let fullText = '';
       try {
-        const stream = await chatStream(provider, messages, { abortSignal: abort.signal });
+        const stream = await chatStream(provider, messages, {
+          abortSignal: abort.signal,
+          purpose: 'review',
+        });
         for await (const chunk of stream) {
           lastChunkAt = Date.now();
           fullText += chunk;
@@ -322,7 +318,7 @@ export function createReviewEngine(opts: {
           score: parseReviewScore(fullText),
           dimensions: parseReviewDimensions(fullText),
           snapshotHash,
-          model: PROVIDER_MODELS[provider],
+          model: getModelId(provider, 'review'),
           source: 'user',
         });
       } catch (persistErr) {
