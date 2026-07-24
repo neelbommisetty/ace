@@ -10,6 +10,25 @@ function isActive(job: GenerationJobRow): boolean {
   return job.status === 'running' || job.status === 'llm_done';
 }
 
+interface JobPhase {
+  phase: 'generating' | 'auditing' | 'verifying' | 'repairing';
+  attempt: number;
+}
+
+function phaseLabel(p: JobPhase | undefined): string {
+  if (!p) return 'generating…';
+  switch (p.phase) {
+    case 'generating':
+      return 'writing question…';
+    case 'auditing':
+      return 'auditing edge cases…';
+    case 'verifying':
+      return 'running tests…';
+    case 'repairing':
+      return `fixing tests (attempt ${p.attempt}/3)…`;
+  }
+}
+
 function isTerminal(job: GenerationJobRow): boolean {
   return job.status === 'done' || job.status === 'error';
 }
@@ -29,6 +48,9 @@ export function GenerationJobStrip() {
   const [jobs, setJobs] = useState<GenerationJobRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [, setTick] = useState(0);
+  // Ephemeral pipeline phase per jobId — SSE-only local state (not on the job
+  // row): after a reload active cards just show the generic label again.
+  const [phases, setPhases] = useState<Map<string, JobPhase>>(new Map());
 
   // 'generation-done'/'generation-error' patches that arrived for a jobId
   // not yet in `jobs` — e.g. the mount-time GET below is still in flight, or
@@ -111,6 +133,18 @@ export function GenerationJobStrip() {
 
   useSseEvent('generation-started', ({ job }) => {
     upsert(job);
+    // A (re)started run owes its own progress events — drop any stale phase
+    // from a previous failed run (a scaffold-only resume emits none at all).
+    setPhases((prev) => {
+      if (!prev.has(job.id)) return prev;
+      const next = new Map(prev);
+      next.delete(job.id);
+      return next;
+    });
+  });
+
+  useSseEvent('generation-progress', ({ jobId, phase, attempt }) => {
+    setPhases((prev) => new Map(prev).set(jobId, { phase, attempt }));
   });
 
   useSseEvent('generation-done', ({ jobId, question }) => {
@@ -140,13 +174,13 @@ export function GenerationJobStrip() {
   return (
     <div className="job-strip">
       {jobs.map((job) => (
-        <GenerationJobCard key={job.id} job={job} />
+        <GenerationJobCard key={job.id} job={job} jobPhase={phases.get(job.id)} />
       ))}
     </div>
   );
 }
 
-function GenerationJobCard({ job }: { job: GenerationJobRow }) {
+function GenerationJobCard({ job, jobPhase }: { job: GenerationJobRow; jobPhase?: JobPhase }) {
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
 
@@ -179,7 +213,7 @@ function GenerationJobCard({ job }: { job: GenerationJobRow }) {
         <div className="job-card-info">
           <div className="job-card-title">{label}</div>
           <div className="job-card-meta">
-            {categoryShortName(job.category)} · generating… {elapsedLabel(job.createdAt)}
+            {categoryShortName(job.category)} · {phaseLabel(jobPhase)} {elapsedLabel(job.createdAt)}
           </div>
         </div>
       </div>

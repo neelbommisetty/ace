@@ -19,6 +19,10 @@ export interface ScaffoldOptions {
   testCode?: string;
   solutionCode?: string;
   notesTemplate?: string;
+  /** Written as `.interviewer.md` — invisible to the watcher/reconciler/UI. */
+  interviewerPacket?: string;
+  /** Pre-formatted markdown written as `.reference.md`; never for design categories. */
+  referenceSolutionMd?: string;
 }
 
 export interface ScaffoldResult {
@@ -124,6 +128,18 @@ export function scaffoldQuestionAt(
     }
   }
 
+  // Hidden interviewer artifacts (post-review debrief material). Dotfiles
+  // are invisible to the watcher, reconciler, UI file list, and vitest by
+  // construction — the room never shows them before a review exists.
+  if (opts.interviewerPacket) {
+    fs.writeFileSync(path.join(questionDir, '.interviewer.md'), opts.interviewerPacket);
+    files.push('.interviewer.md');
+  }
+  if (opts.referenceSolutionMd && !isDesignCategory(opts.category)) {
+    fs.writeFileSync(path.join(questionDir, '.reference.md'), opts.referenceSolutionMd);
+    files.push('.reference.md');
+  }
+
   // Scorecard
   if (shouldWriteScorecard) {
     const scorecard = createScorecard(opts.title, opts.category, opts.difficulty);
@@ -132,6 +148,13 @@ export function scaffoldQuestionAt(
   }
 
   return { dir: questionDir, files };
+}
+
+/** Formats a raw reference solution into the `.reference.md` document. */
+export function formatReferenceSolutionMd(code: string): string {
+  // Four-backtick fence so a reference solution that itself contains a
+  // ``` fence (e.g. in a doc comment) cannot break out of the block.
+  return `# Reference Solution\n\n\`\`\`\`tsx\n${code.replace(/\n?$/, '\n')}\`\`\`\`\n`;
 }
 
 /** Thin cwd-resolving wrapper preserving the legacy CLI behavior byte-for-byte. */

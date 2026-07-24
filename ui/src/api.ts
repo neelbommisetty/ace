@@ -324,6 +324,18 @@ export function startGenerationJob(body: {
   return request('/api/generation/jobs', { method: 'POST', body: JSON.stringify(body) });
 }
 
+export interface DebriefResponse {
+  interviewerPacket: string | null;
+  referenceSolution: string | null;
+}
+
+/** 404s (ApiError) until the question has at least one review. */
+export function getDebrief(category: string, slug: string): Promise<DebriefResponse> {
+  return request(
+    `/api/questions/${encodeURIComponent(category)}/${encodeURIComponent(slug)}/debrief`,
+  );
+}
+
 export function getGenerationJobs(limit?: number): Promise<{ jobs: GenerationJobRow[] }> {
   const qs = limit != null ? `?limit=${limit}` : '';
   return request(`/api/generation/jobs${qs}`);

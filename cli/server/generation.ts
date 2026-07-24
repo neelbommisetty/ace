@@ -1,19 +1,28 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { NoObjectGeneratedError } from 'ai';
-import { z } from 'zod';
 import {
   getCategoryConfig,
   getSuggestedTime,
   slugify,
   type CategorySlug,
 } from '../lib/categories.js';
-import { chatObject, type LLMMessage, type LLMProvider } from '../lib/llm.js';
-import { buildSystemPrompt } from '../lib/prompt-builder.js';
-import { scaffoldQuestionAt } from '../lib/scaffold.js';
+import {
+  generateVerifiedQuestion,
+  GenerationVerifyError,
+  GeneratedQuestionSchema,
+  type GeneratedQuestion,
+} from '../lib/gen-pipeline.js';
+import type { VerifyFn } from '../lib/gen-verify.js';
+import { chatObject, type LLMProvider } from '../lib/llm.js';
+import { formatReferenceSolutionMd, scaffoldQuestionAt } from '../lib/scaffold.js';
 import { resolveProvider as resolveProviderFromSettings } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, Difficulty, GenerationJobRow } from './types.js';
+
+// Canonical schema/type now live in cli/lib/gen-pipeline.ts (shared with the
+// CLI); re-exported so existing importers keep working.
+export { GeneratedQuestionSchema, type GeneratedQuestion };
 
 // Path-traversal guard for LLM-supplied slugs (e.g. a malicious/malformed
 // '../evil' or 'Foo Bar' must never reach fs.mkdirSync as-is).
@@ -52,24 +61,32 @@ function resolveSlug(
   throw new Error(`could not find an available slug for "${base}" — too many collisions`);
 }
 
-// Copied from cli/commands/generate.ts's GeneratedQuestionSchema — same
-// contract, different consumer (the server engine vs. the CLI command), kept
-// in sync manually like IdeaListSchema/DisputeResultSchema are with their CLI
-// counterparts elsewhere in this codebase.
-export const GeneratedQuestionSchema = z.object({
-  title: z.string(),
-  slug: z.string().nullish(),
-  description: z.string().nullish(),
-  signature: z.string().nullish(),
-  testCode: z.string().nullish(),
-  solutionCode: z.string().nullish(),
-});
-
-export type GeneratedQuestion = z.infer<typeof GeneratedQuestionSchema>;
-
 /** Injectable seam so unit tests never need a real API key. */
 export interface GenerationLlm {
   chatObject: typeof chatObject;
+}
+
+/**
+ * Strips the hidden interviewer artifacts (reference solution, interviewer
+ * packet — and the always-discarded solutionCode) from a job row's persisted
+ * `result` before the row leaves the server. The review-gated debrief
+ * endpoint is the ONLY door to that content; without this, the job-list
+ * routes and the 'generation-started' SSE event would hand the answer key to
+ * the exact user the gate exists for. The un-redacted row stays in the db —
+ * retry's scaffold-only resume needs the full result.
+ */
+export function redactGenerationJob(job: GenerationJobRow): GenerationJobRow {
+  if (job.result == null) return job;
+  const { referenceSolution, interviewerPacket, solutionCode, ...visible } = job.result as {
+    referenceSolution?: unknown;
+    interviewerPacket?: unknown;
+    solutionCode?: unknown;
+    [key: string]: unknown;
+  };
+  void referenceSolution;
+  void interviewerPacket;
+  void solutionCode;
+  return { ...job, result: visible };
 }
 
 export interface GenerationEngine {
@@ -108,6 +125,12 @@ export function createGenerationEngine(opts: {
    * real settings-backed resolver.
    */
   resolveProvider?: () => LLMProvider | null;
+  /**
+   * Injectable seam alongside `llm`/`resolveProvider`: the sandbox verifier
+   * needs a workspace vitest binary, which test envs don't have. Defaults to
+   * the real sandbox verifier inside generateVerifiedQuestion.
+   */
+  verify?: VerifyFn;
 }): GenerationEngine {
   const { db, bus, workspaceRoot } = opts;
   const llm = opts.llm ?? { chatObject };
@@ -125,38 +148,59 @@ export function createGenerationEngine(opts: {
     const jobId = job.id;
     const category = job.category as CategorySlug;
     const difficulty = job.difficulty;
+    // True once generateVerifiedQuestion returned green (or we resumed from
+    // an already-persisted result). Until then, any per-stage `result` in the
+    // db is UNVERIFIED — an error must clear it so retry re-runs the full
+    // pipeline instead of scaffold-resuming unverified tests.
+    let pipelineDone = false;
     try {
       let parsed: GeneratedQuestion;
       let title: string;
 
       if (runOpts.resumeFromResult && job.result) {
+        // A persisted result only survives error paths that come AFTER a
+        // fully verified pipeline (scaffold failure, llm_done-write failure),
+        // so resuming from it never ships unverified tests.
         parsed = job.result as unknown as GeneratedQuestion;
         title = job.title || parsed.title || job.topic;
+        pipelineDone = true;
       } else {
         const provider = resolveProvider();
         if (!provider) throw new Error('no LLM API key configured — add one in Settings');
 
         const config = getCategoryConfig(category);
-        const systemPrompt = buildSystemPrompt('generate', category);
         const userMessage = `Generate a ${difficulty} difficulty ${config.name} interview question about: ${job.topic}
 
 Category slug: ${category}
 Question type: ${config.type}`;
 
-        const messages: LLMMessage[] = [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userMessage },
-        ];
-
-        // Bound the single-shot call (generateObject has no stream to
-        // watchdog) so a stalled provider can't hold the in-flight slot (and
-        // any downstream concurrency cap) until server restart.
-        const abort = AbortSignal.timeout(180_000);
-        parsed = await llm.chatObject(provider, messages, GeneratedQuestionSchema, {
-          abortSignal: abort,
-          maxOutputTokens: 8192,
-          purpose: 'generate',
-        });
+        // Full verified pipeline: generate → edge-audit → sandbox verify with
+        // repair loop (design categories: critique pass, no sandbox). Each
+        // stage's paid output is persisted immediately via onStageResult; the
+        // per-call timeouts inside the pipeline bound a stalled provider.
+        const outcome = await generateVerifiedQuestion(
+          { provider, category, difficulty, userMessage, workspaceRoot },
+          {
+            llm,
+            verify: opts.verify,
+            onProgress: (phase, attempt) => {
+              if (!disposed) bus.emit('generation-progress', { jobId, phase, attempt });
+            },
+            onStageResult: (stage) => {
+              if (disposed) return;
+              try {
+                db.patchGenerationJob(jobId, {
+                  result: stage as unknown as Record<string, unknown>,
+                });
+              } catch {
+                // Non-final stage persistence is best-effort; the final
+                // llm_done patch below has the salvage path.
+              }
+            },
+          },
+        );
+        parsed = outcome.question;
+        pipelineDone = true;
         // Mirrors the disputes/reviews/brainstorm engines' convention: a paid
         // call that resolves after dispose() must not write through a db the
         // session teardown may already be closing (or have closed).
@@ -249,6 +293,10 @@ Question type: ${config.type}`;
               description: parsed.description || '',
               signature: parsed.signature ?? undefined,
               testCode: parsed.testCode ?? undefined,
+              interviewerPacket: parsed.interviewerPacket ?? undefined,
+              referenceSolutionMd: parsed.referenceSolution
+                ? formatReferenceSolutionMd(parsed.referenceSolution)
+                : undefined,
             },
             { writeScorecard: false },
           ));
@@ -283,6 +331,25 @@ Question type: ${config.type}`;
       bus.emit('generation-done', { jobId, question });
     } catch (err) {
       if (!disposed) {
+        if (err instanceof GenerationVerifyError) {
+          // Clear the persisted per-stage result so retry's resumeFromResult
+          // check re-runs the FULL pipeline — never scaffold a question whose
+          // tests were left unverified. (Scaffold failures below keep their
+          // result intact for the scaffold-only resume.)
+          const message = err.message;
+          try {
+            db.patchGenerationJob(jobId, {
+              status: 'error',
+              errorMessage: message,
+              result: null,
+              rawText: err.failureReport,
+            });
+          } catch {
+            // job row may already be in a terminal state — nothing more to do
+          }
+          bus.emit('generation-error', { jobId, message });
+          return;
+        }
         const message = NoObjectGeneratedError.isInstance(err)
           ? 'the model did not return a parseable question — try again'
           : err instanceof Error
@@ -290,7 +357,16 @@ Question type: ${config.type}`;
             : String(err);
         const rawText = NoObjectGeneratedError.isInstance(err) ? (err.text ?? null) : null;
         try {
-          db.patchGenerationJob(jobId, { status: 'error', errorMessage: message, rawText });
+          // A failure BEFORE the pipeline finished leaves only unverified
+          // per-stage output in `result` — clear it so retry re-runs the full
+          // pipeline. Post-pipeline failures (scaffolding, the llm_done
+          // write) keep it for the scaffold-only resume.
+          db.patchGenerationJob(jobId, {
+            status: 'error',
+            errorMessage: message,
+            rawText,
+            ...(pipelineDone ? {} : { result: null }),
+          });
         } catch {
           // job row may already be in a terminal state — nothing more to do
         }
@@ -312,7 +388,7 @@ Question type: ${config.type}`;
         brainstormSessionId: params.brainstormSessionId ?? null,
       });
       inFlight.add(job.id);
-      bus.emit('generation-started', { job });
+      bus.emit('generation-started', { job: redactGenerationJob(job) });
       void runJob(job);
       return { jobId: job.id };
     },
@@ -331,7 +407,7 @@ Question type: ${config.type}`;
       // what makes the scaffold-only resume path possible below.
       const resumed = db.patchGenerationJob(job.id, { status: 'running', errorMessage: null });
       inFlight.add(resumed.id);
-      bus.emit('generation-started', { job: resumed });
+      bus.emit('generation-started', { job: redactGenerationJob(resumed) });
       void runJob(resumed, { resumeFromResult: resumed.result != null });
       return { jobId: resumed.id };
     },

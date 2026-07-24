@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { VerifyFn, VerifyResult } from '../lib/gen-verify.js';
 import type { LLMMessage, LLMProvider } from '../lib/llm.js';
 import { createGenerationEngine } from './generation.js';
 import { openDb } from './db.js';
@@ -14,6 +15,20 @@ import type { AceDb } from './types.js';
 // state. Every test below injects both this and the `llm` fake, so the whole
 // pipeline runs deterministically off the fakes, keyless.
 const FAKE_PROVIDER: () => LLMProvider | null = () => 'openai';
+
+// The verify seam mirrors llm/resolveProvider: temp workspaces have no vitest
+// binary, so every test injects a fake verifier. Green by default.
+const VERIFY_GREEN: VerifyResult = {
+  green: true,
+  summary: { total: 1, passed: 1, failed: 0, skipped: 0, durationMs: 1 },
+  failureReport: null,
+};
+const VERIFY_RED: VerifyResult = {
+  green: false,
+  summary: { total: 1, passed: 0, failed: 1, skipped: 0, durationMs: 1 },
+  failureReport: '✕ generated test failed\nexpected 1 to be 2',
+};
+const FAKE_VERIFY_GREEN: VerifyFn = async () => VERIFY_GREEN;
 
 let tempRoot = '';
 let db: AceDb;
@@ -37,6 +52,10 @@ const VALID_GENERATED_PAYLOAD = {
   testCode:
     "import { describe, it, expect } from 'vitest';\nimport { twoSumVariant } from './solution.js';\n\ndescribe('twoSumVariant', () => {\n  it('works', () => {\n    expect(twoSumVariant([2, 7], 9)).toEqual([0, 1]);\n  });\n});\n",
   solutionCode: 'export function twoSumVariant(nums, target) { return CHEATER_SOLUTION_MARKER; }',
+  // The pipeline's stage-3 static check requires a reference solution for
+  // coding categories; without it every run burns all repair attempts.
+  referenceSolution:
+    'export function twoSumVariant(nums: number[], target: number): number[] {\n  return [0, 1];\n}\n',
 };
 
 /**
@@ -63,8 +82,14 @@ function makeFakeLlm(
     provider: LLMProvider,
     messages: LLMMessage[],
     schema: any,
-    opts?: { abortSignal?: AbortSignal; maxOutputTokens?: number },
+    opts?: { abortSignal?: AbortSignal; maxOutputTokens?: number; purpose?: string },
   ) => {
+    // The pipeline's stage-2 edge-audit call is answered generically (no
+    // changed artifacts) so handler queues — and the generate-call log —
+    // stay exactly as before the pipeline landed.
+    if (opts?.purpose === 'edge-audit') {
+      return schema.parse({ edgeCases: [] });
+    }
     calls.push({ provider, messages, opts });
     const handler = handlers[i++];
     if (!handler) throw new Error('fake llm: no more handlers queued');
@@ -133,6 +158,7 @@ describe('createGenerationEngine', () => {
       workspaceRoot: tempRoot,
       llm,
       resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
     });
     const done = waitFor('generation-done');
 
@@ -182,6 +208,7 @@ describe('createGenerationEngine', () => {
       workspaceRoot: tempRoot,
       llm,
       resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
     });
     const done = waitFor('generation-done');
 
@@ -213,6 +240,7 @@ describe('createGenerationEngine', () => {
       workspaceRoot: tempRoot,
       llm,
       resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
     });
     const done = waitFor('generation-done');
 
@@ -245,6 +273,7 @@ describe('createGenerationEngine', () => {
       workspaceRoot: tempRoot,
       llm,
       resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
     });
     const errored = waitFor('generation-error');
 
@@ -278,6 +307,7 @@ describe('createGenerationEngine', () => {
       workspaceRoot: tempRoot,
       llm,
       resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
     });
 
     const events: string[] = [];
@@ -319,6 +349,7 @@ describe('createGenerationEngine', () => {
       workspaceRoot: tempRoot,
       llm,
       resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
     });
     const errored = waitFor('generation-error');
 
@@ -366,6 +397,7 @@ describe('createGenerationEngine', () => {
       workspaceRoot: tempRoot,
       llm,
       resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
     });
     const errored = waitFor('generation-error');
 
@@ -417,6 +449,7 @@ describe('createGenerationEngine', () => {
       workspaceRoot: tempRoot,
       llm,
       resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
     });
     const errored = waitFor('generation-error');
 
@@ -434,11 +467,12 @@ describe('createGenerationEngine', () => {
     expect(fs.existsSync(salvagePath)).toBe(true);
     expect(JSON.parse(fs.readFileSync(salvagePath, 'utf8'))).toEqual(VALID_GENERATED_PAYLOAD);
 
-    // The db write itself never landed, so the job row's own result column
-    // stays null — the salvage file on disk is the copy of record here.
+    // Only the final llm_done patch threw; the per-stage onStageResult
+    // patches (plain { result }, no status) landed fine — so the paid output
+    // survives in BOTH the db row and the salvage file.
     const job = db.getGenerationJob(jobId)!;
     expect(job.status).toBe('error');
-    expect(job.result).toBeNull();
+    expect((job.result as { title?: string } | null)?.title).toBe('Two Sum Variant');
     expect(calls).toHaveLength(1);
   });
 
@@ -451,6 +485,7 @@ describe('createGenerationEngine', () => {
         workspaceRoot: tempRoot,
         llm,
         resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
       });
 
       const firstDone = waitFor('generation-done');
@@ -489,6 +524,7 @@ describe('createGenerationEngine', () => {
         workspaceRoot: tempRoot,
         llm,
         resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
       });
       const done = waitFor('generation-done');
 
@@ -531,6 +567,7 @@ describe('createGenerationEngine', () => {
         workspaceRoot: tempRoot,
         llm,
         resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
       });
       const done = waitFor('generation-done');
 
@@ -557,6 +594,7 @@ describe('createGenerationEngine', () => {
         workspaceRoot: tempRoot,
         llm,
         resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
       });
 
       // Force the first attempt to fail purely at the scaffold-I/O step, so
@@ -623,6 +661,7 @@ describe('createGenerationEngine', () => {
         workspaceRoot: tempRoot,
         llm,
         resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
       });
 
       const errored = waitFor('generation-error');
@@ -659,6 +698,7 @@ describe('createGenerationEngine', () => {
         workspaceRoot: tempRoot,
         llm,
         resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
       });
 
       // First attempt fails at the scaffold step — result/slug persisted,
@@ -718,6 +758,7 @@ describe('createGenerationEngine', () => {
         workspaceRoot: tempRoot,
         llm,
         resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
       });
 
       // job1: fails at mkdir — slug 'two-sum-variant' is recorded on its job
@@ -799,6 +840,7 @@ describe('createGenerationEngine', () => {
         workspaceRoot: tempRoot,
         llm,
         resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
       });
 
       const { jobId } = engine.start({
@@ -811,5 +853,190 @@ describe('createGenerationEngine', () => {
       expect(runningJob.status).toBe('running');
       expect(() => engine.retry(runningJob)).toThrow(/not in an error state/);
     });
+  });
+});
+
+describe('verified pipeline wiring', () => {
+  it('emits generation-progress phases over the bus during a run', async () => {
+    const { llm } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
+    const phases: Array<{ phase: string; attempt: number }> = [];
+    bus.subscribe((name, data) => {
+      if (name === 'generation-progress') {
+        const p = data as { phase: string; attempt: number };
+        phases.push({ phase: p.phase, attempt: p.attempt });
+      }
+    });
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engine.start({ category: 'js-ts', difficulty: 'easy', topic: 'progress phases' });
+    await waitFor('generation-done');
+    expect(phases).toEqual([
+      { phase: 'generating', attempt: 1 },
+      { phase: 'auditing', attempt: 1 },
+      { phase: 'verifying', attempt: 1 },
+    ]);
+  });
+
+  it('clears the persisted result and lands on error when verification is exhausted', async () => {
+    // Initial generate + 2 repair calls, all red — the pipeline gives up.
+    const { llm, calls } = makeFakeLlm([
+      () => VALID_GENERATED_PAYLOAD,
+      () => VALID_GENERATED_PAYLOAD,
+      () => VALID_GENERATED_PAYLOAD,
+    ]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: async () => VERIFY_RED,
+    });
+    const { jobId } = engine.start({
+      category: 'js-ts',
+      difficulty: 'easy',
+      topic: 'always red',
+    });
+    const errEvent = await waitFor('generation-error');
+    expect(errEvent.jobId).toBe(jobId);
+
+    const row = db.getGenerationJob(jobId)!;
+    expect(row.status).toBe('error');
+    // result cleared so a retry re-runs the FULL pipeline — unverified tests
+    // must never reach the scaffold via the scaffold-only resume path.
+    expect(row.result).toBeNull();
+    expect(row.rawText).toContain('generated test failed');
+    expect(calls.length).toBe(3);
+    // nothing scaffolded, no question row
+    expect(db.getQuestion('js-ts', 'two-sum-variant')).toBeNull();
+    expect(fs.existsSync(path.join(tempRoot, 'questions', 'js-ts', 'two-sum-variant'))).toBe(
+      false,
+    );
+  });
+
+  it('retry after verify-exhaustion re-runs the full pipeline with new llm calls', async () => {
+    const verdicts = [VERIFY_RED, VERIFY_RED, VERIFY_RED, VERIFY_GREEN];
+    const { llm, calls } = makeFakeLlm([
+      () => VALID_GENERATED_PAYLOAD, // run 1: initial
+      () => VALID_GENERATED_PAYLOAD, // run 1: repair 1
+      () => VALID_GENERATED_PAYLOAD, // run 1: repair 2 — still red, exhausted
+      () => VALID_GENERATED_PAYLOAD, // retry: fresh initial — green this time
+    ]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: async () => verdicts.shift() ?? VERIFY_GREEN,
+    });
+    const { jobId } = engine.start({
+      category: 'js-ts',
+      difficulty: 'easy',
+      topic: 'red then green',
+    });
+    await waitFor('generation-error');
+    expect(calls.length).toBe(3);
+
+    const done = waitFor('generation-done');
+    engine.retry(db.getGenerationJob(jobId)!);
+    await done;
+
+    // A 4th generate call proves the retry was a full pipeline re-run, not a
+    // scaffold-only resume from a stale (cleared) result.
+    expect(calls.length).toBe(4);
+    const row = db.getGenerationJob(jobId)!;
+    expect(row.status).toBe('done');
+    expect(row.questionId).not.toBeNull();
+    const question = db.getQuestion('js-ts', 'two-sum-variant');
+    expect(question).not.toBeNull();
+    // The hidden interviewer artifacts are absent here (payload has none) —
+    // but the solution stub must never contain the reference/cheater code.
+    const solution = fs.readFileSync(path.join(question!.dirPath, 'solution.ts'), 'utf8');
+    expect(solution).not.toContain('CHEATER_SOLUTION_MARKER');
+  });
+
+  it('clears the persisted result when the pipeline fails mid-flight, so retry re-runs it fully', async () => {
+    // Stage 1 succeeds (and is persisted per-stage); the audit call then
+    // dies. The persisted result is UNVERIFIED and must not survive into a
+    // scaffold-only resume.
+    let generateCalls = 0;
+    let auditCalls = 0;
+    const llm = {
+      chatObject: (async (_p: unknown, _m: unknown, schema: any, opts?: { purpose?: string }) => {
+        if (opts?.purpose === 'edge-audit') {
+          auditCalls++;
+          if (auditCalls === 1) throw new Error('provider 500 during audit');
+          return schema.parse({ edgeCases: [] });
+        }
+        generateCalls++;
+        return schema.parse(VALID_GENERATED_PAYLOAD);
+      }) as never,
+    } as Parameters<typeof createGenerationEngine>[0]['llm'];
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+
+    const { jobId } = engine.start({
+      category: 'js-ts',
+      difficulty: 'easy',
+      topic: 'audit dies once',
+    });
+    await waitFor('generation-error');
+
+    const errored = db.getGenerationJob(jobId)!;
+    expect(errored.status).toBe('error');
+    expect(errored.errorMessage).toContain('provider 500');
+    // The stage-1 result WAS patched mid-pipeline, but the error must clear
+    // it — otherwise retry would scaffold tests that were never verified.
+    expect(errored.result).toBeNull();
+
+    const done = waitFor('generation-done');
+    engine.retry(db.getGenerationJob(jobId)!);
+    await done;
+    // Full pipeline re-ran: a second generate call, not a scaffold resume.
+    expect(generateCalls).toBe(2);
+    expect(db.getGenerationJob(jobId)!.status).toBe('done');
+  });
+
+  it('writes .interviewer.md and .reference.md when the pipeline returns them', async () => {
+    const { llm } = makeFakeLlm([
+      () => ({
+        ...VALID_GENERATED_PAYLOAD,
+        referenceSolution: 'export function twoSumVariant() { return [0, 1]; }',
+        interviewerPacket: '## Capability Tested\n\nConcurrency realities.',
+      }),
+    ]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engine.start({ category: 'js-ts', difficulty: 'easy', topic: 'dotfiles' });
+    const { question } = await waitFor('generation-done');
+
+    const packet = fs.readFileSync(path.join(question.dirPath, '.interviewer.md'), 'utf8');
+    expect(packet).toContain('Capability Tested');
+    const reference = fs.readFileSync(path.join(question.dirPath, '.reference.md'), 'utf8');
+    expect(reference).toContain('# Reference Solution');
+    expect(reference).toContain('return [0, 1];');
+    // The visible solution stub stays the signature-rendered TODO stub.
+    const solution = fs.readFileSync(path.join(question.dirPath, 'solution.ts'), 'utf8');
+    expect(solution).toContain('// TODO: implement');
+    expect(solution).not.toContain('return [0, 1];');
   });
 });
