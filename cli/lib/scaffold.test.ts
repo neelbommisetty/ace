@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { scaffoldQuestion, scaffoldQuestionAt } from './scaffold.js';
+import { renderSolutionStub, scaffoldQuestion, scaffoldQuestionAt } from './scaffold.js';
 
 let tempRoot = '';
 let otherCwdWorkspace = '';
@@ -148,5 +148,42 @@ describe('scaffoldQuestion (legacy cwd-resolving wrapper)', () => {
     );
     expect(fs.existsSync(path.join(dir, 'scorecard.json'))).toBe(true);
     expect(fs.existsSync(path.join(dir, 'README.md'))).toBe(true);
+  });
+});
+
+describe('renderSolutionStub', () => {
+  it('renders a js-ts stub with the real signature and a TODO body', () => {
+    const stub = renderSolutionStub('js-ts', 'solution.ts', {
+      signature: 'export function add(a: number, b: number): number',
+    });
+    expect(stub).toContain('export function add(a: number, b: number): number {');
+    expect(stub).toContain('// TODO: implement');
+  });
+
+  it('uses the react-apps signature verbatim as the whole starter file', () => {
+    const signature = [
+      "import React from 'react';",
+      '',
+      'export default function App() {',
+      '  // TODO: implement',
+      '  return <div />;',
+      '}',
+    ].join('\n');
+    const stub = renderSolutionStub('react-apps', 'App.tsx', { signature });
+    expect(stub).toContain(signature);
+  });
+
+  it('prepends the React import and appends the JSX shell for web-components', () => {
+    const stub = renderSolutionStub('web-components', 'Component.tsx', {
+      signature: 'export function Badge({ label }: { label: string })',
+      title: 'Badge Component',
+    });
+    expect(stub).toContain("import React from 'react';");
+    expect(stub).toContain('export function Badge({ label }: { label: string }) {');
+    expect(stub).toContain('<h1>Badge Component</h1>');
+  });
+
+  it('returns an empty string when the category has no template for the file', () => {
+    expect(renderSolutionStub('js-ts', 'nonexistent.ts', { signature: 'x' })).toBe('');
   });
 });

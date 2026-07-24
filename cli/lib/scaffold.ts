@@ -140,6 +140,35 @@ export function scaffoldQuestion(opts: ScaffoldOptions): string {
   return dir;
 }
 
+/**
+ * Renders a solution-file template with REAL signature/title data — the exact
+ * starter content a generated question's scaffold produces. (getStubContent
+ * renders with empty placeholders, which is not what a generated question's
+ * stub looks like — the verifier's stub-must-fail run needs the real thing.)
+ */
+export function renderSolutionStub(
+  category: CategorySlug,
+  file: string,
+  data: { signature?: string; title?: string },
+): string {
+  const config = getCategoryConfig(category);
+  const templatePath = path.join(TEMPLATES_DIR, config.templateDir, file + '.hbs');
+  if (!fs.existsSync(templatePath)) return '';
+  const tmpl = loadTemplate(templatePath);
+  return tmpl({
+    title: data.title || '',
+    slug: '',
+    category: config.name,
+    categorySlug: category,
+    difficulty: '',
+    suggestedTime: 0,
+    description: '',
+    signature: data.signature || '',
+    testCode: '',
+    solutionCode: '',
+  });
+}
+
 export function getStubContent(category: CategorySlug, file: string): string {
   const config = getCategoryConfig(category);
   const templateDir = path.join(TEMPLATES_DIR, config.templateDir);
