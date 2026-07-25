@@ -14,8 +14,8 @@ vi.mock('../api', async (importOriginal) => {
 });
 
 const SETTINGS_INFO: SettingsInfo = {
-  openai: { configured: false, masked: null },
-  anthropic: { configured: false, masked: null },
+  openai: { configured: false, masked: null, baseUrl: null },
+  anthropic: { configured: false, masked: null, baseUrl: null },
   defaultProvider: null,
   mockMode: false,
 };
@@ -57,7 +57,7 @@ describe('Settings danger zone', () => {
   it('gives the configured-key chip the solved status styling', async () => {
     getSettings.mockResolvedValue({
       ...SETTINGS_INFO,
-      openai: { configured: true, masked: 'sk-...abcd' },
+      openai: { configured: true, masked: 'sk-...abcd', baseUrl: null },
     });
     getWorkspace.mockResolvedValue(WORKSPACE_INFO);
     render(<Settings />);

@@ -226,9 +226,17 @@ function getModel(provider: LLMProvider, purpose: LLMPurpose): LanguageModel {
   const config = getConfig();
   if (provider === 'openai') {
     // .chat() pins the Chat Completions API rather than the Responses API.
-    return createOpenAI({ apiKey: config.OPENAI_API_KEY }).chat(MODELS.openai[purpose]);
+    return createOpenAI({
+      apiKey: config.OPENAI_API_KEY,
+      ...(config.OPENAI_BASE_URL ? { baseURL: config.OPENAI_BASE_URL } : {}),
+    }).chat(MODELS.openai[purpose]);
   }
-  return createAnthropic({ apiKey: config.ANTHROPIC_API_KEY })(MODELS.anthropic[purpose]);
+  // A base URL (e.g. a local proxy exposing /v1/messages) still speaks the
+  // native Anthropic wire protocol, so the same SDK client is used either way.
+  return createAnthropic({
+    apiKey: config.ANTHROPIC_API_KEY,
+    ...(config.ANTHROPIC_BASE_URL ? { baseURL: config.ANTHROPIC_BASE_URL } : {}),
+  })(MODELS.anthropic[purpose]);
 }
 
 function toCallInput(
@@ -309,13 +317,19 @@ export async function chatObject<T>(
   return result.object;
 }
 
-export async function validateOpenAIKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
+export async function validateOpenAIKey(
+  apiKey: string,
+  baseUrl?: string,
+): Promise<{ valid: boolean; error?: string }> {
   if (mockLlm) {
     return { valid: true };
   }
 
   try {
-    const response = await fetch('https://api.openai.com/v1/models', {
+    // Env-sourced base URLs bypass normalizeBaseUrl, so strip trailing
+    // slashes here too — the SDK clients do the same internally.
+    const base = (baseUrl ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
+    const response = await fetch(`${base}/models`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     if (!response.ok) {
@@ -328,13 +342,17 @@ export async function validateOpenAIKey(apiKey: string): Promise<{ valid: boolea
   }
 }
 
-export async function validateAnthropicKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
+export async function validateAnthropicKey(
+  apiKey: string,
+  baseUrl?: string,
+): Promise<{ valid: boolean; error?: string }> {
   if (mockLlm) {
     return { valid: true };
   }
 
   try {
-    const response = await fetch('https://api.anthropic.com/v1/models', {
+    const base = (baseUrl ?? 'https://api.anthropic.com/v1').replace(/\/+$/, '');
+    const response = await fetch(`${base}/models`, {
       headers: {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',

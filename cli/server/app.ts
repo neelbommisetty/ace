@@ -10,6 +10,7 @@ import {
   type CategorySlug,
   type Difficulty,
 } from '../lib/categories.js';
+import { normalizeBaseUrl } from '../lib/config.js';
 import { getQuestionsDir } from '../lib/paths.js';
 import { getStubContent } from '../lib/scaffold.js';
 import { readBlob, saveBlob } from './blobs.js';
@@ -998,6 +999,22 @@ export function createApp(opts: CreateAppOptions): Hono {
         return c.json({ error: 'anthropicKey must be a non-empty string' }, 400);
       }
       patch.anthropicKey = body.anthropicKey.trim();
+    }
+    for (const field of ['openaiBaseUrl', 'anthropicBaseUrl'] as const) {
+      const value = body[field];
+      if (value === undefined) continue;
+      if (value === null) {
+        patch[field] = null;
+        continue;
+      }
+      if (typeof value !== 'string' || value.trim().length === 0) {
+        return c.json({ error: `${field} must be a non-empty string or null` }, 400);
+      }
+      const normalized = normalizeBaseUrl(value);
+      if (!normalized) {
+        return c.json({ error: `${field} must be a valid http(s) URL` }, 400);
+      }
+      patch[field] = normalized;
     }
     if (body.defaultProvider !== undefined) {
       if (body.defaultProvider !== 'openai' && body.defaultProvider !== 'anthropic') {

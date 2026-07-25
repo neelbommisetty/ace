@@ -297,6 +297,8 @@ export function getSettings(): Promise<SettingsInfo> {
 export function putSettings(body: {
   openaiKey?: string;
   anthropicKey?: string;
+  openaiBaseUrl?: string | null;
+  anthropicBaseUrl?: string | null;
   defaultProvider?: 'openai' | 'anthropic';
 }): Promise<SettingsInfo> {
   return request('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
