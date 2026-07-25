@@ -180,6 +180,7 @@ export interface BrainstormSessionRow {
 export interface ProviderSettings {
   configured: boolean;
   masked: string | null; // '...abcd'
+  baseUrl: string | null; // vendor default when null; not masked
 }
 
 export interface SettingsInfo {

@@ -206,6 +206,10 @@ function ProviderCard({
   const [state, setState] = useState<'idle' | 'saving' | 'ok'>('idle');
   const [error, setError] = useState<string | null>(null);
   const settings = info[provider];
+  // Prefilled (base URLs are not secret, unlike keys); empty save clears.
+  const [baseValue, setBaseValue] = useState(settings.baseUrl ?? '');
+  const [baseState, setBaseState] = useState<'idle' | 'saving' | 'ok'>('idle');
+  const [baseError, setBaseError] = useState<string | null>(null);
 
   const save = () => {
     const key = value.trim();
@@ -221,6 +225,24 @@ function ProviderCard({
       .catch((e: unknown) => {
         setState('idle');
         setError(e instanceof Error ? e.message : 'Failed to save the key');
+      });
+  };
+
+  const saveBaseUrl = () => {
+    if (baseState === 'saving') return;
+    const trimmed = baseValue.trim();
+    const patchValue = trimmed === '' ? null : trimmed;
+    setBaseState('saving');
+    setBaseError(null);
+    putSettings(provider === 'openai' ? { openaiBaseUrl: patchValue } : { anthropicBaseUrl: patchValue })
+      .then((next) => {
+        onSaved(next);
+        setBaseValue(next[provider].baseUrl ?? '');
+        setBaseState('ok');
+      })
+      .catch((e: unknown) => {
+        setBaseState('idle');
+        setBaseError(e instanceof Error ? e.message : 'Failed to save the base URL');
       });
   };
 
@@ -270,6 +292,42 @@ function ProviderCard({
       <p className="settings-hint">
         Validated against the {PROVIDER_LABELS[provider]} API before saving; stored in your global
         ace config. The full key is never sent back to this page.
+      </p>
+      <div className="settings-row">
+        <input
+          className="key-input mono"
+          type="text"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="Base URL (optional)"
+          value={baseValue}
+          onChange={(e) => {
+            setBaseValue(e.target.value);
+            setBaseState('idle');
+            setBaseError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') saveBaseUrl();
+          }}
+        />
+        <button
+          className="btn btn-accent btn-small"
+          onClick={saveBaseUrl}
+          disabled={baseState === 'saving' || (baseValue.trim() || null) === settings.baseUrl}
+        >
+          {baseState === 'saving' ? 'Validating…' : 'Save'}
+        </button>
+        {baseState === 'ok' && (
+          <span className="save-ok" title="Base URL saved">
+            ✓ saved
+          </span>
+        )}
+      </div>
+      {baseError != null && <div className="error-note">{baseError}</div>}
+      <p className="settings-hint">
+        Leave empty for the official API. Point at a local proxy (e.g.{' '}
+        <code>http://localhost:4242/v1</code>) to use it instead; your existing key is re-validated
+        against the new host before saving.
       </p>
     </section>
   );

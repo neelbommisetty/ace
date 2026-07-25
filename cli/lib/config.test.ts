@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { loadAceConfig, maskApiKey, saveGlobalAceConfig } from './config.js';
+import { loadAceConfig, maskApiKey, normalizeBaseUrl, saveGlobalAceConfig } from './config.js';
 
 let tempHome = '';
 const originalEnv = { ...process.env };
@@ -65,6 +65,17 @@ describe('loadAceConfig', () => {
 
     expect(config.OPENAI_API_KEY).toBe('envfile-key');
   });
+
+  it('resolves base URLs with the same precedence as keys', () => {
+    writeGlobalFile('config.json', JSON.stringify({ OPENAI_BASE_URL: 'http://json:1/v1' }));
+    process.env.OPENAI_BASE_URL = 'http://env:1/v1';
+    process.env.ANTHROPIC_BASE_URL = 'http://env:2/v1';
+
+    const config = loadAceConfig();
+
+    expect(config.OPENAI_BASE_URL).toBe('http://json:1/v1');
+    expect(config.ANTHROPIC_BASE_URL).toBe('http://env:2/v1');
+  });
 });
 
 describe('saveGlobalAceConfig', () => {
@@ -79,6 +90,36 @@ describe('saveGlobalAceConfig', () => {
       default_provider: 'openai',
       ANTHROPIC_API_KEY: 'new-key',
     });
+  });
+
+  it('removes a key from config.json when saved as explicit undefined', () => {
+    writeGlobalFile(
+      'config.json',
+      JSON.stringify({ OPENAI_API_KEY: 'existing', OPENAI_BASE_URL: 'http://localhost:4242/v1' }),
+    );
+
+    saveGlobalAceConfig({ OPENAI_BASE_URL: undefined });
+
+    const saved = JSON.parse(fs.readFileSync(path.join(tempHome, '.ace', 'config.json'), 'utf-8'));
+    expect(saved).toEqual({ OPENAI_API_KEY: 'existing' });
+  });
+});
+
+describe('normalizeBaseUrl', () => {
+  it('trims whitespace and trailing slashes', () => {
+    expect(normalizeBaseUrl('  http://localhost:4242/v1/  ')).toBe('http://localhost:4242/v1');
+    expect(normalizeBaseUrl('https://api.example.com/v1///')).toBe('https://api.example.com/v1');
+  });
+
+  it('accepts plain http(s) URLs unchanged', () => {
+    expect(normalizeBaseUrl('https://api.example.com/v1')).toBe('https://api.example.com/v1');
+  });
+
+  it('rejects non-http schemes, scheme-less input, and malformed URLs', () => {
+    expect(normalizeBaseUrl('localhost:4242/v1')).toBeNull();
+    expect(normalizeBaseUrl('ftp://example.com/v1')).toBeNull();
+    expect(normalizeBaseUrl('http://')).toBeNull();
+    expect(normalizeBaseUrl('')).toBeNull();
   });
 });
 
