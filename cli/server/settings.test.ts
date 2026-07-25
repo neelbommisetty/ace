@@ -106,6 +106,17 @@ describe('updateSettings base URLs', () => {
     expect(info.openai.baseUrl).toBe('http://localhost:4242/v1');
   });
 
+  it('rejects clearing a base URL that an env source would resurrect', async () => {
+    writeConfig({ OPENAI_API_KEY: 'k', OPENAI_BASE_URL: 'http://localhost:4242/v1' });
+    process.env.OPENAI_BASE_URL = 'http://localhost:4242/v1';
+
+    await expect(updateSettings({ openaiBaseUrl: null })).rejects.toThrow(SettingsValidationError);
+    expect(readConfig()).toEqual({
+      OPENAI_API_KEY: 'k',
+      OPENAI_BASE_URL: 'http://localhost:4242/v1',
+    });
+  });
+
   it('validates a combined key + base URL patch as a pair', async () => {
     writeConfig({});
 

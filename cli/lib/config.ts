@@ -97,6 +97,21 @@ export function saveGlobalAceConfig(partial: Partial<AceConfig>): void {
 }
 
 /**
+ * The value a fallback source (~/.ace/.env or process.env) would supply for a
+ * base-URL key even after config.json stops defining it. Clearing a base URL
+ * only deletes the config.json entry, so a value here means the clear cannot
+ * actually take effect — callers surface that instead of silently no-opping.
+ */
+export function baseUrlEnvFallback(key: 'OPENAI_BASE_URL' | 'ANTHROPIC_BASE_URL'): string | undefined {
+  const envPath = path.join(getGlobalAceDir(), '.env');
+  if (fs.existsSync(envPath)) {
+    const envConfig = dotenv.parse(fs.readFileSync(envPath));
+    if (envConfig[key]) return envConfig[key];
+  }
+  return process.env[key] || undefined;
+}
+
+/**
  * Normalizes a provider base URL: trims whitespace and trailing slashes.
  * Returns null unless the result is a valid http(s) URL. The URL should
  * include the /v1 path segment, matching the AI SDK's baseURL convention

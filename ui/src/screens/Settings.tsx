@@ -229,9 +229,11 @@ function ProviderCard({
   };
 
   const saveBaseUrl = () => {
-    if (baseState === 'saving') return;
     const trimmed = baseValue.trim();
     const patchValue = trimmed === '' ? null : trimmed;
+    // Mirrors the Save button's disabled condition — Enter must not fire a
+    // no-op save (which would still trigger a real revalidation round-trip).
+    if (baseState === 'saving' || patchValue === settings.baseUrl) return;
     setBaseState('saving');
     setBaseError(null);
     putSettings(provider === 'openai' ? { openaiBaseUrl: patchValue } : { anthropicBaseUrl: patchValue })

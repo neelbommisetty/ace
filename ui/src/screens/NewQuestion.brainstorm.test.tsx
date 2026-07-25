@@ -47,8 +47,8 @@ vi.mock('../api', async (importOriginal) => {
 });
 
 const CONFIGURED_SETTINGS: SettingsInfo = {
-  openai: { configured: true, masked: 'sk-...abcd' },
-  anthropic: { configured: false, masked: null },
+  openai: { configured: true, masked: 'sk-...abcd', baseUrl: null },
+  anthropic: { configured: false, masked: null, baseUrl: null },
   defaultProvider: 'openai',
   mockMode: false,
 };

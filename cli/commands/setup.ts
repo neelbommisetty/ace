@@ -1,6 +1,7 @@
 import prompts from 'prompts';
 import chalk from 'chalk';
 import {
+  baseUrlEnvFallback,
   saveGlobalAceConfig,
   maskApiKey,
   loadAceConfig,
@@ -117,12 +118,26 @@ export async function run(args: string[]): Promise<void> {
   if (hasNewAnthropic) {
     toSave.ANTHROPIC_API_KEY = anthropicKey!.trim();
   }
-  // Explicit undefined removes the key from config.json (JSON.stringify drops it).
-  if (openaiBaseUrl !== undefined) {
-    toSave.OPENAI_BASE_URL = openaiBaseUrl ?? undefined;
-  }
-  if (anthropicBaseUrl !== undefined) {
-    toSave.ANTHROPIC_BASE_URL = anthropicBaseUrl ?? undefined;
+  // Explicit undefined removes the key from config.json (JSON.stringify drops
+  // it). Clearing can't touch ~/.ace/.env or process.env, so warn when one of
+  // those would keep supplying the value.
+  for (const [flagValue, configKey] of [
+    [openaiBaseUrl, 'OPENAI_BASE_URL'],
+    [anthropicBaseUrl, 'ANTHROPIC_BASE_URL'],
+  ] as const) {
+    if (flagValue === undefined) continue;
+    toSave[configKey] = flagValue ?? undefined;
+    if (flagValue === null) {
+      const fallback = baseUrlEnvFallback(configKey);
+      if (fallback) {
+        console.log(
+          chalk.yellow(
+            `Warning: ${configKey} is still set to ${fallback} via ~/.ace/.env or the environment — ` +
+              'the override stays active until it is removed there.',
+          ),
+        );
+      }
+    }
   }
 
   if (Object.keys(toSave).length > 0) {

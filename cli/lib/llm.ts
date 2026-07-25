@@ -326,7 +326,10 @@ export async function validateOpenAIKey(
   }
 
   try {
-    const response = await fetch(`${baseUrl ?? 'https://api.openai.com/v1'}/models`, {
+    // Env-sourced base URLs bypass normalizeBaseUrl, so strip trailing
+    // slashes here too — the SDK clients do the same internally.
+    const base = (baseUrl ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
+    const response = await fetch(`${base}/models`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     if (!response.ok) {
@@ -348,7 +351,8 @@ export async function validateAnthropicKey(
   }
 
   try {
-    const response = await fetch(`${baseUrl ?? 'https://api.anthropic.com/v1'}/models`, {
+    const base = (baseUrl ?? 'https://api.anthropic.com/v1').replace(/\/+$/, '');
+    const response = await fetch(`${base}/models`, {
       headers: {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',

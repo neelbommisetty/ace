@@ -1,4 +1,10 @@
-import { loadAceConfig, maskApiKey, saveGlobalAceConfig, type AceConfig } from '../lib/config.js';
+import {
+  baseUrlEnvFallback,
+  loadAceConfig,
+  maskApiKey,
+  saveGlobalAceConfig,
+  type AceConfig,
+} from '../lib/config.js';
 import {
   clearConfigCache,
   getDefaultProvider,
@@ -71,9 +77,25 @@ export async function updateSettings(patch: SettingsPatch): Promise<SettingsInfo
     keyPatch: string | undefined,
     baseUrlPatch: string | null | undefined,
     current: { key: string | undefined; baseUrl: string | undefined },
-    configKeys: { key: keyof AceConfig & string; baseUrl: keyof AceConfig & string },
+    configKeys: {
+      key: 'OPENAI_API_KEY' | 'ANTHROPIC_API_KEY';
+      baseUrl: 'OPENAI_BASE_URL' | 'ANTHROPIC_BASE_URL';
+    },
   ) => {
     if (keyPatch === undefined && baseUrlPatch === undefined) return;
+    // Clearing only deletes the config.json entry; a ~/.ace/.env or process.env
+    // value would silently resurface through the fallback chain, so reject the
+    // clear instead of reporting success the runtime won't honor.
+    if (baseUrlPatch === null) {
+      const fallback = baseUrlEnvFallback(configKeys.baseUrl);
+      if (fallback) {
+        throw new SettingsValidationError(
+          `${label} base URL is also set to ${fallback} via ~/.ace/.env or the ` +
+            `${configKeys.baseUrl} environment variable; clearing it here would have no effect. ` +
+            'Remove it from that source instead.',
+        );
+      }
+    }
     const effectiveKey = keyPatch ?? current.key;
     const effectiveBaseUrl = baseUrlPatch === undefined ? current.baseUrl : baseUrlPatch ?? undefined;
     // A base URL saved before any key exists can't be validated yet; the
