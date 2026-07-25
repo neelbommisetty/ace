@@ -11,7 +11,7 @@ The project is built around a file-based workflow instead of a hosted service. A
 
 ## Core Capabilities
 
-- `ace setup` stores and validates OpenAI and Anthropic keys in `~/.ace/config.json`, with support for a saved default provider.
+- `ace setup` stores and validates OpenAI and Anthropic keys in `~/.ace/config.json`, with support for a saved default provider and optional per-provider base URLs for routing calls through a compatible proxy or gateway.
 - `ace init` bootstraps `questions/`, `package.json`, `tsconfig.json`, `vitest.config.ts`, and `vitest.setup.ts`, then runs `npm install` unless `--skip-install` is used.
 - `ace generate` supports interactive prompts, direct flags, and `--brainstorm`, then scaffolds a question folder from category-specific prompt and template assets.
 - `ace list`, `ace test`, `ace feedback`, `ace score`, and `ace reset` work against a local question workspace and support interactive slug selection; several also support `--all`.
@@ -43,6 +43,7 @@ Global configuration lives under `~/.ace/`, while per-question state stays insid
 ## Technical Highlights
 
 - Multi-provider LLM integration is centralized in [`cli/lib/llm.ts`](cli/lib/llm.ts), including both direct responses and streamed output exposed through `AsyncIterable<string>`.
+- Per-provider base URLs (`OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`) point the native SDK clients at any endpoint speaking the OpenAI or Anthropic wire protocol — e.g. a local subscription-backed proxy — and key validation probes `{base}/models` on the configured host rather than assuming the vendor API.
 - Config loading uses explicit precedence: `~/.ace/config.json`, then `~/.ace/.env`, then process environment variables.
 - Workspace resolution walks upward to the nearest `questions/` directory, so commands still work from nested paths inside a practice workspace.
 - `ace init` merges missing scripts and dev dependencies into an existing `package.json` instead of assuming a blank directory.
@@ -81,6 +82,11 @@ Useful setup variants:
 ```bash
 ace setup --openai-key sk-... --anthropic-key sk-ant-...
 ace setup --openai-key sk-... --anthropic-key sk-ant-... --default-provider anthropic
+
+# Route a provider through an OpenAI-/Anthropic-compatible proxy.
+# The URL includes the /v1 path; pass `none` to go back to the vendor API.
+ace setup --anthropic-key sk-local-... --anthropic-base-url http://localhost:4242/v1
+ace setup --anthropic-base-url none
 ```
 
 ### Develop locally
@@ -120,7 +126,10 @@ Supported keys include:
 
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
+- `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` — optional `/v1`-inclusive endpoint overrides (e.g. `http://localhost:4242/v1` for a local proxy); when unset, calls go to the vendor APIs
 - `default_provider`
+
+Base URLs follow the same precedence chain as keys. Clearing one (`ace setup --*-base-url none`, or an empty save in the UI) removes only the `config.json` entry — if `~/.ace/.env` or an environment variable still supplies the value, ace warns (CLI) or rejects the clear (UI/server) rather than silently leaving the override active.
 
 ## Current Status
 
