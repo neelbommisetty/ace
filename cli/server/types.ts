@@ -469,6 +469,8 @@ export interface AceDb {
   ): AttemptEventRow;
   hasAttemptEvent(attemptId: string, type: AttemptEventType): boolean;
   listAttemptEvents(attemptId: string): AttemptEventRow[];
+  /** Workspace-wide attempt count in one query, e.g. for GET /api/workspace. */
+  countAttempts(): number;
 
   createTestRun(r: {
     questionId: string;
@@ -488,6 +490,11 @@ export interface AceDb {
   ): TestRunRow;
   getTestRun(id: string): TestRunRow | null;
   listTestRuns(questionId: string, limit?: number): TestRunRow[];
+  /**
+   * Workspace-wide test run count in one query — avoids materialising every
+   * row (results_json, stdout_text, stderr_text) just to read `.length`.
+   */
+  countTestRuns(): number;
   getLatestTestRun(questionId: string): TestRunRow | null;
   /**
    * Newest completed ('done') run, or null if none — the same ORDER BY

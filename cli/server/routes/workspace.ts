@@ -10,12 +10,8 @@ export function computeWorkspaceInfo(ctx: RouteContext): WorkspaceInfo {
   const workspaceRoot = ctx.requireWorkspaceRoot();
   const { db, skippedDirs } = ctx.requireSession();
   const questions = db.listQuestions();
-  let attempts = 0;
-  let testRuns = 0;
-  for (const q of questions) {
-    attempts += q.stats.attemptCount;
-    testRuns += db.listTestRuns(q.id, 100000).length;
-  }
+  const attempts = db.countAttempts();
+  const testRuns = db.countTestRuns();
 
   let legacyImport = { available: false, questionCount: 0 };
   try {

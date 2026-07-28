@@ -603,6 +603,12 @@ class SqliteAceDb implements AceDb {
     return rows.map(rowToAttemptEvent);
   }
 
+  /** Workspace-wide attempt count in one query, e.g. for GET /api/workspace. */
+  countAttempts(): number {
+    const r = this.stmt('SELECT COUNT(*) AS n FROM attempts').get() as SqlRow;
+    return r.n as number;
+  }
+
   // -- test runs ------------------------------------------------------------
 
   createTestRun(r: {
@@ -662,6 +668,15 @@ class SqliteAceDb implements AceDb {
        ORDER BY at DESC, id DESC LIMIT ?`,
     ).all(questionId, limit) as SqlRow[];
     return rows.map(rowToTestRun);
+  }
+
+  /**
+   * Workspace-wide test run count in one query — avoids materialising every
+   * row (results_json, stdout_text, stderr_text) just to read `.length`.
+   */
+  countTestRuns(): number {
+    const r = this.stmt('SELECT COUNT(*) AS n FROM test_runs').get() as SqlRow;
+    return r.n as number;
   }
 
   getLatestTestRun(questionId: string): TestRunRow | null {
