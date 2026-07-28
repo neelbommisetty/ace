@@ -196,28 +196,61 @@ export type LLMPurpose =
   | 'brainstorm'
   | 'dispute';
 
-// Per-purpose model map: flagship models for every generative step. The sole
-// non-flagship entry is anthropic 'review-extract' (mechanical extraction of
-// already-written review prose — quality lives in the review call itself).
-// Swapping a step's model is a one-line change here.
-// NOTE: claude-opus-4-8 rejects temperature/top_p/top_k with a 400 — never
-// add sampling params to these calls (none are set anywhere today).
-const MODELS: Record<LLMProvider, Record<LLMPurpose, string>> = {
+/** Capability tier a purpose resolves to — the policy half of the model map. */
+type ModelTier = 'top' | 'mid' | 'basic';
+
+// Per-purpose model policy (NEE-274), expressed as purpose → tier plus
+// provider × tier → model id, so a policy change is one edit and the two
+// provider halves cannot silently diverge (twelve hand-maintained literals
+// is how the openai half lost its review-extract carve-out).
+//
+// Tier rationale:
+// - top:   'generate' and 'review' produce the artifacts the product is
+//   judged on; 'dispute' is rare, high-stakes adjudication where the cost
+//   delta is negligible.
+// - mid:   'edge-audit' critiques a bounded artifact and the sandbox
+//   verify/repair loop backstops it; 'brainstorm' is idea turns, not the
+//   verified artifact.
+// - basic: 'review-extract' mechanically extracts scores from already-
+//   written review prose — quality lives in the review call itself.
+//
+// The anthropic top tier is deliberately Opus 5, NOT Fable 5: Fable is 2x
+// the cost, unavailable under zero data retention (every request 400s),
+// runs always-on thinking, and its safety classifiers can return
+// stop_reason "refusal" on an HTTP 200 — operational risks with no measured
+// quality delta for this workload.
+//
+// gpt-5.6-terra / gpt-5.6-luna verified against the OpenAI model docs on
+// 2026-07-27: both exist (1.05M context, 128K max output, $2.50/$15 and
+// $1/$6 per MTok) and are served on Chat Completions, which .chat() below
+// pins — and luna's context comfortably holds a full review transcript for
+// 'review-extract'. claude-haiku-4-5 (200K context, 64K output) likewise
+// still fits review-extract inputs.
+//
+// NOTE: the Claude 5-series (claude-opus-5, claude-sonnet-5) rejects
+// temperature/top_p/top_k with a 400, exactly like claude-opus-4-8 before
+// it — never add sampling params to these calls (none are set anywhere
+// today). Adaptive thinking is also ON by default on Opus 5 / Sonnet 5 and
+// counts against maxOutputTokens — see toCallInput below for the sizing.
+const PURPOSE_TIERS: Record<LLMPurpose, ModelTier> = {
+  generate: 'top',
+  review: 'top',
+  dispute: 'top',
+  'edge-audit': 'mid',
+  brainstorm: 'mid',
+  'review-extract': 'basic',
+};
+
+const TIER_MODELS: Record<LLMProvider, Record<ModelTier, string>> = {
   openai: {
-    generate: 'gpt-5.6-sol',
-    'edge-audit': 'gpt-5.6-sol',
-    review: 'gpt-5.6-sol',
-    'review-extract': 'gpt-5.6-sol',
-    brainstorm: 'gpt-5.6-sol',
-    dispute: 'gpt-5.6-sol',
+    top: 'gpt-5.6-sol',
+    mid: 'gpt-5.6-terra',
+    basic: 'gpt-5.6-luna',
   },
   anthropic: {
-    generate: 'claude-opus-4-8',
-    'edge-audit': 'claude-opus-4-8',
-    review: 'claude-opus-4-8',
-    'review-extract': 'claude-haiku-4-5',
-    brainstorm: 'claude-opus-4-8',
-    dispute: 'claude-opus-4-8',
+    top: 'claude-opus-5',
+    mid: 'claude-sonnet-5',
+    basic: 'claude-haiku-4-5',
   },
 };
 
@@ -226,7 +259,7 @@ const MODELS: Record<LLMProvider, Record<LLMPurpose, string>> = {
  * which model produced an output (e.g. review rows) without re-stating ids.
  */
 export function getModelId(provider: LLMProvider, purpose: LLMPurpose): string {
-  return MODELS[provider][purpose];
+  return TIER_MODELS[provider][PURPOSE_TIERS[purpose]];
 }
 
 function getModel(provider: LLMProvider, purpose: LLMPurpose): LanguageModel {
@@ -236,19 +269,22 @@ function getModel(provider: LLMProvider, purpose: LLMPurpose): LanguageModel {
     return createOpenAI({
       apiKey: config.OPENAI_API_KEY,
       ...(config.OPENAI_BASE_URL ? { baseURL: config.OPENAI_BASE_URL } : {}),
-    }).chat(MODELS.openai[purpose]);
+    }).chat(getModelId('openai', purpose));
   }
   // A base URL (e.g. a local proxy exposing /v1/messages) still speaks the
   // native Anthropic wire protocol, so the same SDK client is used either way.
   return createAnthropic({
     apiKey: config.ANTHROPIC_API_KEY,
     ...(config.ANTHROPIC_BASE_URL ? { baseURL: config.ANTHROPIC_BASE_URL } : {}),
-  })(MODELS.anthropic[purpose]);
+  })(getModelId('anthropic', purpose));
 }
 
 function toCallInput(
   messages: LLMMessage[],
-  maxOutputTokens = 4096,
+  // Default doubled from 4096 (NEE-274): adaptive thinking is on by default
+  // on claude-opus-5/claude-sonnet-5 and counts against maxOutputTokens, so
+  // a cap sized tightly around the visible answer can truncate mid-response.
+  maxOutputTokens = 8192,
 ): {
   instructions?: string;
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;

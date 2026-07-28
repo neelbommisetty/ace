@@ -5,7 +5,11 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { NoObjectGeneratedError } from 'ai';
 import { z } from 'zod';
 import { CATEGORY_SLUGS } from './categories.js';
-import type { chatObject as ChatObjectFn, chatObjectStream as ChatObjectStreamFn } from './llm.js';
+import type {
+  chatObject as ChatObjectFn,
+  chatObjectStream as ChatObjectStreamFn,
+  getModelId as GetModelIdFn,
+} from './llm.js';
 
 // Only streamText is replaced (the seam the chatObjectStream real-path tests
 // drive); everything else — Output, NoObjectGeneratedError — stays real so
@@ -24,10 +28,11 @@ vi.mock('ai', async (importOriginal) => {
 // (same pattern used by cli/server/workspace-reset.test.ts).
 let chatObject: typeof ChatObjectFn;
 let chatObjectStream: typeof ChatObjectStreamFn;
+let getModelId: typeof GetModelIdFn;
 
 beforeAll(async () => {
   process.env.ACE_E2E_MOCK_LLM = '1';
-  ({ chatObject, chatObjectStream } = await import('./llm.js'));
+  ({ chatObject, chatObjectStream, getModelId } = await import('./llm.js'));
 });
 
 // Mirrors cli/lib/gen-pipeline.ts's GeneratedQuestionSchema (kept local: a
@@ -83,6 +88,28 @@ afterEach(() => {
   } else {
     process.env.ACE_MOCK_LLM_MODE = originalMode;
   }
+});
+
+// Pins the NEE-274 tier policy: top for generate/review/dispute, mid for
+// edge-audit/brainstorm, basic for review-extract — resolved per provider.
+// getModelId is what review rows persist, so a drift here is a data change,
+// not just a routing one.
+describe('per-purpose model map (NEE-274)', () => {
+  it('resolves every purpose to the tier policy on both providers', () => {
+    expect(getModelId('anthropic', 'generate')).toBe('claude-opus-5');
+    expect(getModelId('anthropic', 'review')).toBe('claude-opus-5');
+    expect(getModelId('anthropic', 'dispute')).toBe('claude-opus-5');
+    expect(getModelId('anthropic', 'edge-audit')).toBe('claude-sonnet-5');
+    expect(getModelId('anthropic', 'brainstorm')).toBe('claude-sonnet-5');
+    expect(getModelId('anthropic', 'review-extract')).toBe('claude-haiku-4-5');
+
+    expect(getModelId('openai', 'generate')).toBe('gpt-5.6-sol');
+    expect(getModelId('openai', 'review')).toBe('gpt-5.6-sol');
+    expect(getModelId('openai', 'dispute')).toBe('gpt-5.6-sol');
+    expect(getModelId('openai', 'edge-audit')).toBe('gpt-5.6-terra');
+    expect(getModelId('openai', 'brainstorm')).toBe('gpt-5.6-terra');
+    expect(getModelId('openai', 'review-extract')).toBe('gpt-5.6-luna');
+  });
 });
 
 describe('chatObject mock schema-dispatch', () => {
@@ -213,7 +240,7 @@ describe('chatObjectStream real path (mocked ai seam)', () => {
 
     // Call-shape parity with chatObject: system prompt routed through
     // `instructions`, strict-mode opt-out, and NO sampling params
-    // (claude-opus-4-8 400s on temperature/top_p/top_k).
+    // (the Claude 5-series 400s on temperature/top_p/top_k).
     const call = streamText.mock.calls[0][0] as unknown as Record<string, unknown>;
     expect(call.instructions).toBe('sys prompt');
     expect(call.messages).toEqual([{ role: 'user', content: 'hi' }]);

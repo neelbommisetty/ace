@@ -65,7 +65,12 @@ export type GenerationPhase = 'generating' | 'auditing' | 'verifying' | 'repairi
 // call.
 const GENERATE_STALL_TIMEOUT_MS = 300_000;
 const GENERATE_MAX_TIMEOUT_MS = 900_000;
-const MAX_OUTPUT_TOKENS = 16_000;
+// 32K, was 16K (NEE-274): adaptive thinking is on by default on the Claude
+// 5-series and counts against this cap alongside the streamed JSON — and
+// edge-audit's claude-sonnet-5 tokenizer spends ~30% more tokens on the
+// same text — so the old value sized for the visible object alone could
+// truncate mid-answer. Still inside every mapped model's max output.
+const MAX_OUTPUT_TOKENS = 32_000;
 /** 1 initial verify + 2 repair-and-reverify rounds. Exported for the activity log's terminal phrasing. */
 export const MAX_VERIFY_ATTEMPTS = 3;
 
