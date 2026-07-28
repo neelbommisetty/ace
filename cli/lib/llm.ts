@@ -27,6 +27,13 @@ function getGenerateMockPayload() {
     slug: 'two-sum',
     description: 'Return indices of the two numbers such that they add up to target.',
     signature: 'export function twoSum(nums: number[], target: number): number[]',
+    // GeneratedQuestionSchema's optional fields are required-and-nullable
+    // (strict structured outputs, NEE-263) — omitting the keys would fail
+    // schema dispatch, so the unused artifacts are explicit nulls.
+    testCode: null,
+    solutionCode: null,
+    referenceSolution: null,
+    interviewerPacket: null,
   };
 }
 
@@ -311,7 +318,12 @@ export async function chatObject<T>(
     ...toCallInput(messages, opts?.maxOutputTokens),
     schema,
     abortSignal: opts?.abortSignal,
-    // OpenAI strict mode rejects optional schema properties.
+    // Opt out of OpenAI strict mode: several caller schemas still carry
+    // optional properties, which strict mode rejects. Do NOT rely on this
+    // flag for correctness — the codex backend enforces strict mode
+    // regardless (NEE-263), so schemas used on the openai path must be
+    // strict-compatible by construction: every property required, with
+    // optionality expressed as `.nullable()` (see GeneratedQuestionSchema).
     providerOptions: { openai: { strictJsonSchema: false } },
   });
   return result.object;

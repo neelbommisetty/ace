@@ -7,23 +7,30 @@ import { renderSolutionStub } from './scaffold.js';
 
 // Canonical generated-question shape — the single source of truth for both
 // the server engine and the CLI command (ends the duplicated-schema
-// convention). New fields are nullish so mock payloads and pre-overhaul
-// persisted results still validate.
+// convention). Optional fields are `.nullable()` (required-and-nullable),
+// NOT `.nullish()`: OpenAI strict structured outputs demand that `required`
+// list EVERY key in `properties`, and the codex backend enforces strict mode
+// regardless of `strictJsonSchema: false` (NEE-263) — a `.nullish()` field
+// is omitted from `required` and 400s the whole call. Runtime semantics for
+// consumers are unchanged (fields still read as null via `??`/`?.`); the
+// model just writes `null` explicitly instead of omitting the key.
 export const GeneratedQuestionSchema = z.object({
   title: z.string(),
-  slug: z.string().nullish(),
-  description: z.string().nullish(),
-  signature: z.string().nullish(),
-  testCode: z.string().nullish(),
-  solutionCode: z.string().nullish(),
-  referenceSolution: z.string().nullish(),
-  interviewerPacket: z.string().nullish(),
+  slug: z.string().nullable(),
+  description: z.string().nullable(),
+  signature: z.string().nullable(),
+  testCode: z.string().nullable(),
+  solutionCode: z.string().nullable(),
+  referenceSolution: z.string().nullable(),
+  interviewerPacket: z.string().nullable(),
 });
 
 export type GeneratedQuestion = z.infer<typeof GeneratedQuestionSchema>;
 
 // Stage-2 output: only changed artifacts come back; non-null fields are
 // merged over the stage-1 result. `edgeCases` is kept for debuggability.
+// Same `.nullable()`-not-`.nullish()` rule as GeneratedQuestionSchema above:
+// strict structured outputs require every property key in `required`.
 export const EdgeAuditSchema = z.object({
   edgeCases: z.array(
     z.object({
@@ -32,10 +39,10 @@ export const EdgeAuditSchema = z.object({
       action: z.enum(['none', 'add-test', 'update-question', 'both']),
     }),
   ),
-  description: z.string().nullish(),
-  testCode: z.string().nullish(),
-  referenceSolution: z.string().nullish(),
-  interviewerPacket: z.string().nullish(),
+  description: z.string().nullable(),
+  testCode: z.string().nullable(),
+  referenceSolution: z.string().nullable(),
+  interviewerPacket: z.string().nullable(),
 });
 
 export type EdgeAuditResult = z.infer<typeof EdgeAuditSchema>;

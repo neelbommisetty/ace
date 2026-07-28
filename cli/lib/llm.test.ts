@@ -15,14 +15,19 @@ beforeAll(async () => {
   ({ chatObject } = await import('./llm.js'));
 });
 
-// Mirrors cli/commands/generate.ts's GeneratedQuestionSchema.
+// Mirrors cli/lib/gen-pipeline.ts's GeneratedQuestionSchema (kept local: a
+// static import of gen-pipeline.js would hoist llm.js ahead of the env-var
+// setup above). Required-and-nullable fields, like the canonical schema —
+// the mock payload must satisfy the strict shape for dispatch to work.
 const GeneratedQuestionSchema = z.object({
   title: z.string(),
-  slug: z.string().nullish(),
-  description: z.string().nullish(),
-  signature: z.string().nullish(),
-  testCode: z.string().nullish(),
-  solutionCode: z.string().nullish(),
+  slug: z.string().nullable(),
+  description: z.string().nullable(),
+  signature: z.string().nullable(),
+  testCode: z.string().nullable(),
+  solutionCode: z.string().nullable(),
+  referenceSolution: z.string().nullable(),
+  interviewerPacket: z.string().nullable(),
 });
 
 // Mirrors the planned brainstorm-engine IdeaListSchema.

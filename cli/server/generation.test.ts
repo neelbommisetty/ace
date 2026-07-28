@@ -56,6 +56,9 @@ const VALID_GENERATED_PAYLOAD = {
   // coding categories; without it every run burns all repair attempts.
   referenceSolution:
     'export function twoSumVariant(nums: number[], target: number): number[] {\n  return [0, 1];\n}\n',
+  // Required-and-nullable in GeneratedQuestionSchema (strict structured
+  // outputs, NEE-263) — the key must be present even when unused.
+  interviewerPacket: null,
 };
 
 /**
@@ -88,7 +91,13 @@ function makeFakeLlm(
     // changed artifacts) so handler queues — and the generate-call log —
     // stay exactly as before the pipeline landed.
     if (opts?.purpose === 'edge-audit') {
-      return schema.parse({ edgeCases: [] });
+      return schema.parse({
+        edgeCases: [],
+        description: null,
+        testCode: null,
+        referenceSolution: null,
+        interviewerPacket: null,
+      });
     }
     calls.push({ provider, messages, opts });
     const handler = handlers[i++];
@@ -558,7 +567,9 @@ describe('createGenerationEngine', () => {
       const nonAsciiPayload = {
         ...VALID_GENERATED_PAYLOAD,
         title: '二分探索の問題',
-        slug: undefined,
+        // "No LLM slug" is an explicit null under the required-and-nullable
+        // schema (NEE-263) — an absent/undefined key no longer parses.
+        slug: null,
       };
       const { llm } = makeFakeLlm([() => nonAsciiPayload]);
       const engine = createGenerationEngine({
@@ -973,7 +984,13 @@ describe('verified pipeline wiring', () => {
         if (opts?.purpose === 'edge-audit') {
           auditCalls++;
           if (auditCalls === 1) throw new Error('provider 500 during audit');
-          return schema.parse({ edgeCases: [] });
+          return schema.parse({
+            edgeCases: [],
+            description: null,
+            testCode: null,
+            referenceSolution: null,
+            interviewerPacket: null,
+          });
         }
         generateCalls++;
         return schema.parse(VALID_GENERATED_PAYLOAD);
