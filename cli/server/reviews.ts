@@ -97,8 +97,8 @@ export function parseReviewDimensions(body: string): Record<string, number> | nu
 // ---------------------------------------------------------------------------
 
 function hasMeaningfulNotes(notes: string): boolean {
-  // Mirrors hasMeaningfulDesignNotes in cli/commands/feedback.ts: at least one
-  // non-blank line that is neither a heading nor an HTML comment.
+  // At least one non-blank line that is neither a heading nor an HTML
+  // comment — i.e. the user wrote something beyond the notes.md template.
   return notes
     .split('\n')
     .map((line) => line.trim())
@@ -178,7 +178,7 @@ export function getReviewGuardError(question: QuestionRow, db?: AceDb): string |
 }
 
 // ---------------------------------------------------------------------------
-// Prompt assembly (mirrors cli/commands/feedback.ts).
+// Prompt assembly — the single source of truth for the review prompt.
 // ---------------------------------------------------------------------------
 
 function buildReviewMessages(

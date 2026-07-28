@@ -16,8 +16,7 @@ import type { AceDb, DisputeRow, QuestionRow, TestRunRow } from './types.js';
 
 const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
 
-// Mirrors the contract in cli/prompts/test-dispute.md (and the schema in
-// cli/commands/dispute.ts).
+// Mirrors the contract in cli/prompts/test-dispute.md.
 const TestVerdictSchema = z.enum(['test_incorrect', 'solution_incorrect', 'ambiguous']);
 
 const DisputeResultSchema = z.object({
@@ -138,8 +137,9 @@ export function createDisputeEngine(opts: {
 
       const readme = readOr(path.join(question.dirPath, 'README.md'));
 
-      // Prompt assembly mirrors cli/commands/dispute.ts, with the structured
-      // run results standing in for raw vitest output.
+      // Prompt assembly: the structured run results stand in for raw vitest
+      // output. This is the only dispute prompt builder — the CLI copy that
+      // used to shadow it was deleted with the rest of the retired commands.
       let solutionContent = '';
       for (const name of config.solutionFiles) {
         const content = readOr(path.join(question.dirPath, name));

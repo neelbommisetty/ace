@@ -183,7 +183,7 @@ export async function run(args: string[]): Promise<void> {
   console.log(chalk.bold('Next steps:'));
   console.log(chalk.dim('  1. Configure API keys:'));
   console.log(chalk.dim('     ace setup'));
-  console.log(chalk.dim('  2. Generate a question:'));
-  console.log(chalk.dim('     ace generate --topic "debounce"'));
+  console.log(chalk.dim('  2. Open the app and generate your first question:'));
+  console.log(chalk.dim('     ace ui'));
   console.log();
 }

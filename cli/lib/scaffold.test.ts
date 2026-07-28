@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { renderSolutionStub, scaffoldQuestion, scaffoldQuestionAt } from './scaffold.js';
+import { renderSolutionStub, scaffoldQuestionAt } from './scaffold.js';
 
 let tempRoot = '';
 let otherCwdWorkspace = '';
@@ -129,25 +129,6 @@ describe('scaffoldQuestionAt', () => {
         description: 'Second.',
       }),
     ).toThrow(/already exists/);
-  });
-});
-
-describe('scaffoldQuestion (legacy cwd-resolving wrapper)', () => {
-  it('scaffolds under process.cwd() and always writes a scorecard', () => {
-    process.chdir(tempRoot);
-    const dir = scaffoldQuestion({
-      title: 'Legacy Path',
-      slug: 'legacy-path',
-      category: 'leetcode-algo',
-      difficulty: 'easy',
-      description: 'Legacy behavior check.',
-    });
-
-    expect(fs.realpathSync(dir)).toBe(
-      fs.realpathSync(path.join(tempRoot, 'questions', 'leetcode-algo', 'legacy-path')),
-    );
-    expect(fs.existsSync(path.join(dir, 'scorecard.json'))).toBe(true);
-    expect(fs.existsSync(path.join(dir, 'README.md'))).toBe(true);
   });
 });
 
