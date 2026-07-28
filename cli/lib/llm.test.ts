@@ -9,6 +9,7 @@ import type {
   chatObject as ChatObjectFn,
   chatObjectStream as ChatObjectStreamFn,
   getModelId as GetModelIdFn,
+  withResponseActivityTap as WithResponseActivityTapFn,
 } from './llm.js';
 
 // Only streamText is replaced (the seam the chatObjectStream real-path tests
@@ -29,10 +30,11 @@ vi.mock('ai', async (importOriginal) => {
 let chatObject: typeof ChatObjectFn;
 let chatObjectStream: typeof ChatObjectStreamFn;
 let getModelId: typeof GetModelIdFn;
+let withResponseActivityTap: typeof WithResponseActivityTapFn;
 
 beforeAll(async () => {
   process.env.ACE_E2E_MOCK_LLM = '1';
-  ({ chatObject, chatObjectStream, getModelId } = await import('./llm.js'));
+  ({ chatObject, chatObjectStream, getModelId, withResponseActivityTap } = await import('./llm.js'));
 });
 
 // Mirrors cli/lib/gen-pipeline.ts's GeneratedQuestionSchema (kept local: a
@@ -178,6 +180,112 @@ describe('chatObjectStream mock mode', () => {
       },
     });
     expect(result.title).toBe('Two Sum');
+  });
+
+  it('fires onStreamActivity once alongside onPartial (NEE-322)', async () => {
+    const activity = vi.fn();
+    const partials: Array<Record<string, unknown>> = [];
+    const result = await chatObjectStream('openai', [], GeneratedQuestionSchema, {
+      onPartial: (partial) => partials.push(partial),
+      onStreamActivity: activity,
+    });
+    expect(activity).toHaveBeenCalledTimes(1);
+    expect(partials).toHaveLength(1);
+    expect(result.title).toBe('Two Sum');
+  });
+
+  it('swallows onStreamActivity throws — same contract as onPartial', async () => {
+    const result = await chatObjectStream('openai', [], GeneratedQuestionSchema, {
+      onStreamActivity: () => {
+        throw new Error('logging bug');
+      },
+    });
+    expect(result.title).toBe('Two Sum');
+  });
+});
+
+describe('withResponseActivityTap (NEE-322)', () => {
+  const encoder = new TextEncoder();
+
+  function chunkedResponse(chunks: string[], init?: ResponseInit): Response {
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+          controller.close();
+        },
+      }),
+      init,
+    );
+  }
+
+  async function readAll(body: ReadableStream<Uint8Array>): Promise<{ reads: number; text: string }> {
+    const reader = body.getReader();
+    const parts: Uint8Array[] = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+    }
+    return { reads: parts.length, text: Buffer.concat(parts).toString('utf-8') };
+  }
+
+  it('passes chunks through byte-identical, firing the callback once per chunk', async () => {
+    const chunks = ['event: ping\n\n', '{"title":', '"Two Sum"}'];
+    const onChunk = vi.fn();
+    const tap = withResponseActivityTap(onChunk, async () =>
+      chunkedResponse(chunks, {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    );
+
+    const response = await tap('http://localhost:4242/v1/messages');
+
+    expect(response.status).toBe(200);
+    expect(response.statusText).toBe('OK');
+    expect(response.headers.get('content-type')).toBe('text/event-stream');
+    const { reads, text } = await readAll(response.body!);
+    expect(text).toBe(chunks.join(''));
+    expect(reads).toBe(chunks.length);
+    expect(onChunk).toHaveBeenCalledTimes(chunks.length);
+  });
+
+  it('a throwing callback neither corrupts the stream nor rejects the read', async () => {
+    const onChunk = vi.fn(() => {
+      throw new Error('logging bug');
+    });
+    const tap = withResponseActivityTap(onChunk, async () => chunkedResponse(['abc', 'def']));
+
+    const response = await tap('http://localhost:4242/v1/messages');
+    const { text } = await readAll(response.body!);
+
+    expect(text).toBe('abcdef');
+    expect(onChunk).toHaveBeenCalledTimes(2);
+  });
+
+  it('passes a bodyless response through unchanged', async () => {
+    const onChunk = vi.fn();
+    const bare = new Response(null, { status: 200 });
+    const tap = withResponseActivityTap(onChunk, async () => bare);
+
+    expect(await tap('http://localhost:4242/v1/messages')).toBe(bare);
+    expect(onChunk).not.toHaveBeenCalled();
+  });
+
+  it('passes a null-body-status response through untouched even if a body is present', async () => {
+    // The Response constructor rejects any body on 204/205/304, so wrapping
+    // such a response would throw — it must be returned as-is instead.
+    const fake = {
+      status: 304,
+      statusText: 'Not Modified',
+      headers: new Headers(),
+      body: new ReadableStream<Uint8Array>(),
+    } as unknown as Response;
+    const tap = withResponseActivityTap(vi.fn(), async () => fake);
+
+    expect(await tap('http://localhost:4242/v1/messages')).toBe(fake);
   });
 });
 

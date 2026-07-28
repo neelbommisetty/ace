@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 vi.mock('@ai-sdk/openai', () => ({
   createOpenAI: vi.fn(() => ({ chat: vi.fn(() => ({ id: 'openai-model' })) })),
@@ -15,6 +16,7 @@ vi.mock('@ai-sdk/anthropic', () => ({
 vi.mock('ai', () => ({
   streamText: vi.fn(() => ({ textStream: (async function* () {})() })),
   generateObject: vi.fn(async () => ({ object: {} })),
+  Output: { object: vi.fn((spec: unknown) => spec) },
 }));
 
 let tempHome = '';
@@ -104,6 +106,74 @@ describe('getModel baseURL passthrough', () => {
 
     expect(createAnthropic).toHaveBeenCalledTimes(1);
     expect('baseURL' in createAnthropic.mock.calls[0][0]!).toBe(false);
+  });
+});
+
+describe('getModel fetch-tap threading (NEE-322)', () => {
+  // chatObjectStream drains partialOutputStream and awaits output, so the
+  // default streamText mock (textStream only) must be overridden per call.
+  async function loadWithStreamResult() {
+    const loaded = await load();
+    const { streamText } = await import('ai');
+    vi.mocked(streamText).mockReturnValue({
+      partialOutputStream: (async function* () {})(),
+      output: Promise.resolve({}),
+    } as never);
+    return loaded;
+  }
+
+  const SCHEMA = z.object({});
+
+  it('passes a fetch to both factories only when onStreamActivity is provided', async () => {
+    writeConfig({ OPENAI_API_KEY: 'k1', ANTHROPIC_API_KEY: 'k2' });
+    const { llm, createOpenAI, createAnthropic } = await loadWithStreamResult();
+
+    await llm.chatObjectStream('openai', MESSAGES, SCHEMA, { onStreamActivity: () => {} });
+    await llm.chatObjectStream('anthropic', MESSAGES, SCHEMA, { onStreamActivity: () => {} });
+
+    expect(typeof createOpenAI.mock.calls[0][0]!.fetch).toBe('function');
+    expect(typeof createAnthropic.mock.calls[0][0]!.fetch).toBe('function');
+  });
+
+  it('omits fetch entirely when onStreamActivity is not provided — construction unchanged', async () => {
+    writeConfig({ OPENAI_API_KEY: 'k1', ANTHROPIC_API_KEY: 'k2' });
+    const { llm, createOpenAI, createAnthropic } = await loadWithStreamResult();
+
+    await llm.chatObjectStream('openai', MESSAGES, SCHEMA);
+    await llm.chatObjectStream('anthropic', MESSAGES, SCHEMA);
+
+    expect('fetch' in createOpenAI.mock.calls[0][0]!).toBe(false);
+    expect('fetch' in createAnthropic.mock.calls[0][0]!).toBe(false);
+  });
+
+  it('the threaded fetch fires the activity callback on raw chunks', async () => {
+    writeConfig({ ANTHROPIC_API_KEY: 'k2' });
+    // Only ping frames, as the buffering proxy sends for a whole turn — no
+    // partial object would ever materialise from these bytes.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode('event: ping\n\n'));
+                controller.close();
+              },
+            }),
+          ),
+      ),
+    );
+    const { llm, createAnthropic } = await loadWithStreamResult();
+
+    const onStreamActivity = vi.fn();
+    await llm.chatObjectStream('anthropic', MESSAGES, SCHEMA, { onStreamActivity });
+    const tapped = createAnthropic.mock.calls[0][0]!.fetch as typeof fetch;
+    const response = await tapped('http://localhost:4242/v1/messages');
+    await response.text();
+
+    expect(onStreamActivity).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(200);
   });
 });
 

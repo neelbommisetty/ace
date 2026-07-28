@@ -232,13 +232,20 @@ export function getModelId(provider: LLMProvider, purpose: LLMPurpose): string {
   return TIER_MODELS[provider][PURPOSE_TIERS[purpose]];
 }
 
-function getModel(provider: LLMProvider, purpose: LLMPurpose): LanguageModel {
+// When no fetchImpl is given the factories must receive no `fetch` key at
+// all — default construction stays exactly as before NEE-322.
+function getModel(
+  provider: LLMProvider,
+  purpose: LLMPurpose,
+  fetchImpl?: typeof fetch,
+): LanguageModel {
   const config = getConfig();
   if (provider === 'openai') {
     // .chat() pins the Chat Completions API rather than the Responses API.
     return createOpenAI({
       apiKey: config.OPENAI_API_KEY,
       ...(config.OPENAI_BASE_URL ? { baseURL: config.OPENAI_BASE_URL } : {}),
+      ...(fetchImpl ? { fetch: fetchImpl } : {}),
     }).chat(getModelId('openai', purpose));
   }
   // A base URL (e.g. a local proxy exposing /v1/messages) still speaks the
@@ -246,7 +253,46 @@ function getModel(provider: LLMProvider, purpose: LLMPurpose): LanguageModel {
   return createAnthropic({
     apiKey: config.ANTHROPIC_API_KEY,
     ...(config.ANTHROPIC_BASE_URL ? { baseURL: config.ANTHROPIC_BASE_URL } : {}),
+    ...(fetchImpl ? { fetch: fetchImpl } : {}),
   })(getModelId('anthropic', purpose));
+}
+
+// Statuses whose Response constructor rejects a body outright — those (and
+// bodyless responses) must pass through untouched or the wrap itself throws.
+const NULL_BODY_STATUSES = new Set([204, 205, 304]);
+
+/**
+ * Wraps a fetch so every raw chunk of the response body fires `onChunk` and
+ * passes through byte-identical (NEE-322). Raw bytes are the only liveness
+ * signal that survives a buffering proxy: it can hold back every partial
+ * object for an entire healthy turn while SSE pings keep the socket alive.
+ * Callback throws are swallowed — a logging bug must never kill a paid call.
+ */
+export function withResponseActivityTap(
+  onChunk: () => void,
+  fetchImpl: typeof fetch = fetch,
+): typeof fetch {
+  return async (input, init) => {
+    const response = await fetchImpl(input, init);
+    if (!response.body || NULL_BODY_STATUSES.has(response.status)) return response;
+    const tapped = response.body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          try {
+            onChunk();
+          } catch {
+            // Swallowed by contract — see the doc comment.
+          }
+          controller.enqueue(chunk);
+        },
+      }),
+    );
+    return new Response(tapped, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  };
 }
 
 function toCallInput(
@@ -353,6 +399,12 @@ export async function chatObjectStream<T>(
      *  every field may be truncated mid-string. Throws are swallowed:
      *  a logging bug must never kill a paid call. */
     onPartial?: (partial: Record<string, unknown>) => void;
+    /** Fired on every raw chunk of the underlying HTTP response body —
+     *  including frames that never materialise a partial: a buffering proxy
+     *  can send only pings for a whole turn (NEE-322), so this is the only
+     *  liveness signal that never goes silent on a healthy call. Same
+     *  swallow contract as onPartial. */
+    onStreamActivity?: () => void;
   },
 ): Promise<T> {
   const firePartial = (partial: unknown): void => {
@@ -362,11 +414,19 @@ export async function chatObjectStream<T>(
       // Swallowed by contract — a logging bug must never kill a paid call.
     }
   };
+  const fireActivity = (): void => {
+    try {
+      opts?.onStreamActivity?.();
+    } catch {
+      // Swallowed by contract — a logging bug must never kill a paid call.
+    }
+  };
 
   if (mockLlm) {
     if (process.env.ACE_MOCK_LLM_MODE) {
       // Explicit override: honored first, exactly like chatObject.
       const parsed = schema.parse(JSON.parse(getMockResponse()));
+      fireActivity();
       firePartial(parsed);
       return parsed;
     }
@@ -375,6 +435,7 @@ export async function chatObjectStream<T>(
     for (const candidate of MOCK_OBJECT_CANDIDATES) {
       const result = schema.safeParse(candidate());
       if (result.success) {
+        fireActivity();
         firePartial(result.data);
         return result.data;
       }
@@ -385,7 +446,13 @@ export async function chatObjectStream<T>(
   }
 
   const result = streamText({
-    model: getModel(provider, opts?.purpose ?? 'generate'),
+    // The tapped fetch is scoped to THIS call's model; without the callback
+    // getModel receives no fetch at all and construction is unchanged.
+    model: getModel(
+      provider,
+      opts?.purpose ?? 'generate',
+      opts?.onStreamActivity ? withResponseActivityTap(fireActivity) : undefined,
+    ),
     ...toCallInput(messages, opts?.maxOutputTokens),
     output: Output.object({ schema }),
     abortSignal: opts?.abortSignal,
