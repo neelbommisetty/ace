@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getImportPreview, runImport } from '../api';
+import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { categoryShortName } from '../lib/categories';
 import type { ImportPreviewItem, ImportResult } from '../types';
 
@@ -41,18 +42,14 @@ function ImportModal({ onClose, onImported }: { onClose: () => void; onImported:
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  useCancellableEffect((cancelled) => {
     getImportPreview()
       .then(({ items: got }) => {
-        if (!cancelled) setItems(got);
+        if (!cancelled()) setItems(got);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load preview');
+        if (!cancelled()) setError(e instanceof Error ? e.message : 'Failed to load preview');
       });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   useEffect(() => {

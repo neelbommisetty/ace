@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { getAiRuns } from '../api';
 import { useSseEvent } from '../sse';
+import { useCancellableEffect } from './useCancellableEffect';
 import type { AiRunRow, AiStepSummary } from '../types';
 
 export type AiRunWithSteps = AiRunRow & { steps: AiStepSummary[] };
@@ -8,7 +9,7 @@ export type AiRunWithSteps = AiRunRow & { steps: AiStepSummary[] };
 /** Per-(step, key) cap on live chunk text held in memory. */
 const STEP_TEXT_MAX_LINES = 2000;
 
-// Line-based front-drop cap — the appendCapped idiom from Room.tsx, applied
+// Line-based front-drop cap — the appendCapped idiom from useTestRuns.ts, applied
 // per (step, key) so a chatty step can't grow the tab's memory without bound.
 // The full text still persists server-side (GET /api/ai/steps/:id).
 function appendCapped(prev: string, chunk: string): string {
@@ -121,27 +122,25 @@ export function useAiRunFeed(filter: { refId?: string; limit?: number } = {}): A
     });
   }
 
-  useEffect(() => {
-    let cancelled = false;
-    getAiRuns({ refId, limit })
-      .then((res) => {
-        if (!cancelled) mergeSnapshot(res.runs);
-      })
-      .catch(() => {
-        // best-effort seed; SSE still keeps the feed live if this fails
-      })
-      .finally(() => {
-        if (!cancelled) setLoaded(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refId, limit]);
+  useCancellableEffect(
+    (cancelled) => {
+      getAiRuns({ refId, limit })
+        .then((res) => {
+          if (!cancelled()) mergeSnapshot(res.runs);
+        })
+        .catch(() => {
+          // best-effort seed; SSE still keeps the feed live if this fails
+        })
+        .finally(() => {
+          if (!cancelled()) setLoaded(true);
+        });
+    },
+    [refId, limit],
+  );
 
   // SSE reconnected (each connect sends hello): SseClient has no replay, so
   // run/step events in the gap are simply gone — reconcile from the server
-  // (the Room.tsx hello idiom) so nothing can be stuck "running" forever.
+  // (the useTestRuns.ts hello idiom) so nothing can be stuck "running" forever.
   useSseEvent('hello', () => {
     getAiRuns({ refId, limit })
       .then((res) => mergeSnapshot(res.runs))

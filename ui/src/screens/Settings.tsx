@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { getSettings, getWorkspace, putSettings } from '../api';
+import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { WorkspaceResetDialog } from '../components/WorkspaceResetDialog';
 import type { SettingsInfo, WorkspaceResetMode } from '../types';
 
@@ -24,38 +25,30 @@ export function Settings() {
   const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
   const [resetMode, setResetMode] = useState<WorkspaceResetMode | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  useCancellableEffect((cancelled) => {
     getSettings()
       .then((got) => {
-        if (!cancelled) setInfo(got);
+        if (!cancelled()) setInfo(got);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setLoadError(e instanceof Error ? e.message : 'Failed to load settings');
+        if (!cancelled()) setLoadError(e instanceof Error ? e.message : 'Failed to load settings');
       });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
+  useCancellableEffect((cancelled) => {
     getWorkspace()
       .then((ws) => {
         // Use the server's own basename verbatim — it's the exact string the
         // reset endpoint validates `confirm` against, so re-deriving it here
         // (e.g. splitting on separators) could disagree with the server for
         // roots containing unusual characters.
-        if (!cancelled) setFolderName(ws.confirmName);
+        if (!cancelled()) setFolderName(ws.confirmName);
       })
       .catch((e: unknown) => {
-        if (!cancelled) {
+        if (!cancelled()) {
           setWorkspaceLoadError(e instanceof Error ? e.message : 'Failed to load workspace info');
         }
       });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   const dangerDisabled = folderName == null;

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import {
   ApiError,
@@ -10,6 +10,7 @@ import {
 } from '../api';
 import { GenerationJobStrip } from '../components/GenerationJobStrip';
 import { IdeaCard } from '../components/IdeaCard';
+import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import {
   CATEGORY_SLUGS,
   categoryHint,
@@ -47,19 +48,15 @@ export function NewQuestion() {
   const [tab, setTab] = useState<Tab>('describe');
   const [settings, setSettings] = useState<SettingsInfo | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  useCancellableEffect((cancelled) => {
     getSettings()
       .then((info) => {
-        if (!cancelled) setSettings(info);
+        if (!cancelled()) setSettings(info);
       })
       .catch(() => {
         // Leave settings null — the form stays disabled rather than risking
         // a submit with an unknown provider state.
       });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   const settingsLoaded = settings != null;
@@ -303,9 +300,7 @@ function BrainstormPane({ disabled }: { disabled: boolean }) {
   // flipping state inside the effect would re-run the effect and fire this
   // same run's cleanup (setting `cancelled`) before the in-flight fetch below
   // even resolves, silently dropping the reopened session.
-  useEffect(() => {
-    let cancelled = false;
-
+  useCancellableEffect((cancelled) => {
     /** Fetches `id`, refetching once more if a done/error event for it raced this call. */
     async function fetchSettled(id: string) {
       racedIdsRef.current.delete(id);
@@ -323,7 +318,7 @@ function BrainstormPane({ disabled }: { disabled: boolean }) {
       if (storedId) {
         try {
           const session = await fetchSettled(storedId);
-          if (!cancelled) setSession(session);
+          if (!cancelled()) setSession(session);
           return;
         } catch {
           // Stale/unknown id (e.g. 404) — clear it and fall back to the
@@ -334,9 +329,9 @@ function BrainstormPane({ disabled }: { disabled: boolean }) {
       try {
         const { sessions } = await getBrainstormSessions(1);
         const latest = sessions[0];
-        if (latest == null || cancelled) return;
+        if (latest == null || cancelled()) return;
         const full = await fetchSettled(latest.id);
-        if (!cancelled) {
+        if (!cancelled()) {
           setSession(full);
           sessionStorage.setItem(BRAINSTORM_SESSION_KEY, full.id);
         }
@@ -346,9 +341,6 @@ function BrainstormPane({ disabled }: { disabled: boolean }) {
     }
 
     void reopen();
-    return () => {
-      cancelled = true;
-    };
     // Runs once per mount (BrainstormPane itself unmounts on tab-switch away,
     // so this already covers "on mount/tab-switch, attempt session reopen").
   }, []);

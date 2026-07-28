@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { ApiError, getGenerationJobs, retryGenerationJob } from '../api';
+import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { AiRunDrawer } from './AiRunDrawer';
 import { categoryShortName } from '../lib/categories';
 import { formatClock } from '../lib/format';
@@ -66,11 +67,10 @@ export function GenerationJobStrip() {
   // response.
   const racedPatchesRef = useRef<Map<string, Partial<GenerationJobRow>>>(new Map());
 
-  useEffect(() => {
-    let cancelled = false;
+  useCancellableEffect((cancelled) => {
     getGenerationJobs()
       .then((res) => {
-        if (cancelled) return;
+        if (cancelled()) return;
         setJobs((prev) => {
           const prevById = new Map(prev.map((j) => [j.id, j]));
           const merged = res.jobs.map((j) => {
@@ -92,11 +92,8 @@ export function GenerationJobStrip() {
         // best-effort seed; SSE still keeps the strip live if this fails
       })
       .finally(() => {
-        if (!cancelled) setLoaded(true);
+        if (!cancelled()) setLoaded(true);
       });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   /** Applies (and consumes) any patch stashed for `jobId` by `patch()` below. */

@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useSearchParams } from 'react-router';
 import { getFile, getHistory, getReview, getReviews } from '../api';
+import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { DisputeResult } from '../components/DisputeModal';
 import { CategoryChip } from '../components/Chip';
 import { DimensionBars, ReviewBadge } from '../components/ReviewBadge';
@@ -59,27 +60,26 @@ export function History() {
   const [items, setItems] = useState<HistoryItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    getHistory({
-      q: q || undefined,
-      category: category || undefined,
-      type: type || undefined,
-      question: questionKey || undefined,
-      limit: FETCH_LIMIT,
-    })
-      .then(({ items: got }) => {
-        if (cancelled) return;
-        setItems(got);
-        setError(null);
+  useCancellableEffect(
+    (cancelled) => {
+      getHistory({
+        q: q || undefined,
+        category: category || undefined,
+        type: type || undefined,
+        question: questionKey || undefined,
+        limit: FETCH_LIMIT,
       })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load history');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [q, category, type, questionKey]);
+        .then(({ items: got }) => {
+          if (cancelled()) return;
+          setItems(got);
+          setError(null);
+        })
+        .catch((e: unknown) => {
+          if (!cancelled()) setError(e instanceof Error ? e.message : 'Failed to load history');
+        });
+    },
+    [q, category, type, questionKey],
+  );
 
   // ?question= is filtered server-side; a question's full history is never a
   // client-side slice of the newest page.
@@ -260,26 +260,25 @@ function ReviewDetail({ question, review }: { question: QuestionRow; review: Rev
   const [leftId, setLeftId] = useState<string | null>(null);
   const [rightId, setRightId] = useState<string>(review.id);
 
-  useEffect(() => {
-    let cancelled = false;
-    getReviews(question.category, question.slug)
-      .then((rows) => {
-        if (cancelled) return;
-        setVersions(rows);
-        // default compare: the clicked version right, its predecessor (or any
-        // other version) left — rows are newest-first
-        const idx = rows.findIndex((r) => r.id === review.id);
-        const other =
-          (idx >= 0 ? rows[idx + 1] : undefined) ?? rows.find((r) => r.id !== review.id) ?? null;
-        setLeftId(other != null ? other.id : null);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load versions');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [question.category, question.slug, review.id]);
+  useCancellableEffect(
+    (cancelled) => {
+      getReviews(question.category, question.slug)
+        .then((rows) => {
+          if (cancelled()) return;
+          setVersions(rows);
+          // default compare: the clicked version right, its predecessor (or any
+          // other version) left — rows are newest-first
+          const idx = rows.findIndex((r) => r.id === review.id);
+          const other =
+            (idx >= 0 ? rows[idx + 1] : undefined) ?? rows.find((r) => r.id !== review.id) ?? null;
+          setLeftId(other != null ? other.id : null);
+        })
+        .catch((e: unknown) => {
+          if (!cancelled()) setError(e instanceof Error ? e.message : 'Failed to load versions');
+        });
+    },
+    [question.category, question.slug, review.id],
+  );
 
   if (error != null) return <div className="error-note">{error}</div>;
   if (versions == null || versions.length === 0) {
@@ -384,20 +383,19 @@ function SnapshotCode({ reviewId, hasSnapshot }: { reviewId: string; hasSnapshot
 function DisputeDetail({ dispute }: { dispute: DisputeRow }) {
   const [originalCode, setOriginalCode] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (dispute.fixedTestCode == null) return;
-    let cancelled = false;
-    getFile(dispute.testRelPath)
-      .then(({ content }) => {
-        if (!cancelled) setOriginalCode(content);
-      })
-      .catch(() => {
-        if (!cancelled) setOriginalCode('');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [dispute.fixedTestCode, dispute.testRelPath]);
+  useCancellableEffect(
+    (cancelled) => {
+      if (dispute.fixedTestCode == null) return;
+      getFile(dispute.testRelPath)
+        .then(({ content }) => {
+          if (!cancelled()) setOriginalCode(content);
+        })
+        .catch(() => {
+          if (!cancelled()) setOriginalCode('');
+        });
+    },
+    [dispute.fixedTestCode, dispute.testRelPath],
+  );
 
   return (
     <div className="dispute-detail">

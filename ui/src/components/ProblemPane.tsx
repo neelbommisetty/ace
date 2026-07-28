@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getAttempt } from '../api';
+import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { formatDuration, relTime } from '../lib/format';
 import { DISPUTE_VERDICT_LABELS } from '../lib/review';
 import type { AttemptEventRow, AttemptEventType, DisputeRow, TestRunRow } from '../types';
@@ -89,19 +90,18 @@ function ActivityTab({
   const [events, setEvents] = useState<AttemptEventRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    getAttempt(attemptId)
-      .then(({ events: got }) => {
-        if (!cancelled) setEvents(got);
-      })
-      .catch(() => {
-        if (!cancelled) setError('Failed to load attempt events');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [attemptId, history.length]);
+  useCancellableEffect(
+    (cancelled) => {
+      getAttempt(attemptId)
+        .then(({ events: got }) => {
+          if (!cancelled()) setEvents(got);
+        })
+        .catch(() => {
+          if (!cancelled()) setError('Failed to load attempt events');
+        });
+    },
+    [attemptId, history.length],
+  );
 
   return (
     <div className="activity">

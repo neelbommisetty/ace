@@ -1,5 +1,6 @@
-import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import { getToken } from './api';
+import { useLatestRef } from './hooks/useLatestRef';
 import type { SseEventMap, SseEventName } from './types';
 
 type AnyListener = (payload: unknown) => void;
@@ -92,8 +93,7 @@ export function useSseEvent<K extends SseEventName>(
   name: K,
   handler: (payload: SseEventMap[K]) => void,
 ): void {
-  const handlerRef = useRef(handler);
-  handlerRef.current = handler;
+  const handlerRef = useLatestRef(handler);
   useEffect(() => {
     client.start();
     return client.on(name, (payload) => handlerRef.current(payload as SseEventMap[K]));

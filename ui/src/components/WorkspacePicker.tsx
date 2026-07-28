@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { ApiError, getWorkspaceRecents, switchWorkspace } from '../api';
+import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { relTime } from '../lib/format';
 import type { RecentWorkspace } from '../types';
 
@@ -34,20 +35,16 @@ function PickerList({
   const [pathInput, setPathInput] = useState('');
   const [state, setState] = useState<PickerState>({ kind: 'idle' });
 
-  useEffect(() => {
-    let cancelled = false;
+  useCancellableEffect((cancelled) => {
     getWorkspaceRecents()
       .then((res) => {
-        if (!cancelled) setRecents(res.recents);
+        if (!cancelled()) setRecents(res.recents);
       })
       .catch((e: unknown) => {
-        if (!cancelled) {
+        if (!cancelled()) {
           setLoadError(e instanceof Error ? e.message : 'Failed to load recent workspaces');
         }
       });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   const busy = state.kind === 'switching';

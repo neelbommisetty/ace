@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Link } from 'react-router';
 import { getDebrief, type DebriefResponse } from '../api';
+import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { relTime } from '../lib/format';
 import type { QuestionRow, ReviewRow } from '../types';
 import { DimensionBars, ReviewBadge } from './ReviewBadge';
@@ -46,23 +47,22 @@ export function AiPanel({
   // endpoint 404s until the first review exists, and manual/pre-overhaul
   // questions return nulls. Hidden entirely in both cases.
   const [debrief, setDebrief] = useState<DebriefResponse | null>(null);
-  useEffect(() => {
-    if (!hasReviews) {
-      setDebrief(null);
-      return;
-    }
-    let cancelled = false;
-    getDebrief(question.category, question.slug)
-      .then((d) => {
-        if (!cancelled) setDebrief(d);
-      })
-      .catch(() => {
-        // 404 pre-review or fetch failure — stay hidden
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [hasReviews, question.category, question.slug]);
+  useCancellableEffect(
+    (cancelled) => {
+      if (!hasReviews) {
+        setDebrief(null);
+        return;
+      }
+      getDebrief(question.category, question.slug)
+        .then((d) => {
+          if (!cancelled()) setDebrief(d);
+        })
+        .catch(() => {
+          // 404 pre-review or fetch failure — stay hidden
+        });
+    },
+    [hasReviews, question.category, question.slug],
+  );
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
