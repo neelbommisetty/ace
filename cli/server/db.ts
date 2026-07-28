@@ -1220,22 +1220,24 @@ class SqliteAceDb implements AceDb {
       return question;
     };
 
+    // Each side is bounded to `limit` rows in SQL (filtered by questionId /
+    // category / text match there too) so the merge below can never under-
+    // fill the final top-`limit` slice: the true merged top-`limit` can
+    // contain at most `limit` reviews and at most `limit` disputes.
+    const sqlFilter = { questionId: opts.questionId, category: opts.category, limit };
+
     const items: HistoryItem[] = [];
     if (opts.type !== 'dispute') {
-      for (const review of this.searchReviews(q)) {
-        if (opts.questionId && review.questionId !== opts.questionId) continue;
+      for (const review of this.searchReviews(q, sqlFilter)) {
         const question = questionFor(review.questionId);
         if (!question) continue;
-        if (opts.category && question.category !== opts.category) continue;
         items.push({ type: 'review', at: review.at, question, review });
       }
     }
     if (opts.type !== 'review') {
-      for (const dispute of this.searchDisputes(q)) {
-        if (opts.questionId && dispute.questionId !== opts.questionId) continue;
+      for (const dispute of this.searchDisputes(q, sqlFilter)) {
         const question = questionFor(dispute.questionId);
         if (!question) continue;
-        if (opts.category && question.category !== opts.category) continue;
         items.push({ type: 'dispute', at: dispute.at, question, dispute });
       }
     }
@@ -1250,46 +1252,90 @@ class SqliteAceDb implements AceDb {
     return items.slice(0, limit);
   }
 
-  private searchReviews(q: string): ReviewRow[] {
+  private searchReviews(
+    q: string,
+    opts: { questionId?: string; category?: string; limit: number },
+  ): ReviewRow[] {
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+    if (opts.questionId) {
+      where.push('r.question_id = ?');
+      params.push(opts.questionId);
+    }
+    if (opts.category) {
+      where.push('qs.category = ?');
+      params.push(opts.category);
+    }
+
     if (q === '') {
-      const rows = this.stmt('SELECT * FROM reviews ORDER BY at DESC, id DESC').all() as SqlRow[];
+      const rows = this.stmt(
+        `SELECT r.* FROM reviews r JOIN questions qs ON qs.id = r.question_id
+         ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+         ORDER BY r.at DESC, r.id DESC LIMIT ?`,
+      ).all(...params, opts.limit) as SqlRow[];
       return rows.map(rowToReview);
     }
     if (this.ftsAvailable) {
       const match = toFtsMatchQuery(q);
       if (match !== '') {
         try {
+          const ftsWhere = [
+            ...where,
+            'r.id IN (SELECT review_id FROM reviews_fts WHERE reviews_fts MATCH ?)',
+          ];
           const rows = this.stmt(
-            `SELECT * FROM reviews
-             WHERE id IN (SELECT review_id FROM reviews_fts WHERE reviews_fts MATCH ?)
-             ORDER BY at DESC, id DESC`,
-          ).all(match) as SqlRow[];
+            `SELECT r.* FROM reviews r JOIN questions qs ON qs.id = r.question_id
+             WHERE ${ftsWhere.join(' AND ')}
+             ORDER BY r.at DESC, r.id DESC LIMIT ?`,
+          ).all(...params, match, opts.limit) as SqlRow[];
           return rows.map(rowToReview);
         } catch {
           // hostile input the term-quoting couldn't neutralize — LIKE fallback
         }
       }
     }
+    const likeWhere = [...where, 'r.body_md LIKE ? COLLATE NOCASE'];
     const rows = this.stmt(
-      `SELECT * FROM reviews WHERE body_md LIKE ? COLLATE NOCASE
-       ORDER BY at DESC, id DESC`,
-    ).all(`%${q}%`) as SqlRow[];
+      `SELECT r.* FROM reviews r JOIN questions qs ON qs.id = r.question_id
+       WHERE ${likeWhere.join(' AND ')}
+       ORDER BY r.at DESC, r.id DESC LIMIT ?`,
+    ).all(...params, `%${q}%`, opts.limit) as SqlRow[];
     return rows.map(rowToReview);
   }
 
-  private searchDisputes(q: string): DisputeRow[] {
+  private searchDisputes(
+    q: string,
+    opts: { questionId?: string; category?: string; limit: number },
+  ): DisputeRow[] {
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+    if (opts.questionId) {
+      where.push('d.question_id = ?');
+      params.push(opts.questionId);
+    }
+    if (opts.category) {
+      where.push('qs.category = ?');
+      params.push(opts.category);
+    }
+
     if (q === '') {
       const rows = this.stmt(
-        'SELECT * FROM disputes ORDER BY at DESC, id DESC',
-      ).all() as SqlRow[];
+        `SELECT d.* FROM disputes d JOIN questions qs ON qs.id = d.question_id
+         ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+         ORDER BY d.at DESC, d.id DESC LIMIT ?`,
+      ).all(...params, opts.limit) as SqlRow[];
       return rows.map(rowToDispute);
     }
     const pattern = `%${q}%`;
+    const likeWhere = [
+      ...where,
+      '(d.summary LIKE ? COLLATE NOCASE OR d.details_md LIKE ? COLLATE NOCASE)',
+    ];
     const rows = this.stmt(
-      `SELECT * FROM disputes
-       WHERE summary LIKE ? COLLATE NOCASE OR details_md LIKE ? COLLATE NOCASE
-       ORDER BY at DESC, id DESC`,
-    ).all(pattern, pattern) as SqlRow[];
+      `SELECT d.* FROM disputes d JOIN questions qs ON qs.id = d.question_id
+       WHERE ${likeWhere.join(' AND ')}
+       ORDER BY d.at DESC, d.id DESC LIMIT ?`,
+    ).all(...params, pattern, pattern, opts.limit) as SqlRow[];
     return rows.map(rowToDispute);
   }
 

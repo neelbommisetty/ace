@@ -249,4 +249,11 @@ CREATE INDEX idx_ai_steps_run_seq ON ai_steps (run_id, seq);
 ALTER TABLE generation_jobs ADD COLUMN run_started_at TEXT;
 UPDATE generation_jobs SET run_started_at = created_at;
 `,
+  // Migration 7 (NEE-286): reviews had no index on question_id — disputes got
+  // idx_disputes_question_id back in migration 2, but the reviews equivalent
+  // was never added, so listReviews(questionId) and the searchHistory joins
+  // added in this same ticket were full table scans. Pure CREATE only.
+  `
+CREATE INDEX idx_reviews_question_id ON reviews (question_id);
+`,
 ];

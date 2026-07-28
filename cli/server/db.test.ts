@@ -55,7 +55,7 @@ describe('openDb', () => {
   it('creates .ace and .ace/tmp and tracks schema_version', () => {
     expect(fs.existsSync(path.join(tempRoot, '.ace', 'ace.db'))).toBe(true);
     expect(fs.statSync(path.join(tempRoot, '.ace', 'tmp')).isDirectory()).toBe(true);
-    expect(db.getMeta('schema_version')).toBe('6');
+    expect(db.getMeta('schema_version')).toBe('7');
   });
 
   it('reopens an existing db without re-running migrations', () => {
@@ -64,7 +64,7 @@ describe('openDb', () => {
     db.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('6');
+    expect(db.getMeta('schema_version')).toBe('7');
     expect(db.getMeta('custom')).toBe('kept');
     expect(db.getQuestionById(q.id)?.slug).toBe('debounce');
   });
@@ -72,7 +72,7 @@ describe('openDb', () => {
 
 describe('migration 3 (generation jobs + brainstorm sessions)', () => {
   it('lands schema_version=3 and creates the new tables + indexes', () => {
-    expect(db.getMeta('schema_version')).toBe('6');
+    expect(db.getMeta('schema_version')).toBe('7');
 
     const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
     try {
@@ -138,9 +138,9 @@ describe('migration 3 (generation jobs + brainstorm sessions)', () => {
     db = openDb(tempRoot);
     // openDb runs every migration after the seeded version, so this now also
     // picks up migration 4 (NEE-178 backfill), migration 5 (NEE-266 AI
-    // activity log) and migration 6 (NEE-277 run_started_at) on top of
-    // migration 3.
-    expect(db.getMeta('schema_version')).toBe('6');
+    // activity log), migration 6 (NEE-277 run_started_at) and migration 7
+    // (NEE-286 idx_reviews_question_id) on top of migration 3.
+    expect(db.getMeta('schema_version')).toBe('7');
     expect(db.getQuestionById('seed-q1')?.slug).toBe('debounce');
 
     const raw = new DatabaseSync(dbPath);
@@ -231,7 +231,7 @@ describe('migration 4 (NEE-178 backfill: close stale solved-question attempts)',
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('6');
+    expect(db.getMeta('schema_version')).toBe('7');
 
     const a1 = db.getAttempt('a1')!;
     expect(a1.endReason).toBe('solved');
@@ -252,7 +252,7 @@ describe('migration 4 (NEE-178 backfill: close stale solved-question attempts)',
 
 describe('migration 5 (NEE-266: ai activity log)', () => {
   it('creates ai_runs/ai_steps and their indexes', () => {
-    expect(db.getMeta('schema_version')).toBe('6');
+    expect(db.getMeta('schema_version')).toBe('7');
 
     const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
     try {
@@ -314,7 +314,7 @@ describe('migration 5 (NEE-266: ai activity log)', () => {
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('6');
+    expect(db.getMeta('schema_version')).toBe('7');
     expect(db.getQuestionById('seed-q1')?.slug).toBe('debounce');
     expect(db.listAiRuns()).toEqual([]);
   });
@@ -343,12 +343,65 @@ describe('migration 6 (NEE-277: generation_jobs.run_started_at)', () => {
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('6');
+    expect(db.getMeta('schema_version')).toBe('7');
     const migrated = db.getGenerationJob('gj-old')!;
     // Backfilled to created_at so historical jobs keep their current reading.
     expect(migrated.runStartedAt).toBe('2026-01-01T00:00:00.000Z');
     expect(migrated.createdAt).toBe('2026-01-01T00:00:00.000Z');
     expect(migrated.status).toBe('error');
+  });
+});
+
+describe('migration 7 (NEE-286: idx_reviews_question_id)', () => {
+  it('creates the index', () => {
+    expect(db.getMeta('schema_version')).toBe('7');
+
+    const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
+    try {
+      const index = raw
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'index' AND name = 'idx_reviews_question_id'`,
+        )
+        .get();
+      expect(index).toBeTruthy();
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('migrates a db pre-seeded at schema_version 6 cleanly to 7, preserving existing data', () => {
+    db.close();
+    const dbPath = path.join(tempRoot, '.ace', 'ace.db');
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(`${dbPath}-wal`, { force: true });
+    fs.rmSync(`${dbPath}-shm`, { force: true });
+
+    const seed = new DatabaseSync(dbPath);
+    seed.exec('PRAGMA journal_mode = WAL');
+    for (const m of MIGRATIONS.slice(0, 6)) seed.exec(m);
+    seed.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('schema_version', '6');
+    seed
+      .prepare(
+        `INSERT INTO questions
+          (id, category, slug, title, difficulty, suggested_minutes, dir_path, source, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('seed-q1', 'js-ts', 'debounce', 'Debounce', 'medium', 30, '/tmp/debounce', 'manual', nowIso());
+    seed
+      .prepare(
+        `INSERT INTO reviews
+          (id, question_id, attempt_id, version, at, model, verdict, score,
+           dimensions_json, body_md, snapshot_hash, source)
+         VALUES (?, ?, NULL, 1, ?, NULL, NULL, NULL, NULL, ?, NULL, 'user')`,
+      )
+      .run('rv-old', 'seed-q1', nowIso(), 'pre-migration review body');
+    seed.close();
+
+    db = openDb(tempRoot);
+    expect(db.getMeta('schema_version')).toBe('7');
+    expect(db.listReviews('seed-q1')).toHaveLength(1);
+    expect(db.listReviews('seed-q1')[0].id).toBe('rv-old');
   });
 });
 
