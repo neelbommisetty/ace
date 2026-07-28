@@ -208,43 +208,40 @@ function ProviderCard({
   const settings = info[provider];
   // Prefilled (base URLs are not secret, unlike keys); empty save clears.
   const [baseValue, setBaseValue] = useState(settings.baseUrl ?? '');
-  const [baseState, setBaseState] = useState<'idle' | 'saving' | 'ok'>('idle');
-  const [baseError, setBaseError] = useState<string | null>(null);
 
+  const key = value.trim();
+  const baseUrl = baseValue.trim() || null;
+  const keyDirty = key !== '';
+  const baseDirty = baseUrl !== settings.baseUrl;
+
+  /**
+   * Key and base URL save as one patch. The server validates the *effective*
+   * pair on any change, so splitting them deadlocks when both must change at
+   * once: a new proxy key alone is checked against the vendor host, and a new
+   * proxy host alone is checked with the old vendor key. Neither can go first.
+   */
   const save = () => {
-    const key = value.trim();
-    if (key === '' || state === 'saving') return;
+    if (state === 'saving' || (!keyDirty && !baseDirty)) return;
+    const patch = {
+      ...(keyDirty ? (provider === 'openai' ? { openaiKey: key } : { anthropicKey: key }) : {}),
+      ...(baseDirty
+        ? provider === 'openai'
+          ? { openaiBaseUrl: baseUrl }
+          : { anthropicBaseUrl: baseUrl }
+        : {}),
+    };
     setState('saving');
     setError(null);
-    putSettings(provider === 'openai' ? { openaiKey: key } : { anthropicKey: key })
+    putSettings(patch)
       .then((next) => {
         onSaved(next);
         setValue('');
+        setBaseValue(next[provider].baseUrl ?? '');
         setState('ok');
       })
       .catch((e: unknown) => {
         setState('idle');
-        setError(e instanceof Error ? e.message : 'Failed to save the key');
-      });
-  };
-
-  const saveBaseUrl = () => {
-    const trimmed = baseValue.trim();
-    const patchValue = trimmed === '' ? null : trimmed;
-    // Mirrors the Save button's disabled condition — Enter must not fire a
-    // no-op save (which would still trigger a real revalidation round-trip).
-    if (baseState === 'saving' || patchValue === settings.baseUrl) return;
-    setBaseState('saving');
-    setBaseError(null);
-    putSettings(provider === 'openai' ? { openaiBaseUrl: patchValue } : { anthropicBaseUrl: patchValue })
-      .then((next) => {
-        onSaved(next);
-        setBaseValue(next[provider].baseUrl ?? '');
-        setBaseState('ok');
-      })
-      .catch((e: unknown) => {
-        setBaseState('idle');
-        setBaseError(e instanceof Error ? e.message : 'Failed to save the base URL');
+        setError(e instanceof Error ? e.message : 'Failed to save');
       });
   };
 
@@ -277,24 +274,7 @@ function ProviderCard({
             if (e.key === 'Enter') save();
           }}
         />
-        <button
-          className="btn btn-accent btn-small"
-          onClick={save}
-          disabled={value.trim() === '' || state === 'saving'}
-        >
-          {state === 'saving' ? 'Validating…' : 'Save'}
-        </button>
-        {state === 'ok' && (
-          <span className="save-ok" title="Key validated and saved">
-            ✓ saved
-          </span>
-        )}
       </div>
-      {error != null && <div className="error-note">{error}</div>}
-      <p className="settings-hint">
-        Validated against the {PROVIDER_LABELS[provider]} API before saving; stored in your global
-        ace config. The full key is never sent back to this page.
-      </p>
       <div className="settings-row">
         <input
           className="key-input mono"
@@ -305,31 +285,32 @@ function ProviderCard({
           value={baseValue}
           onChange={(e) => {
             setBaseValue(e.target.value);
-            setBaseState('idle');
-            setBaseError(null);
+            setState('idle');
+            setError(null);
           }}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') saveBaseUrl();
+            if (e.key === 'Enter') save();
           }}
         />
         <button
           className="btn btn-accent btn-small"
-          onClick={saveBaseUrl}
-          disabled={baseState === 'saving' || (baseValue.trim() || null) === settings.baseUrl}
+          onClick={save}
+          disabled={state === 'saving' || (!keyDirty && !baseDirty)}
         >
-          {baseState === 'saving' ? 'Validating…' : 'Save'}
+          {state === 'saving' ? 'Validating…' : 'Save'}
         </button>
-        {baseState === 'ok' && (
-          <span className="save-ok" title="Base URL saved">
+        {state === 'ok' && (
+          <span className="save-ok" title="Validated and saved">
             ✓ saved
           </span>
         )}
       </div>
-      {baseError != null && <div className="error-note">{baseError}</div>}
+      {error != null && <div className="error-note">{error}</div>}
       <p className="settings-hint">
-        Leave empty for the official API. Point at a local proxy (e.g.{' '}
-        <code>http://localhost:4242/v1</code>) to use it instead; your existing key is re-validated
-        against the new host before saving.
+        Both fields save together: the key is validated against the base URL before either is
+        written to your global ace config. Leave the base URL empty for the official API, or point
+        it at a local proxy (e.g. <code>http://localhost:4242/v1</code>). The full key is never sent
+        back to this page.
       </p>
     </section>
   );

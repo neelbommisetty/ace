@@ -131,4 +131,54 @@ describe('key validation probe URLs', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('https://api.openai.com/v1/models');
     expect(fetchMock.mock.calls[1][0]).toBe('https://api.anthropic.com/v1/models');
   });
+
+  // @ai-sdk/anthropic appends /v1 to a bare host at call time; validation has
+  // to agree or it rejects a base URL that generation would happily use.
+  it('appends /v1 to a bare host for Anthropic, but not for OpenAI', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { llm } = await load();
+
+    await llm.validateAnthropicKey('k', 'http://localhost:4242');
+    await llm.validateAnthropicKey('k', 'http://localhost:4242/');
+    await llm.validateAnthropicKey('k', 'http://localhost:4242/anthropic');
+    await llm.validateOpenAIKey('k', 'http://localhost:4242');
+
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:4242/v1/models');
+    expect(fetchMock.mock.calls[1][0]).toBe('http://localhost:4242/v1/models');
+    expect(fetchMock.mock.calls[2][0]).toBe('http://localhost:4242/anthropic/models');
+    expect(fetchMock.mock.calls[3][0]).toBe('http://localhost:4242/models');
+  });
+});
+
+describe('key validation error messages', () => {
+  it('names the probed host, including when HTTP/2 leaves statusText empty', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 401, statusText: '' })),
+    );
+    const { llm } = await load();
+
+    expect(await llm.validateOpenAIKey('k')).toEqual({
+      valid: false,
+      error: '401 from https://api.openai.com/v1',
+    });
+    expect(await llm.validateAnthropicKey('k', 'http://localhost:4242/v1')).toEqual({
+      valid: false,
+      error: 'Invalid API key (401) from http://localhost:4242/v1',
+    });
+  });
+
+  it('keeps the reason phrase when the server sends one', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 404, statusText: 'Not Found' })),
+    );
+    const { llm } = await load();
+
+    expect(await llm.validateOpenAIKey('k', 'http://localhost:4242/v1')).toEqual({
+      valid: false,
+      error: '404 Not Found from http://localhost:4242/v1',
+    });
+  });
 });

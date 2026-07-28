@@ -317,6 +317,16 @@ export async function chatObject<T>(
   return result.object;
 }
 
+/**
+ * HTTP/2 responses carry no reason phrase, so the vendor APIs report a bare
+ * "401" while an HTTP/1.1 proxy reports "401 Unauthorized". Naming the host
+ * that answered is what makes a wrong-host validation self-evident.
+ */
+function probeFailure(response: Response, base: string): string {
+  const reason = response.statusText ? `${response.status} ${response.statusText}` : `${response.status}`;
+  return `${reason} from ${base}`;
+}
+
 export async function validateOpenAIKey(
   apiKey: string,
   baseUrl?: string,
@@ -325,20 +335,20 @@ export async function validateOpenAIKey(
     return { valid: true };
   }
 
+  // Env-sourced base URLs bypass normalizeBaseUrl, so strip trailing
+  // slashes here too — the SDK clients do the same internally.
+  const base = (baseUrl ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
   try {
-    // Env-sourced base URLs bypass normalizeBaseUrl, so strip trailing
-    // slashes here too — the SDK clients do the same internally.
-    const base = (baseUrl ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
     const response = await fetch(`${base}/models`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     if (!response.ok) {
-      return { valid: false, error: `${response.status} ${response.statusText}` };
+      return { valid: false, error: probeFailure(response, base) };
     }
     return { valid: true };
   } catch (err: any) {
     const message = err?.message || 'Unknown error';
-    return { valid: false, error: message };
+    return { valid: false, error: `${message} (${base})` };
   }
 }
 
@@ -350,8 +360,8 @@ export async function validateAnthropicKey(
     return { valid: true };
   }
 
+  const base = anthropicProbeBase(baseUrl);
   try {
-    const base = (baseUrl ?? 'https://api.anthropic.com/v1').replace(/\/+$/, '');
     const response = await fetch(`${base}/models`, {
       headers: {
         'x-api-key': apiKey,
@@ -359,14 +369,29 @@ export async function validateAnthropicKey(
       },
     });
     if (response.status === 401) {
-      return { valid: false, error: 'Invalid API key (401 Unauthorized)' };
+      return { valid: false, error: `Invalid API key (401) from ${base}` };
     }
     if (!response.ok) {
-      return { valid: false, error: `${response.status} ${response.statusText}` };
+      return { valid: false, error: probeFailure(response, base) };
     }
     return { valid: true };
   } catch (err: any) {
     const message = err?.message || 'Unknown error';
-    return { valid: false, error: message };
+    return { valid: false, error: `${message} (${base})` };
   }
+}
+
+/**
+ * @ai-sdk/anthropic appends /v1 to a bare host at call time, so a base URL of
+ * http://localhost:4242 hits /v1/messages during generation. Match that here —
+ * otherwise a config that works at runtime is rejected at save time.
+ */
+function anthropicProbeBase(baseUrl?: string): string {
+  const base = (baseUrl ?? 'https://api.anthropic.com/v1').replace(/\/+$/, '');
+  try {
+    if (new URL(base).pathname === '/') return `${base}/v1`;
+  } catch {
+    // Unparseable; let fetch surface the failure rather than guessing.
+  }
+  return base;
 }
