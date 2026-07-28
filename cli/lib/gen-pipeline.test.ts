@@ -245,6 +245,156 @@ describe('generateVerifiedQuestion', () => {
   });
 });
 
+describe('audit user message assembly (NEE-275)', () => {
+  // Exact-string (snapshot-class) assertions: the doubled `## Problem
+  // Statement` wrapper and the redundant sibling `## Signature` were exactly
+  // the kind of drift only a full-message assertion catches.
+
+  const CODING_STAGE1: GeneratedQuestion = {
+    ...STAGE1,
+    description: [
+      '## Problem Statement',
+      '',
+      'Build a debounced autosave queue for a config-driven form editor.',
+      '',
+      '## Signature',
+      '',
+      '```ts',
+      'export function createAutosaver(save: (draft: string) => Promise<void>): Autosaver',
+      '```',
+      '',
+      '## Examples',
+      '',
+      '1. Two rapid edits produce a single save.',
+      '',
+      '## Constraints',
+      '',
+      '- Coalesce edits within 500ms.',
+      '',
+      '## Hints',
+      '',
+      '- Think about an in-flight save finishing after a newer edit.',
+    ].join('\n'),
+    testCode: "it('saves', () => {});",
+    referenceSolution: 'export function createAutosaver() {}',
+  };
+
+  it('embeds a coding question once, under ## Question, with no sibling ## Signature', async () => {
+    const { llm, calls } = makeLlm([CODING_STAGE1], [AUDIT_NOOP]);
+    await generateVerifiedQuestion(PARAMS, { llm, verify: makeVerify([GREEN]) });
+
+    const auditCall = calls[1];
+    expect(auditCall.purpose).toBe('edge-audit');
+    expect(auditCall.user).toBe(`Audit this freshly generated medium js-ts interview question.
+
+## Question
+
+## Problem Statement
+
+Build a debounced autosave queue for a config-driven form editor.
+
+## Signature
+
+\`\`\`ts
+export function createAutosaver(save: (draft: string) => Promise<void>): Autosaver
+\`\`\`
+
+## Examples
+
+1. Two rapid edits produce a single save.
+
+## Constraints
+
+- Coalesce edits within 500ms.
+
+## Hints
+
+- Think about an in-flight save finishing after a newer edit.
+
+## Reference Solution
+
+\`\`\`
+export function createAutosaver() {}
+\`\`\`
+
+## Test File
+
+\`\`\`
+it('saves', () => {});
+\`\`\`
+
+## Interviewer Packet
+
+## Capability Tested
+
+Concurrency realities.`);
+    // The acceptance criteria, stated directly: each heading exactly once.
+    expect(auditCall.user.match(/^## Problem Statement$/gm)).toHaveLength(1);
+    expect(auditCall.user.match(/^## Signature$/gm)).toHaveLength(1);
+  });
+
+  it('embeds a design question once, under ## Question, with no code sections', async () => {
+    const designStage1: GeneratedQuestion = {
+      title: 'Notification Read-State Sync',
+      slug: 'notification-read-state',
+      description: [
+        '## Problem Statement',
+        '',
+        'Design read-state sync for a notifications inbox at 5M DAU.',
+        '',
+        '## Requirements',
+        '',
+        '- Read state converges across 3 devices within 5s.',
+        '',
+        '## Scope',
+        '',
+        '- Focus On: sync protocol. Out of Scope: notification delivery.',
+        '',
+        '## Evaluation Criteria',
+        '',
+        '- Names the offline-merge invariant.',
+      ].join('\n'),
+      signature: null,
+      testCode: null,
+      solutionCode: null,
+      referenceSolution: null,
+      interviewerPacket: '## Capability Tested\n\nAmbiguity resolved into invariants.',
+    };
+    const { llm, calls } = makeLlm([designStage1], [AUDIT_NOOP]);
+    await generateVerifiedQuestion({ ...PARAMS, category: 'design-fe' }, { llm, verify: makeVerify([]) });
+
+    const auditCall = calls[1];
+    expect(auditCall.purpose).toBe('edge-audit');
+    expect(auditCall.user).toBe(`Audit this freshly generated medium design-fe interview question.
+
+## Question
+
+## Problem Statement
+
+Design read-state sync for a notifications inbox at 5M DAU.
+
+## Requirements
+
+- Read state converges across 3 devices within 5s.
+
+## Scope
+
+- Focus On: sync protocol. Out of Scope: notification delivery.
+
+## Evaluation Criteria
+
+- Names the offline-merge invariant.
+
+## Interviewer Packet
+
+## Capability Tested
+
+Ambiguity resolved into invariants.`);
+    expect(auditCall.user.match(/^## Problem Statement$/gm)).toHaveLength(1);
+    expect(auditCall.user).not.toContain('## Signature');
+  });
+});
+
 describe('generateVerifiedQuestion no-output-progress timeout', () => {
   afterEach(() => {
     vi.useRealTimers();

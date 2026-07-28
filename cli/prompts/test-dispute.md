@@ -5,7 +5,7 @@ You are an expert code reviewer specializing in test correctness. A candidate be
 ## Input
 
 You will receive:
-- **Problem statement**: The question README describing expected behavior
+- **Question**: The question README describing expected behavior
 - **Solution code**: The candidate's implementation
 - **Test file**: The full test file
 - **Test failure output**: The actual vitest output showing which tests failed and why

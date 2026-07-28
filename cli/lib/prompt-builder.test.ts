@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CATEGORY_SLUGS } from './categories.js';
 import {
   buildBrainstormPrompt,
+  buildQuestionSection,
   buildSystemPrompt,
   parseCapsuleSections,
   type PromptFeature,
@@ -107,6 +108,41 @@ describe('buildBrainstormPrompt', () => {
     for (const slug of CATEGORY_SLUGS) {
       expect(prompt).toContain(`(\`${slug}\`)`);
     }
+  });
+});
+
+describe('buildQuestionSection', () => {
+  it('emits generated-shape content verbatim under a bare ## Question delimiter', () => {
+    const generated = [
+      '## Problem Statement',
+      '',
+      'Build a debounced autosave queue.',
+      '',
+      '## Signature',
+      '',
+      '```ts',
+      'export function createAutosaver(): Autosaver',
+      '```',
+      '',
+      '## Constraints',
+      '',
+      '- Coalesce saves within 500ms.',
+    ].join('\n');
+
+    const section = buildQuestionSection(generated);
+
+    expect(section).toBe(`## Question\n\n${generated}`);
+    // The old wrapper doubled this heading and claimed the sibling sections
+    // (NEE-275) — each of the description's own headings must appear once.
+    expect(section.match(/^## Problem Statement$/gm)).toHaveLength(1);
+    expect(section.match(/^## Signature$/gm)).toHaveLength(1);
+  });
+
+  it('reads sensibly for a manual/pre-overhaul README with no section structure', () => {
+    const manual = '# Debounce\n\nWrite a debounce function that delays calls.\n';
+    expect(buildQuestionSection(manual)).toBe(
+      '## Question\n\n# Debounce\n\nWrite a debounce function that delays calls.',
+    );
   });
 });
 

@@ -9,6 +9,7 @@ import { findQuestion, readScorecard, writeScorecard, promptForSlug } from '../l
 import { CATEGORIES, isDesignCategory } from '../lib/categories.js';
 import { chatObject, requireProvider } from '../lib/llm.js';
 import type { LLMMessage } from '../lib/llm.js';
+import { buildQuestionSection } from '../lib/prompt-builder.js';
 import { resolveWorkspaceRoot, isWorkspaceInitialized } from '../lib/paths.js';
 import { getImportMetaDirname } from '../lib/import-meta.js';
 
@@ -152,8 +153,7 @@ export async function run(args: string[]): Promise<void> {
 
   // Build the LLM request
   const systemPrompt = loadPrompt('test-dispute.md');
-  const userContent = `## Problem Statement
-${readme}
+  const userContent = `${buildQuestionSection(readme)}
 
 ## Solution Code
 ${solutionContent}

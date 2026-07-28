@@ -8,7 +8,7 @@ import {
   type CategorySlug,
 } from '../lib/categories.js';
 import { chatObject, chatStream, getModelId, type LLMMessage } from '../lib/llm.js';
-import { buildSystemPrompt } from '../lib/prompt-builder.js';
+import { buildQuestionSection, buildSystemPrompt } from '../lib/prompt-builder.js';
 import { getStubContent } from '../lib/scaffold.js';
 import { saveBlob } from './blobs.js';
 import { sha1, toWorkspaceRelPath } from './files.js';
@@ -199,8 +199,7 @@ function buildReviewMessages(
 
     userContent = `## Design Sub-Type: ${designSubType}
 
-## Problem Statement
-${readme}
+${buildQuestionSection(readme)}
 
 ## Candidate's Design Notes
 ${notes}`;
@@ -216,8 +215,7 @@ ${notes}`;
       if (content) testContent += `\n--- ${name} ---\n${content}\n`;
     }
 
-    userContent = `## Problem Statement
-${readme}
+    userContent = `${buildQuestionSection(readme)}
 
 ## Candidate's Solution Code
 ${solutionContent}

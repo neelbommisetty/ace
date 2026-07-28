@@ -117,6 +117,25 @@ export function buildSystemPrompt(feature: PromptFeature, category: CategorySlug
 }
 
 /**
+ * Renders a question's own markdown — a generated `description` or a
+ * README.md read from disk — as the `## Question` section of a prompt user
+ * message. Shared by every prompt that embeds a question (edge-audit,
+ * review, dispute, feedback); six hand-rolled copies is how the old wrapper
+ * drifted (NEE-275).
+ *
+ * `## Question` is a deliberately non-claiming delimiter: generated
+ * descriptions already open with their own `## Problem Statement` and carry
+ * sibling `##` sections (Signature/Examples/… or Requirements/Scope/…), so
+ * the old `## Problem Statement` wrapper doubled that heading and falsely
+ * labeled every sibling section as part of the problem statement. Under
+ * `## Question` the content's own sections keep their level — and a
+ * manual/pre-overhaul README with no section structure reads just as well.
+ */
+export function buildQuestionSection(questionMd: string): string {
+  return `## Question\n\n${questionMd.trim()}`;
+}
+
+/**
  * Assembles the brainstorm system prompt: charter + brainstorm skeleton + a
  * digest (Identity, Difficulty Calibration, Example Directions) of all 8
  * category capsules, since brainstorm conversations span categories.

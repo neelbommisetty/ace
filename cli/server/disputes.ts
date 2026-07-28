@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { CATEGORIES, type CategoryConfig } from '../lib/categories.js';
 import { getImportMetaDirname } from '../lib/import-meta.js';
 import { chatObject, type LLMMessage } from '../lib/llm.js';
+import { buildQuestionSection } from '../lib/prompt-builder.js';
 import { saveBlob } from './blobs.js';
 import { readWorkspaceFile, toWorkspaceRelPath, writeWorkspaceFile } from './files.js';
 import { uuidv7 } from './ids.js';
@@ -140,8 +141,7 @@ export function createDisputeEngine(opts: {
       if (!testContent.trim()) throw new Error('no test file found for this question');
 
       const systemPrompt = fs.readFileSync(path.join(PROMPTS_DIR, 'test-dispute.md'), 'utf8');
-      const userContent = `## Problem Statement
-${readme}
+      const userContent = `${buildQuestionSection(readme)}
 
 ## Solution Code
 ${solutionContent}

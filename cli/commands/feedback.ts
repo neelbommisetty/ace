@@ -6,7 +6,7 @@ import { findQuestion, readScorecard, writeScorecard, getAllQuestions, promptFor
 import { CATEGORIES, isDesignCategory } from '../lib/categories.js';
 import { chatStream, requireProvider } from '../lib/llm.js';
 import type { LLMMessage, LLMProvider } from '../lib/llm.js';
-import { buildSystemPrompt } from '../lib/prompt-builder.js';
+import { buildQuestionSection, buildSystemPrompt } from '../lib/prompt-builder.js';
 import { resolveWorkspaceRoot, isWorkspaceInitialized } from '../lib/paths.js';
 
 function parseArgs(args: string[]): { slug?: string; provider?: string; all: boolean } {
@@ -71,8 +71,7 @@ async function runFeedbackForSlug(slug: string, provider: LLMProvider): Promise<
 
     userContent = `## Design Sub-Type: ${designSubType}
 
-## Problem Statement
-${readme}
+${buildQuestionSection(readme)}
 
 ## Candidate's Design Notes
 ${notes}`;
@@ -104,8 +103,7 @@ ${notes}`;
       }
     }
 
-    userContent = `## Problem Statement
-${readme}
+    userContent = `${buildQuestionSection(readme)}
 
 ## Candidate's Solution Code
 ${solutionContent}

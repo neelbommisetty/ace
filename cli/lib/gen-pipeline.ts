@@ -8,7 +8,7 @@ import {
   type LLMProvider,
   type LLMPurpose,
 } from './llm.js';
-import { buildSystemPrompt } from './prompt-builder.js';
+import { buildQuestionSection, buildSystemPrompt } from './prompt-builder.js';
 import { renderSolutionStub } from './scaffold.js';
 
 // Canonical generated-question shape — the single source of truth for both
@@ -159,11 +159,12 @@ function buildAuditUserMessage(
 ): string {
   const sections = [
     `Audit this freshly generated ${params.difficulty} ${params.category} interview question.`,
-    `## Problem Statement\n\n${question.description ?? ''}`,
+    buildQuestionSection(question.description ?? ''),
   ];
   if (!design) {
+    // No sibling `## Signature` section: the description's own `## Signature`
+    // already carries it, and repeating it doubled the heading (NEE-275).
     sections.push(
-      `## Signature\n\n\`\`\`\n${question.signature ?? ''}\n\`\`\``,
       `## Reference Solution\n\n\`\`\`\n${question.referenceSolution ?? ''}\n\`\`\``,
       `## Test File\n\n\`\`\`\n${question.testCode ?? ''}\n\`\`\``,
     );
