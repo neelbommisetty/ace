@@ -59,10 +59,12 @@ export type GenerationPhase = 'generating' | 'auditing' | 'verifying' | 'repairi
 // Per-call timeout budget (NEE-264): the old 300s wall clock was smaller
 // than a full MAX_OUTPUT_TOKENS answer at the ~60 tok/s measured through the
 // proxy, so healthy-but-large generations died at exactly the deadline. Now
-// a call is cut only when the stream goes SILENT for the stall window (each
-// streamed partial resets the clock — a slow run stays visible instead of
-// fatal), with a generous absolute ceiling bounding even a steadily-flowing
-// call.
+// a call is cut only when the stream goes SILENT for the stall window, with
+// a generous absolute ceiling bounding even a steadily-flowing call.
+// Liveness is RAW STREAM ACTIVITY, not parsed partials (NEE-322): a
+// buffering proxy (NEE-321) can deliver zero partials for an entire healthy
+// turn — only ping frames reach the SDK — so a partial-only re-arm degrades
+// back to exactly the 300s wall clock this design removed.
 const GENERATE_STALL_TIMEOUT_MS = 300_000;
 const GENERATE_MAX_TIMEOUT_MS = 900_000;
 // 32K, was 16K (NEE-274): adaptive thinking is on by default on the Claude
@@ -380,9 +382,11 @@ export async function generateVerifiedQuestion(
   };
 
   // One streaming LLM call under the no-output-progress budget: a stream
-  // that stays silent for GENERATE_STALL_TIMEOUT_MS is aborted, each partial
-  // re-arms the stall clock, and GENERATE_MAX_TIMEOUT_MS is the absolute
-  // ceiling even while output keeps flowing.
+  // whose RAW BYTES stay silent for GENERATE_STALL_TIMEOUT_MS is aborted.
+  // Raw stream activity — not parsed partials — is what re-arms the stall
+  // clock, because a buffering proxy (NEE-321/NEE-322) can deliver zero
+  // partials for an entire healthy turn; GENERATE_MAX_TIMEOUT_MS is the
+  // absolute ceiling even while output keeps flowing.
   const callStream = async <T>(
     messages: LLMMessage[],
     schema: z.ZodType<T>,
@@ -410,14 +414,21 @@ export async function generateVerifiedQuestion(
         purpose,
         maxOutputTokens: MAX_OUTPUT_TOKENS,
         abortSignal: controller.signal,
-        // MUST stay synchronous (NEE-267): an async callback's rejection
-        // would bypass chatObjectStream's throw-swallowing guard.
+        // Both callbacks MUST stay synchronous (NEE-267): an async
+        // callback's rejection would bypass chatObjectStream's
+        // throw-swallowing guard.
         onPartial: (partial) => {
           clearTimeout(stallTimer);
           stallTimer = armStall();
           // Recorder hook — synchronous by construction (the handle only
           // filters/diffs and arms a flush timer).
           step?.partial(partial);
+        },
+        // Raw-byte liveness (NEE-322). The recorder is deliberately NOT
+        // wired here — raw activity carries no object to record.
+        onStreamActivity: () => {
+          clearTimeout(stallTimer);
+          stallTimer = armStall();
         },
       });
     } finally {

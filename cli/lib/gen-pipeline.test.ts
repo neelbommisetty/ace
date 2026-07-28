@@ -700,6 +700,7 @@ describe('generateVerifiedQuestion no-output-progress timeout', () => {
     abortSignal?: AbortSignal;
     maxOutputTokens?: number;
     onPartial?: (partial: Record<string, unknown>) => void;
+    onStreamActivity?: () => void;
   }
 
   /** Rejects with the pipeline's abort reason the moment its signal fires. */
@@ -733,7 +734,7 @@ describe('generateVerifiedQuestion no-output-progress timeout', () => {
     const err = (await outcome) as Error;
     expect(err).toBeInstanceOf(Error);
     expect(err.name).toBe('TimeoutError');
-    expect(err.message).toContain('stalled');
+    expect(err.message).toContain('generation looks stalled');
   });
 
   it('keeps a slow-but-flowing stream alive past the old 300s wall clock — partials re-arm the stall clock', async () => {
@@ -773,14 +774,69 @@ describe('generateVerifiedQuestion no-output-progress timeout', () => {
     expect(partialReturns.every((r) => r === undefined)).toBe(true);
   });
 
-  it('aborts at the absolute ceiling even while partials keep flowing', async () => {
+  it('keeps a zero-partial stream alive on raw activity alone — a buffering proxy delivers no partials (NEE-322)', async () => {
+    vi.useFakeTimers();
+    const activityReturns: unknown[] = [];
+    const recordedPartials: Array<Record<string, unknown>> = [];
+    // Recorder seam: raw-activity events must never reach step.partial —
+    // only parsed partials carry an object to record.
+    const steps: GenerationStepsSink = {
+      step: () => ({
+        append() {},
+        partial(obj) {
+          recordedPartials.push(obj);
+        },
+        done() {},
+        fail() {},
+        skip() {},
+      }),
+      registerSecret() {},
+    };
+    const chatObjectStream = vi.fn((_p: unknown, _m: unknown, _s: unknown, opts?: StreamOpts) => {
+      if (opts?.purpose === 'edge-audit') return Promise.resolve(AUDIT_NOOP);
+      return new Promise((resolve, reject) => {
+        opts?.abortSignal?.addEventListener('abort', () => reject(opts.abortSignal!.reason));
+        let fired = 0;
+        const tick = setInterval(() => {
+          fired += 1;
+          activityReturns.push(opts?.onStreamActivity?.());
+          if (fired === 3) {
+            clearInterval(tick);
+            resolve(STAGE1);
+          }
+        }, 250_000);
+      });
+    });
+
+    const outcome = generateVerifiedQuestion(PARAMS, {
+      llm: { chatObjectStream: chatObjectStream as never },
+      verify: makeVerify([GREEN]),
+      steps,
+    });
+    // Raw chunks at 250s/500s/750s with ZERO partials — the whole object is
+    // buffered until the end of the turn, yet every gap fits the stall
+    // window, so the call must outlive the old 300s wall clock.
+    await vi.advanceTimersByTimeAsync(750_000);
+
+    const result = await outcome;
+    expect(result.question.title).toBe(STAGE1.title);
+    // Same synchronous-callback contract as onPartial (NEE-267).
+    expect(activityReturns.every((r) => r === undefined)).toBe(true);
+    expect(recordedPartials).toEqual([]);
+  });
+
+  it('aborts at the absolute ceiling even while partials and raw activity keep flowing', async () => {
     vi.useFakeTimers();
     const chatObjectStream = vi.fn(
       (_p: unknown, _m: unknown, _s: unknown, opts?: StreamOpts) =>
         new Promise((_resolve, reject) => {
           opts?.abortSignal?.addEventListener('abort', () => reject(opts.abortSignal!.reason));
-          // Never resolves — partials keep the stall clock re-armed forever.
-          setInterval(() => opts?.onPartial?.({ title: 'still going' }), 200_000);
+          // Never resolves — both liveness signals keep the stall clock
+          // re-armed forever.
+          setInterval(() => {
+            opts?.onStreamActivity?.();
+            opts?.onPartial?.({ title: 'still going' });
+          }, 200_000);
         }),
     );
 
