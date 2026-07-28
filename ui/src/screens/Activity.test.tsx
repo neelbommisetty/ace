@@ -255,6 +255,48 @@ describe('Activity', () => {
     expect(getAiStep).toHaveBeenCalledWith('s1');
   });
 
+  it('refreshes a mid-stream snapshot once the step goes terminal (SSE-gap recovery)', async () => {
+    getAiRuns.mockResolvedValue({ runs: [{ ...run(), steps: [stepSummary()] }] });
+    // Expanded while streaming: the lazy fetch returns a ≤1s-stale running
+    // snapshot whose status would otherwise stay frozen forever.
+    getAiStep.mockResolvedValue({ step: fullStep({ status: 'running', responseText: null }) });
+    render(<Activity />);
+    await screen.findByText('write question');
+
+    emit('ai-step-chunk', {
+      runId: 'r1',
+      stepId: 's1',
+      ops: [{ key: 'text', op: 'append', text: 'pre-gap text' }],
+    });
+    fireEvent.click(screen.getByText('write question'));
+    expect(await screen.findByText('pre-gap text')).toBeInTheDocument();
+    expect(getAiStep).toHaveBeenCalledTimes(1);
+
+    // The stream dropped and chunks were lost in the gap; the step then ends.
+    // The persisted row (written before ai-step-done) must supersede the
+    // incomplete live buffer via a single background re-fetch.
+    getAiStep.mockResolvedValue({
+      step: fullStep({
+        status: 'done',
+        finishedAt: T1,
+        responseText: 'pre-gap text plus the tail lost in the gap',
+      }),
+    });
+    emit('ai-step-done', {
+      runId: 'r1',
+      stepId: 's1',
+      status: 'done',
+      detail: null,
+      errorMessage: null,
+      finishedAt: T1,
+    });
+
+    expect(
+      await screen.findByText('pre-gap text plus the tail lost in the gap'),
+    ).toBeInTheDocument();
+    expect(getAiStep).toHaveBeenCalledTimes(2);
+  });
+
   it('renders a zero-step errored run gracefully (the missing-API-key shape)', async () => {
     getAiRuns.mockResolvedValue({
       runs: [

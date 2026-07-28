@@ -17,8 +17,9 @@ function serializeLive(live: Map<string, string>): string {
 
 /**
  * The response text to show. The lazily fetched row is authoritative only
- * once it's a terminal snapshot — one fetched mid-stream is ≤1s stale and
- * never catches up (the fetch happens once), so live SSE text wins over it.
+ * once it's a terminal snapshot — one fetched mid-stream is ≤1s stale, so
+ * live SSE text wins over it until AiStepRow's terminal refresh swaps in the
+ * persisted terminal row.
  */
 function resolveResponse(
   full: AiStepRow | null,
