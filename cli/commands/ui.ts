@@ -3,8 +3,9 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import chalk from 'chalk';
-import { getQuestionsDir, resolveWorkspaceRoot } from '../lib/paths.js';
+import { isWorkspaceInitialized, resolveWorkspaceRoot } from '../lib/paths.js';
 import { startAceServer, type AceServer } from '../server/index.js';
+import { recordRecentWorkspace } from '../server/workspace-registry.js';
 
 const DEFAULT_PORT = 4242;
 const PORT_SCAN_RANGE = 10;
@@ -84,14 +85,24 @@ function openBrowser(url: string): void {
 
 export async function run(args: string[]): Promise<void> {
   const flags = parseArgs(args);
-  const root = flags.workspace ? path.resolve(flags.workspace) : resolveWorkspaceRoot();
-  const questionsDir = getQuestionsDir(root);
 
-  if (!fs.existsSync(questionsDir) || !fs.statSync(questionsDir).isDirectory()) {
-    console.error(chalk.red(`\nError: no questions/ directory found at ${root}`));
-    console.error(chalk.dim('Run `ace init` there first, or point at one with --workspace <dir>.\n'));
-    process.exitCode = 1;
-    return;
+  let root: string | null;
+  if (flags.workspace) {
+    // An explicit --workspace pointing at a non-workspace is a typo, not a
+    // request for the picker — fail loudly instead of silently ignoring
+    // what the user asked for.
+    root = path.resolve(flags.workspace);
+    if (!isWorkspaceInitialized(root)) {
+      console.error(chalk.red(`\nError: no questions/ directory found at ${root}`));
+      console.error(chalk.dim('Run `ace init` there first, or point --workspace at an initialized one.\n'));
+      process.exitCode = 1;
+      return;
+    }
+  } else {
+    // Auto-detect miss is NOT an error (NEE-164): boot unmounted and let the
+    // browser picker mount a workspace from recents or a typed path.
+    const detected = resolveWorkspaceRoot();
+    root = isWorkspaceInitialized(detected) ? detected : null;
   }
 
   const token = process.env.ACE_UI_TOKEN || randomUUID();
@@ -118,9 +129,17 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
 
+  // Boot with a root counts as a successful mount for the picker's recents,
+  // exactly like every later switch.
+  if (root != null) recordRecentWorkspace(root);
+
   const url = `${server.url}/?t=${token}`;
   console.log(`\n${chalk.bold.cyan('ace ui')} — The Room\n`);
-  console.log(`  ${chalk.dim('Workspace:')} ${root}`);
+  if (root != null) {
+    console.log(`  ${chalk.dim('Workspace:')} ${root}`);
+  } else {
+    console.log(`  ${chalk.dim('Workspace:')} ${chalk.yellow('none mounted')} — no questions/ found here; pick one in the browser`);
+  }
   console.log(`  ${chalk.dim('URL:')}       ${chalk.green(url)}\n`);
   console.log(chalk.dim('  Press Ctrl+C to stop.\n'));
 

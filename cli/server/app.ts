@@ -11,7 +11,7 @@ import {
   type Difficulty,
 } from '../lib/categories.js';
 import { normalizeBaseUrl } from '../lib/config.js';
-import { getQuestionsDir } from '../lib/paths.js';
+import { getQuestionsDir, isWorkspaceInitialized } from '../lib/paths.js';
 import { getStubContent } from '../lib/scaffold.js';
 import { readBlob, saveBlob } from './blobs.js';
 import { applyDispute, DisputeApplyError, getDisputeGuardError } from './disputes.js';
@@ -25,7 +25,9 @@ import {
 } from './files.js';
 import { getReviewGuardError } from './reviews.js';
 import { performWorkspaceReset } from './reset-orchestrator.js';
+import { performWorkspaceSwitch } from './switch-orchestrator.js';
 import type { EngineFactories, WorkspaceSession } from './session.js';
+import { readRecentWorkspaces } from './workspace-registry.js';
 import {
   getSettingsInfo,
   resolveProvider,
@@ -1236,6 +1238,87 @@ export function createApp(opts: CreateAppOptions): Hono {
       });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : 'workspace reset failed' }, 500);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Workspace switch + recents (NEE-164)
+  // -------------------------------------------------------------------------
+
+  // Exempt from the no-workspace gate: the picker needs it before anything
+  // is mounted. Dead/uninitialized roots are filtered at read time.
+  app.get('/api/workspace/recents', (c) => c.json({ recents: readRecentWorkspaces() }));
+
+  app.post('/api/workspace/switch', async (c) => {
+    const body = await readJsonBody(c);
+    if (!body) return c.json({ error: 'invalid JSON body' }, 400);
+
+    const rawRoot = body.root;
+    if (typeof rawRoot !== 'string' || rawRoot.trim().length === 0) {
+      return c.json({ error: 'root must be a non-empty string' }, 400);
+    }
+    const newRoot = path.resolve(rawRoot.trim());
+    if (!isWorkspaceInitialized(newRoot)) {
+      return c.json(
+        { error: `no questions/ directory found at ${newRoot} — run \`ace init\` there first` },
+        400,
+      );
+    }
+
+    // Same echo contract as the reset route's requestId (see the comment
+    // there): lets the initiating tab match the `workspace-switched`
+    // broadcast to its own request.
+    const requestId =
+      typeof body.requestId === 'string' && body.requestId.length > 0
+        ? body.requestId
+        : crypto.randomUUID();
+
+    if (newRoot === getWorkspaceRoot()) {
+      // Already mounted — echo the current info instead of a pointless
+      // teardown/re-mount cycle (which would look like a reset to clients).
+      return c.json({
+        workspaceRoot: newRoot,
+        epoch: requireSession().epoch,
+        workspace: computeWorkspaceInfo(),
+      });
+    }
+
+    // Checked at route entry — reachable only because this route is exempt
+    // from the mid-swap 503 gate above.
+    if (isSwapping()) {
+      return c.json({ error: SWAP_IN_PROGRESS_ERROR }, 409);
+    }
+
+    // Booted unmounted (picker mode) → nothing to guard; otherwise the same
+    // teardown preconditions as reset — never yank a live run or LLM stream.
+    const current = getSession();
+    if (current) {
+      const busyError = getBusyEngineError(current);
+      if (busyError) return c.json({ error: busyError }, 409);
+    }
+
+    try {
+      const result = await performWorkspaceSwitch({
+        newRoot,
+        bus,
+        getSession,
+        getWorkspaceRoot,
+        swapWorkspace,
+        setSwapping,
+        requestId,
+        engines,
+        drainRequests: waitForRequestDrain,
+      });
+      return c.json({
+        workspaceRoot: result.workspaceRoot,
+        epoch: result.epoch,
+        workspace: computeWorkspaceInfo(),
+      });
+    } catch (err) {
+      return c.json(
+        { error: err instanceof Error ? err.message : 'workspace switch failed' },
+        500,
+      );
     }
   });
 
