@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router';
 import { getToken, setUnauthorizedHandler } from './api';
 import { Toast } from './components/Toast';
 import { consumeSuppressForReset, isSuppressArmed } from './lib/resetSuppress';

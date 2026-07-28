@@ -1,6 +1,6 @@
 import { act, render, screen } from '@testing-library/react';
 import { useEffect, useRef } from 'react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Toast } from './Toast';
 import type { QuestionRow, SseEventMap, SseEventName } from '../types';
