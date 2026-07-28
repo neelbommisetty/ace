@@ -19,33 +19,52 @@ function readPromptFile(relPath: string): string {
   return fs.readFileSync(path.join(PROMPTS_DIR, relPath), 'utf8');
 }
 
-/**
- * Splits a capsule into its `## `-delimited sections (name → body). Heading
- * detection is fence-aware: a `## ` line inside a ``` code block is content
- * (capsules embed markdown/code examples), not a section boundary.
- */
-export function parseCapsuleSections(raw: string): Map<string, string> {
-  const sections = new Map<string, string>();
-  let current: string | null = null;
-  let body: string[] = [];
-  let inFence = false;
+/** One `## `-delimited slice of a markdown document (fence-aware scan). */
+export interface MarkdownSection {
+  /** Trimmed heading text; null for the slice before the first heading. */
+  heading: string | null;
+  /** The verbatim `## …` line; null for the pre-heading slice. */
+  headingLine: string | null;
+  /** Verbatim body lines — no trimming, no joining. */
+  body: string[];
+}
 
-  const flush = () => {
-    if (current !== null) sections.set(current, body.join('\n').trim());
-  };
+/**
+ * Splits markdown into `## `-delimited slices. Heading detection is
+ * fence-aware: a `## ` line inside a ``` code block is content (capsules and
+ * generated prompts embed markdown/code examples), not a section boundary.
+ * Lossless: re-joining every slice's headingLine + body with '\n'
+ * reproduces the input exactly — spoilers.ts's maskPromptText depends on
+ * that to withhold sections without disturbing the rest.
+ */
+export function splitMarkdownSections(raw: string): MarkdownSection[] {
+  const sections: MarkdownSection[] = [];
+  let current: MarkdownSection = { heading: null, headingLine: null, body: [] };
+  let inFence = false;
 
   for (const line of raw.split('\n')) {
     if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
     const heading = !inFence && /^## (.+)$/.exec(line);
     if (heading) {
-      flush();
-      current = heading[1].trim();
-      body = [];
-    } else if (current !== null) {
-      body.push(line);
+      sections.push(current);
+      current = { heading: heading[1].trim(), headingLine: line, body: [] };
+    } else {
+      current.body.push(line);
     }
   }
-  flush();
+  sections.push(current);
+  return sections;
+}
+
+/**
+ * Splits a capsule into its `## `-delimited sections (name → body) via the
+ * fence-aware scan above; content before the first heading is dropped.
+ */
+export function parseCapsuleSections(raw: string): Map<string, string> {
+  const sections = new Map<string, string>();
+  for (const { heading, body } of splitMarkdownSections(raw)) {
+    if (heading !== null) sections.set(heading, body.join('\n').trim());
+  }
   return sections;
 }
 

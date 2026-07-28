@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { VerifyResult } from './gen-verify.js';
 import {
+  buildAuditUserMessage,
+  buildRepairUserMessage,
   findDisallowedImports,
   generateVerifiedQuestion,
   GenerationVerifyError,
@@ -8,6 +10,7 @@ import {
   type GeneratedQuestion,
   type GenerationPhase,
 } from './gen-pipeline.js';
+import { maskPromptText, WITHHELD_MARKER } from './spoilers.js';
 
 const STAGE1: GeneratedQuestion = {
   title: 'Autosave Queue',
@@ -162,6 +165,15 @@ describe('generateVerifiedQuestion', () => {
     expect((err as GenerationVerifyError).failureReport).toBe(RED.failureReport);
     expect((err as GenerationVerifyError).lastResult.title).toBe(STAGE1.title);
     expect(verify).toHaveBeenCalledTimes(3);
+    // Known residual, deliberately not widened (NEE-265): the message embeds
+    // the failure report's FIRST LINE only — a test name on the
+    // buildFailureReport path, possibly a compiler frame on the stderr-tail
+    // paths — and reaches the browser via generation-error/job.errorMessage.
+    // Pinned so any change to what it embeds is a decision, not drift; the
+    // AI-activity-log recorder must never source ai_steps text from it.
+    expect((err as GenerationVerifyError).message).toBe(
+      'generated tests could not be verified after 3 attempts — ✕ autosaver › saves',
+    );
   });
 
   it('rejects disallowed test imports before spending a vitest run', async () => {
@@ -392,6 +404,60 @@ Design read-state sync for a notifications inbox at 5M DAU.
 Ambiguity resolved into invariants.`);
     expect(auditCall.user.match(/^## Problem Statement$/gm)).toHaveLength(1);
     expect(auditCall.user).not.toContain('## Signature');
+  });
+});
+
+describe('masked prompt construction (NEE-265)', () => {
+  it('buildAuditUserMessage returns the full prompt plus a constructed spoiler-free twin', () => {
+    const built = buildAuditUserMessage(PARAMS, STAGE1, false);
+    // The model-bound prompt still carries the spoilers…
+    expect(built.prompt).toContain('return {} as never');
+    expect(built.prompt).toContain('Concurrency realities');
+    // …while the masked twin withholds them but keeps the wire-safe parts.
+    expect(built.maskedPrompt).not.toContain('return {} as never');
+    expect(built.maskedPrompt).not.toContain('Concurrency realities');
+    expect(built.maskedPrompt).toContain(`## Reference Solution\n\n${WITHHELD_MARKER}`);
+    expect(built.maskedPrompt).toContain(`## Interviewer Packet\n\n${WITHHELD_MARKER}`);
+    expect(built.maskedPrompt).toContain(STAGE1.description!);
+    expect(built.maskedPrompt).toContain(STAGE1.testCode!);
+  });
+
+  it('buildAuditUserMessage (design) masks only the interviewer packet — no code sections exist', () => {
+    const built = buildAuditUserMessage(
+      { ...PARAMS, category: 'design-fe' },
+      { ...STAGE1, signature: null, testCode: null, referenceSolution: null },
+      true,
+    );
+    expect(built.maskedPrompt).not.toContain('## Reference Solution');
+    expect(built.maskedPrompt).not.toContain('Concurrency realities');
+    expect(built.maskedPrompt).toContain(`## Interviewer Packet\n\n${WITHHELD_MARKER}`);
+  });
+
+  it('buildRepairUserMessage masks the json fence values and the failure report', () => {
+    const built = buildRepairUserMessage(STAGE1, RED.failureReport!);
+    expect(built.prompt).toContain('return {} as never');
+    expect(built.prompt).toContain('expected 2 to be 1');
+    expect(built.maskedPrompt).not.toContain('return {} as never');
+    expect(built.maskedPrompt).not.toContain('Concurrency realities');
+    expect(built.maskedPrompt).not.toContain('expected 2 to be 1');
+    // The fence survives as parseable JSON with spoiler values withheld and
+    // wire-safe values intact.
+    expect(built.maskedPrompt).toContain(`"referenceSolution": "${WITHHELD_MARKER}"`);
+    expect(built.maskedPrompt).toContain(`"title": ${JSON.stringify(STAGE1.title)}`);
+    expect(built.maskedPrompt).toContain(`## Verification Failure Report\n\n${WITHHELD_MARKER}`);
+    expect(built.maskedPrompt).toContain('The problem statement is the source of truth');
+  });
+
+  it('maskPromptText (the second line of defence) also withholds the fenced spoilers', () => {
+    // Structural agreement between construction and parsing: a caller who
+    // forgets the constructed maskedPrompt and runs the parser instead still
+    // never wires the fenced spoiler bodies.
+    const audit = maskPromptText(buildAuditUserMessage(PARAMS, STAGE1, false).prompt);
+    expect(audit).not.toContain('return {} as never');
+    const repair = maskPromptText(buildRepairUserMessage(STAGE1, RED.failureReport!).prompt);
+    expect(repair).not.toContain('return {} as never');
+    expect(repair).not.toContain('Concurrency realities');
+    expect(repair).not.toContain('expected 2 to be 1');
   });
 });
 

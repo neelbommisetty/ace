@@ -355,6 +355,34 @@ describe('generation-job result redaction', () => {
       'SECRET_REFERENCE',
     );
   });
+
+  it('nulls rawText on both job routes — failure reports and raw model output are answer key (NEE-265)', async () => {
+    const job = session.db.createGenerationJob({
+      category: 'js-ts',
+      difficulty: 'easy',
+      topic: 'raw leak',
+    });
+    session.db.patchGenerationJob(job.id, {
+      status: 'error',
+      errorMessage: 'generated tests could not be verified after 3 attempts — ✕ suite › test',
+      rawText: '✕ suite › test\nSECRET_FAILURE_DETAIL: expected the reference output',
+    });
+    const app = buildApp();
+
+    const listRes = await request(app, `http://localhost/api/generation/jobs?t=${TOKEN}`);
+    const listBody = (await listRes.json()) as { jobs: GenerationJobRow[] };
+    expect(listBody.jobs[0].rawText).toBeNull();
+    expect(JSON.stringify(listBody)).not.toContain('SECRET_FAILURE_DETAIL');
+
+    const oneRes = await request(app, `http://localhost/api/generation/jobs/${job.id}?t=${TOKEN}`);
+    const oneBody = (await oneRes.json()) as { job: GenerationJobRow };
+    expect(oneBody.job.rawText).toBeNull();
+    expect(JSON.stringify(oneBody)).not.toContain('SECRET_FAILURE_DETAIL');
+
+    // The db row keeps it — retry's scaffold-only resume and salvage
+    // debugging depend on the un-redacted row.
+    expect(session.db.getGenerationJob(job.id)!.rawText).toContain('SECRET_FAILURE_DETAIL');
+  });
 });
 
 describe('GET /api/generation/jobs/:id', () => {

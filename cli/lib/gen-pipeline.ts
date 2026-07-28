@@ -10,6 +10,7 @@ import {
 } from './llm.js';
 import { buildQuestionSection, buildSystemPrompt } from './prompt-builder.js';
 import { renderSolutionStub } from './scaffold.js';
+import { maskSpoilerValues, WITHHELD_MARKER } from './spoilers.js';
 
 // Canonical generated-question shape — the single source of truth for both
 // the server engine and the CLI command (ends the duplicated-schema
@@ -152,47 +153,85 @@ export interface GeneratedVerifiedQuestion {
   edgeCases: EdgeAuditResult['edgeCases'] | null;
 }
 
-function buildAuditUserMessage(
+/**
+ * A prompt user message plus its spoiler-free twin, built from the SAME
+ * tagged section array so the masked variant is constructed, never parsed
+ * (spoilers.ts's maskPromptText is the second line of defence for a caller
+ * who forgets, not the primary mechanism). NEE-268's activity log records
+ * maskedPrompt.
+ */
+export interface BuiltPrompt {
+  prompt: string;
+  maskedPrompt: string;
+}
+
+/** A prompt section: full text for the model, optional masked stand-in. */
+interface TaggedSection {
+  text: string;
+  masked?: string;
+}
+
+function renderSections(sections: TaggedSection[]): BuiltPrompt {
+  return {
+    prompt: sections.map((s) => s.text).join('\n\n'),
+    maskedPrompt: sections.map((s) => s.masked ?? s.text).join('\n\n'),
+  };
+}
+
+/** Exported for tests (masked-variant assertions), not for callers. */
+export function buildAuditUserMessage(
   params: GenerateParams,
   question: GeneratedQuestion,
   design: boolean,
-): string {
-  const sections = [
-    `Audit this freshly generated ${params.difficulty} ${params.category} interview question.`,
-    buildQuestionSection(question.description ?? ''),
+): BuiltPrompt {
+  const sections: TaggedSection[] = [
+    {
+      text: `Audit this freshly generated ${params.difficulty} ${params.category} interview question.`,
+    },
+    { text: buildQuestionSection(question.description ?? '') },
   ];
   if (!design) {
     // No sibling `## Signature` section: the description's own `## Signature`
     // already carries it, and repeating it doubled the heading (NEE-275).
     sections.push(
-      `## Reference Solution\n\n\`\`\`\n${question.referenceSolution ?? ''}\n\`\`\``,
-      `## Test File\n\n\`\`\`\n${question.testCode ?? ''}\n\`\`\``,
+      {
+        text: `## Reference Solution\n\n\`\`\`\n${question.referenceSolution ?? ''}\n\`\`\``,
+        masked: `## Reference Solution\n\n${WITHHELD_MARKER}`,
+      },
+      { text: `## Test File\n\n\`\`\`\n${question.testCode ?? ''}\n\`\`\`` },
     );
   }
-  sections.push(`## Interviewer Packet\n\n${question.interviewerPacket ?? '(none provided)'}`);
-  return sections.join('\n\n');
+  sections.push({
+    text: `## Interviewer Packet\n\n${question.interviewerPacket ?? '(none provided)'}`,
+    masked: `## Interviewer Packet\n\n${WITHHELD_MARKER}`,
+  });
+  return renderSections(sections);
 }
 
-function buildRepairUserMessage(question: GeneratedQuestion, failureReport: string): string {
-  return `Your previously generated question failed verification. Repair it.
-
-## Previous Output
-
-\`\`\`json
-${JSON.stringify(question, null, 2)}
-\`\`\`
-
-## Verification Failure Report
-
-\`\`\`
-${failureReport}
-\`\`\`
-
-The problem statement is the source of truth — change it only if the report
+/** Exported for tests (masked-variant assertions), not for callers. */
+export function buildRepairUserMessage(
+  question: GeneratedQuestion,
+  failureReport: string,
+): BuiltPrompt {
+  return renderSections([
+    { text: 'Your previously generated question failed verification. Repair it.' },
+    {
+      text: `## Previous Output\n\n\`\`\`json\n${JSON.stringify(question, null, 2)}\n\`\`\``,
+      masked: `## Previous Output\n\n\`\`\`json\n${JSON.stringify(maskSpoilerValues(question), null, 2)}\n\`\`\``,
+    },
+    {
+      // The report can carry reference-solution fragments or compiler frames.
+      text: `## Verification Failure Report\n\n\`\`\`\n${failureReport}\n\`\`\``,
+      masked: `## Verification Failure Report\n\n${WITHHELD_MARKER}`,
+    },
+    {
+      text: `The problem statement is the source of truth — change it only if the report
 proves it self-contradictory. Fix the minimum needed so the tests pass
 against the reference solution and still fail against the starter stub.
 Keep "title" and "slug" exactly as they were. Return the complete JSON
-object with ALL fields (not only the ones you changed).`;
+object with ALL fields (not only the ones you changed).`,
+    },
+  ]);
 }
 
 /** Merges the audit's non-null changed artifacts over the stage-1 result. */
@@ -298,7 +337,7 @@ export async function generateVerifiedQuestion(
   onProgress('auditing', 1);
   const auditMessages: LLMMessage[] = [
     { role: 'system', content: buildSystemPrompt('edge-audit', params.category) },
-    { role: 'user', content: buildAuditUserMessage(params, question, design) },
+    { role: 'user', content: buildAuditUserMessage(params, question, design).prompt },
   ];
   const audit = await callStream(auditMessages, EdgeAuditSchema, 'edge-audit');
   question = mergeAudit(question, audit);
@@ -356,7 +395,7 @@ export async function generateVerifiedQuestion(
     }
 
     onProgress('repairing', attempt + 1);
-    const repaired = await callGenerate(buildRepairUserMessage(question, failureReport));
+    const repaired = await callGenerate(buildRepairUserMessage(question, failureReport).prompt);
     // A repair must never drift the question's identity.
     question = { ...repaired, title: question.title, slug: question.slug };
     onStageResult(question);

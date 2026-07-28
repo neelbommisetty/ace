@@ -16,6 +16,7 @@ import {
 import type { VerifyFn } from '../lib/gen-verify.js';
 import { chatObjectStream, type LLMProvider } from '../lib/llm.js';
 import { formatReferenceSolutionMd, scaffoldQuestionAt } from '../lib/scaffold.js';
+import { splitSpoilers } from '../lib/spoilers.js';
 import { resolveProvider as resolveProviderFromSettings } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, Difficulty, GenerationJobRow } from './types.js';
@@ -67,26 +68,22 @@ export interface GenerationLlm {
 }
 
 /**
- * Strips the hidden interviewer artifacts (reference solution, interviewer
- * packet — and the always-discarded solutionCode) from a job row's persisted
- * `result` before the row leaves the server. The review-gated debrief
- * endpoint is the ONLY door to that content; without this, the job-list
- * routes and the 'generation-started' SSE event would hand the answer key to
- * the exact user the gate exists for. The un-redacted row stays in the db —
- * retry's scaffold-only resume needs the full result.
+ * Strips the hidden interviewer artifacts (SPOILER_KEYS, via splitSpoilers
+ * so this list can never drift from the chokepoint's) from a job row's
+ * persisted `result` before the row leaves the server. The review-gated
+ * debrief endpoint is the ONLY door to that content; without this, the
+ * job-list routes and the 'generation-started' SSE event would hand the
+ * answer key to the exact user the gate exists for. `rawText` is nulled
+ * outright (NEE-265): it carries the vitest failure report or the raw
+ * unparsed model output — both answer key. The un-redacted row stays in the
+ * db — retry's scaffold-only resume and salvage debugging need it.
  */
 export function redactGenerationJob(job: GenerationJobRow): GenerationJobRow {
-  if (job.result == null) return job;
-  const { referenceSolution, interviewerPacket, solutionCode, ...visible } = job.result as {
-    referenceSolution?: unknown;
-    interviewerPacket?: unknown;
-    solutionCode?: unknown;
-    [key: string]: unknown;
+  return {
+    ...job,
+    result: job.result == null ? job.result : splitSpoilers(job.result).safe,
+    rawText: null,
   };
-  void referenceSolution;
-  void interviewerPacket;
-  void solutionCode;
-  return { ...job, result: visible };
 }
 
 export interface GenerationEngine {
