@@ -30,16 +30,30 @@ self.MonacoEnvironment = {
   },
 };
 
-// Solutions import from test-only or workspace-level deps monaco can't see;
-// semantic validation would be all noise. Syntax errors are still shown.
+// Semantic validation is the room's linter: type errors, undefined names,
+// wrong argument counts. Solutions import from test-only or workspace-level
+// deps monaco can't see (./solution, vitest, react), so every diagnostic
+// that amounts to "module/typings not found" is suppressed — the unresolved
+// import types as `any` and the rest of the file still checks cleanly.
 // (monaco 0.55 moved languages.typescript to a top-level namespace.)
+const MODULE_RESOLUTION_NOISE = [
+  2307, // Cannot find module '...' or its corresponding type declarations
+  2792, // Cannot find module — "did you mean to set moduleResolution?" variant
+  7016, // Could not find a declaration file for module '...'
+  2875, // This JSX tag requires the module path 'react/jsx-runtime' to exist
+  7026, // JSX element implicitly has type 'any' (no React types loaded)
+  2580, // Cannot find name 'require'/'process' — "install @types/node"
+  2591, // Cannot find name '...' — "install @types/node" variant
+];
 monaco.typescript.typescriptDefaults.setDiagnosticsOptions({
-  noSemanticValidation: true,
+  noSemanticValidation: false,
   noSyntaxValidation: false,
+  diagnosticCodesToIgnore: MODULE_RESOLUTION_NOISE,
 });
 monaco.typescript.javascriptDefaults.setDiagnosticsOptions({
-  noSemanticValidation: true,
+  noSemanticValidation: false,
   noSyntaxValidation: false,
+  diagnosticCodesToIgnore: MODULE_RESOLUTION_NOISE,
 });
 monaco.typescript.typescriptDefaults.setCompilerOptions({
   jsx: monaco.typescript.JsxEmit.ReactJSX,
