@@ -9,6 +9,18 @@ import editorWorker from 'monaco-editor/editor/editor.worker.js?worker';
 import tsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker';
 import { EDITOR_THEME } from './editor-options';
 
+// Monarch tokenizers for every language the room can open. Monaco registers
+// these behind a lazy import(), which Vite emits as separate hashed chunks;
+// after a rebuild an already-open tab 404s on the old hash and every token
+// falls back to plain foreground (the "theme stopped rendering" bug). A
+// static import folds each tokenizer into the main bundle instead, so the
+// lazy load resolves in-memory and never touches the network.
+import 'monaco-editor/languages/definitions/typescript/typescript.js';
+import 'monaco-editor/languages/definitions/javascript/javascript.js';
+import 'monaco-editor/languages/definitions/css/css.js';
+import 'monaco-editor/languages/definitions/html/html.js';
+import 'monaco-editor/languages/definitions/markdown/markdown.js';
+
 self.MonacoEnvironment = {
   getWorker(_workerId: string, label: string): Worker {
     if (label === 'typescript' || label === 'javascript' || label === 'ts') {
