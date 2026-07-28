@@ -8,7 +8,7 @@ the **operation mix**, honoring complexity guarantees as if they were API
 SLAs, and keeping internal state coherent under interleaved operations.
 
 A great `leetcode-ds` question is an API contract for a believable product
-need in a charter domain — an LRU/TTL cache in front of an API client, an
+need — an LRU/TTL cache in front of an API client, an
 interval index for a calendar's overlap engine, a trie for a
 mention-autocomplete index, a priority queue for a notification scheduler.
 Operations carry promised complexity as SLAs ("`get`/`set` in O(1)",

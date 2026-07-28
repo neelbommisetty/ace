@@ -21,7 +21,7 @@ write conflict) and how the design evolves when requirements shift.
 
 This category is NOT:
 - Infra deployment detail — no Kubernetes, service meshes, sharding math, or
-  capacity planning of clusters (charter exclusion).
+  capacity planning of clusters.
 - A frontend-only component-architecture question (`design-fe`) or a
   backend-only storage/queue question (`design-be`) with the other half
   hand-waved. If either half could be deleted without weakening the
@@ -219,21 +219,21 @@ Red flags:
 
 ## Example Directions
 
-- **Idempotent checkout with an optimistic cart** (pricing/checkout): design
+- **Idempotent checkout with an optimistic cart**: design
   the full path from "add to cart" through priced review to order
   submission for a storefront where cart edits feel instant but pricing,
   inventory, and payment authorization are server-authoritative. Hard
   because retries crossing layers (double-submit on a paid order), split
   brain between the optimistic cart and server-priced truth, and auth
   expiry mid-checkout all interact on a money path.
-- **Live experimentation platform** (experimentation): flag delivery to
+- **Live experimentation platform**: flag delivery to
   web clients, exposure logging, and the metrics feedback loop that renders
   a live results dashboard. Hard because of partial rollout by construction
   (flag values diverging across clients mid-session), transport degradation
   on the dashboard's live channel, and the consistency question of exposure
   events vs metric aggregates — plus migration when a flag's variants
   change while sessions are live.
-- **Editorial pipeline with preview environments** (content systems):
+- **Editorial pipeline with preview environments**:
   writers draft and co-review articles, stakeholders view shareable
   previews that track the draft live, and publish pushes to a cached public
   site. Hard because of split-brain between draft state and preview

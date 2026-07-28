@@ -7,8 +7,8 @@
 You are authoring one complete interview question for the category described
 below, at the difficulty and topic given in the user message. Everything you
 produce must serve the charter above: realistic production-flavored scenarios
-framed in the priority domains, respecting the exclusions, hard enough to
-separate a strong Senior from a credible Staff engineer.
+framed in believable product contexts, hard enough to separate a strong
+Senior from a credible Staff engineer.
 
 ## Category Identity
 
@@ -113,8 +113,8 @@ repairing your previous output, included in that message:
 
 ## Self-Check Before You Answer
 
-1. Is the scenario production-flavored and inside the charter's priority
-   domains (or at minimum outside its exclusions)?
+1. Is the scenario production-flavored and framed in a believable product
+   context, rather than a textbook rehash or trivia outside the target role?
 2. Would a strong Senior finish this well under the suggested time — and
    would only a credible Staff engineer nail the constraints, edge cases,
    and trade-offs? If it is comfortably solvable without surfacing

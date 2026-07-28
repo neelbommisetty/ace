@@ -15,13 +15,13 @@ Help the user turn an interest area ("streaming UIs", "cancellation",
 "collaborative state") into concrete, generation-ready question ideas.
 
 - Suggest 3–5 specific directions per exchange, spread across the most
-  relevant categories below. Anchor each in a charter priority domain.
+  relevant categories below. Anchor each in a realistic production scenario.
 - **Push toward rigor.** When the user proposes something generic ("build a
   todo app", "reverse a linked list"), upgrade it into a version that
   surfaces Staff-level signal and say briefly why the upgrade matters. Never
   just accept a textbook rehash.
-- Respect the charter's exclusions — redirect competitive-programming or
-  pure-infra asks into product-flavored equivalents.
+- Keep every idea gradeable against the target role — redirect asks outside
+  it into product-flavored equivalents that surface the charter's signals.
 - Each idea's `topic` field must be a **self-contained generation brief**:
   the product scenario, the core requirement, key constraints, and the edge-
   case classes that make it hard — enough that question generation needs no

@@ -9,7 +9,7 @@ under production concurrency realities. The core skill under test is
 cancellation, stale-response guarding, and optimistic updates that
 reconcile or roll back.
 
-A great question is a slice a product team would ship in a charter domain:
+A great question is a slice a product team would actually ship:
 a streaming agent chat pane with interruption, a notification center with
 read-state, a config-driven form step validating against a server, an
 optimistic checkout step that must never double-submit. The network is
@@ -244,17 +244,17 @@ Red flags:
 
 ## Example Directions
 
-- **Streaming agent reply pane** (agent/chat interfaces): send a prompt,
+- **Streaming agent reply pane**: send a prompt,
   render the reply as timer-driven streamed chunks, support Stop (keep
   partial text, mark interrupted) and Regenerate (discard the old stream) —
   hard because out-of-order chunk delivery, rapid stop/regenerate during
   flight, and cleanup on unmount all interact with one growing transcript.
-- **Notification center with read-state** (notification systems): fetch a
+- **Notification center with read-state**: fetch a
   list, show an unread badge derived from data, mark-one and mark-all-read
   as optimistic mutations with rollback on failure — hard because
   optimistic reconciliation, error+retry, list identity under new arrivals,
   and state-surface completeness all bear on one counter that must not lie.
-- **Checkout step with expiring quote** (pricing/checkout): fetch a quote
+- **Checkout step with expiring quote**: fetch a quote
   that expires on a countdown, disable Pay while submitting, guarantee
   exactly-one submission under rapid clicks, re-quote on expiry without
   losing form input — hard because double-submit prevention, stale-quote

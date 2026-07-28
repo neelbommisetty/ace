@@ -216,7 +216,7 @@ Red flags:
 - Happy-path-only designs; failure handling summarized as "show an error
   toast and retry".
 - Redesigning the backend (queue topology, shard keys) instead of
-  negotiating a client contract — scope evasion, and outside the charter.
+  negotiating a client contract — scope evasion, and outside this category.
 - One global store and one consistency model applied to every data type
   without examining whether they differ.
 - Premature generality: plugin systems, micro-frontends, or event buses for
@@ -226,22 +226,22 @@ Red flags:
 
 ## Example Directions
 
-- **Presence-aware commenting layer for a collaborative editor**
-  (collaborative-editors domain): 200 concurrent editors, 300-page
+- **Presence-aware commenting layer for a collaborative editor**: 200
+  concurrent editors, 300-page
   documents, comment anchors that must survive concurrent edits. Hard parts:
   conflicting concurrent edits (anchor remapping vs visible degradation),
   reconnect after offline gaps (replay vs resync cutoff, duplicate-comment
   prevention), and presence fan-out under a slow-device floor (coalescing,
   viewport-scoped subscriptions).
-- **Notification center with cross-tab read-state** (notification-systems
-  domain): badge counts and read-state that converge across five open tabs,
+- **Notification center with cross-tab read-state**: badge counts and
+  read-state that converge across five open tabs,
   one of which was offline for an hour. Hard parts: conflicting concurrent
   edits (read-in-two-tabs races), partial API failure (mark-read writes
   failing while the feed reads fine — does the badge lie?), and cache
   staleness vs memory budget for a 10k-notification history with infinite
   scroll.
-- **Config-driven form engine with versioned schemas mid-flight**
-  (config-driven-workflows domain): a 40-step onboarding flow whose schema
+- **Config-driven form engine with versioned schemas mid-flight**: a
+  40-step onboarding flow whose schema
   can be republished while thousands of users hold in-progress drafts. Hard
   parts: permission/schema changes mid-session (pin the draft's version or
   migrate it live — and what happens to answers a new version invalidates),

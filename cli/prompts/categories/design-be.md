@@ -197,22 +197,22 @@ Red flags:
 
 ## Example Directions
 
-- A **BFF for an agent-chat product** (agent-interface domain): one API
-  for web and mobile fronting a streaming model backend with parallel
+- A **BFF for an agent-chat product**: one API for web and mobile
+  fronting a streaming model backend with parallel
   tool-call fan-out — resumable sessions after disconnect (what is
   replayed, what is deduped), per-message ordering across interleaved tool
   results, partial-failure semantics when one tool call dies mid-stream.
   Hard via out-of-order events × duplicate delivery × partial-failure
   responses.
-- A **versioned webhook platform for a developer portal**
-  (developer-portal domain): the delivery contract third-party consumers
-  build against — signed payloads, at-least-once retries with backoff and
+- A **versioned webhook platform for a developer portal**: the delivery
+  contract third-party consumers build against — signed payloads,
+  at-least-once retries with backoff and
   dead-lettering as *documented product behavior*, a per-endpoint ordering
   stance, schema evolution with consumers pinned to old versions for a
   year. Hard via schema evolution × duplicate delivery × quota boundaries
   (one slow consumer must not starve the rest).
-- A **read-state sync API for a notification system** (notification
-  domain): mark-read/unread converging across three devices, one offline
+- A **read-state sync API for a notification system**: mark-read/unread
+  converging across three devices, one offline
   for a week — server-assigned versions vs client clocks, sync-since
   cursor semantics under concurrent fan-out, batch mark-read with per-item
   outcomes. Hard via clock skew × out-of-order events × pagination under

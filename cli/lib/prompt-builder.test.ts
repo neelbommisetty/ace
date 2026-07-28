@@ -69,6 +69,36 @@ describe('buildSystemPrompt', () => {
   });
 });
 
+describe('charter preference-section canary (NEE-273)', () => {
+  // The charter carries the evaluation contract, not a preference list: the
+  // Priority Domains and Exclusions sections were deleted, and no assembled
+  // prompt may still contain them or dangling references to them.
+  const BANNED = [
+    /## Priority Domains/i,
+    /## Exclusions/i,
+    /priority domains?/i,
+    /charter(?:'s)? exclusions?/i,
+    /charter domains?/i,
+  ];
+
+  it.each(FEATURES.flatMap((f) => CATEGORY_SLUGS.map((c) => [f, c] as const)))(
+    'leaves no domain-list or exclusion-list residue in %s × %s',
+    (feature, category) => {
+      const prompt = buildSystemPrompt(feature, category);
+      for (const pattern of BANNED) {
+        expect(prompt).not.toMatch(pattern);
+      }
+    },
+  );
+
+  it('leaves no domain-list or exclusion-list residue in the brainstorm prompt', () => {
+    const prompt = buildBrainstormPrompt();
+    for (const pattern of BANNED) {
+      expect(prompt).not.toMatch(pattern);
+    }
+  });
+});
+
 describe('buildBrainstormPrompt', () => {
   it('assembles charter + a digest of all 8 capsules, slot-free', () => {
     const prompt = buildBrainstormPrompt();

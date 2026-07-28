@@ -92,7 +92,7 @@ function substituteSlots(
  * Assembles the system prompt for a feature × category pair: the interviewer
  * charter (always first), the feature skeleton, and the category capsule's
  * sections spliced into the skeleton's {{slots}}. Reads from disk on every
- * call — the charter is user-editable and reads are cheap.
+ * call — prompt files are small and reads are cheap.
  */
 export function buildSystemPrompt(feature: PromptFeature, category: CategorySlug): string {
   const config = getCategoryConfig(category);

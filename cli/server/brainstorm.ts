@@ -99,7 +99,7 @@ export function createBrainstormEngine(opts: {
 
   async function runTurn(sessionId: string): Promise<void> {
     try {
-      // Rebuilt per turn: the charter is user-editable and reads are cheap.
+      // Rebuilt per turn: prompt files are small and reads are cheap.
       const systemPrompt = buildBrainstormPrompt() + '\n' + STRUCTURED_OUTPUT_ADDENDUM;
       const provider = resolveProvider();
       if (!provider) throw new Error('no LLM API key configured — add one in Settings');
