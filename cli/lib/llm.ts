@@ -187,7 +187,7 @@ export function requireProvider(preferred?: string): LLMProvider {
   return provider;
 }
 
-/** What a given LLM call is for — selects the model via MODELS below. */
+/** What a given LLM call is for — selects the model via PURPOSE_TIERS + TIER_MODELS below. */
 export type LLMPurpose =
   | 'generate'
   | 'edge-audit'
