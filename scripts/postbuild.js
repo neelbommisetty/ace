@@ -16,9 +16,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // 1. Copy asset directories
 // -------------------------------------------------------------------
 
+// tsup output nests as dist/cli/** + dist/shared/** (NEE-284), so assets go
+// next to the compiled files whose import.meta.dirname-relative reads expect
+// them (`../templates` / `../prompts` from dist/cli/lib and dist/cli/server).
 const ASSET_DIRS = [
-  { src: 'cli/templates', dest: 'dist/templates' },
-  { src: 'cli/prompts', dest: 'dist/prompts' },
+  { src: 'cli/templates', dest: 'dist/cli/templates' },
+  { src: 'cli/prompts', dest: 'dist/cli/prompts' },
 ];
 
 function copyDirSync(src, dest) {
@@ -47,7 +50,7 @@ for (const { src, dest } of ASSET_DIRS) {
 // 2. Prepend shebang to CLI entry point
 // -------------------------------------------------------------------
 
-const ENTRY = path.join(ROOT, 'dist/index.js');
+const ENTRY = path.join(ROOT, 'dist/cli/index.js');
 if (fs.existsSync(ENTRY)) {
   const content = fs.readFileSync(ENTRY, 'utf-8');
   if (!content.startsWith('#!')) {

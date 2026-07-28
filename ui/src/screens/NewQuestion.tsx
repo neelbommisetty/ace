@@ -131,6 +131,7 @@ function DescribeForm({ disabled }: { disabled: boolean }) {
 
     setSubmitting(true);
     setError(null);
+    const startedAt = new Date().toISOString();
     setPendingJob({
       id: `local-${Date.now()}`,
       status: 'running',
@@ -144,7 +145,11 @@ function DescribeForm({ disabled }: { disabled: boolean }) {
       rawText: null,
       errorMessage: null,
       questionId: null,
-      createdAt: new Date().toISOString(),
+      createdAt: startedAt,
+      // Same instant as createdAt — the shared wire type requires the field,
+      // and the elapsed clock's `runStartedAt ?? createdAt` fallback used the
+      // identical anchor for this local placeholder before it existed.
+      runStartedAt: startedAt,
       finishedAt: null,
     });
 

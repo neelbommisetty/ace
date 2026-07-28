@@ -80,6 +80,7 @@ function job(overrides: Partial<GenerationJobRow> = {}): GenerationJobRow {
     errorMessage: null,
     questionId: null,
     createdAt: new Date().toISOString(),
+    runStartedAt: new Date().toISOString(),
     finishedAt: null,
     ...overrides,
   };

@@ -1,12 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getGlobalAceDir, isWorkspaceInitialized } from '../lib/paths.js';
+import type { RecentWorkspace } from '../../shared/wire-types.js';
 
-/** One remembered workspace mount; the registry file keeps them newest-first. */
-export interface RecentWorkspace {
-  root: string;
-  lastOpenedAt: string;
-}
+// The wire shape lives in shared/wire-types.ts (NEE-284); re-exported here so
+// registry consumers keep importing it from this module.
+export type { RecentWorkspace };
 
 const REGISTRY_BASENAME = 'workspaces.json';
 const MAX_RECENTS = 20;

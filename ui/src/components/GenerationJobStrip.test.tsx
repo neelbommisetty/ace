@@ -305,8 +305,11 @@ describe('GenerationJobStrip', () => {
     });
 
     it('falls back to createdAt when runStartedAt is absent (server predates the field)', async () => {
+      // The shared wire type says runStartedAt is always present (migration 6
+      // backfills it), so the pre-NEE-277 degrade case is modeled outside the
+      // typed factory: the component's `?? createdAt` fallback still exists.
       getGenerationJobs.mockResolvedValue({
-        jobs: [job({ createdAt: LONG_AGO(), runStartedAt: null })],
+        jobs: [{ ...job({ createdAt: LONG_AGO() }), runStartedAt: null }],
       });
       renderStrip();
 

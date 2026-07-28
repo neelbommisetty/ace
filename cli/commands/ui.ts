@@ -41,8 +41,10 @@ function parseArgs(args: string[]): UiFlags {
 
 function findUiDir(): string | null {
   const candidates = [
+    // Built layout: dist/cli/commands/ui.js -> dist/cli/ui (the vite outDir).
     path.join(import.meta.dirname, '../ui'),
-    path.join(import.meta.dirname, '../../dist/ui'),
+    // Dev (tsx cli/index.ts): cli/commands/ui.ts -> <repo>/dist/cli/ui.
+    path.join(import.meta.dirname, '../../dist/cli/ui'),
   ];
   for (const dir of candidates) {
     if (fs.existsSync(path.join(dir, 'index.html'))) return dir;

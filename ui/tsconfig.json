@@ -9,7 +9,10 @@
     "isolatedModules": true,
     "noEmit": true,
     "useDefineForClassFields": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    "paths": {
+      "@shared/*": ["../shared/*"]
+    }
   },
-  "include": ["src"]
+  "include": ["src", "../shared"]
 }

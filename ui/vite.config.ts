@@ -7,8 +7,17 @@ const here = import.meta.dirname;
 export default defineConfig({
   root: here,
   plugins: [react()],
+  resolve: {
+    // Stable SPA import path for the shared wire types / category config
+    // (NEE-284). Mirrored in ui/tsconfig.json `paths` and the root
+    // vitest.config.ts so tsc and vitest resolve it identically.
+    alias: { '@shared': path.resolve(here, '../shared') },
+  },
   build: {
-    outDir: path.resolve(here, '../dist/ui'),
+    // tsup nests its output under dist/cli now that shared/ is compiled too
+    // (NEE-284); the SPA lands next to the compiled CLI so the built
+    // `findUiDir` candidate `../ui` keeps resolving.
+    outDir: path.resolve(here, '../dist/cli/ui'),
     emptyOutDir: true,
     chunkSizeWarningLimit: 4000, // monaco is intentionally bundled
   },

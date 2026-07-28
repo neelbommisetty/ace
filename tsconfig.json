@@ -13,6 +13,6 @@
     "isolatedModules": true,
     "jsx": "react-jsx"
   },
-  "include": ["cli/**/*", "questions/**/*"],
+  "include": ["cli/**/*", "shared/**/*", "questions/**/*"],
   "exclude": ["node_modules", "dist"]
 }

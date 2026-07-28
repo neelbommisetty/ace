@@ -1,33 +1,14 @@
-export type CategorySlug =
-  | 'js-ts'
-  | 'web-components'
-  | 'react-apps'
-  | 'leetcode-ds'
-  | 'leetcode-algo'
-  | 'design-fe'
-  | 'design-be'
-  | 'design-full';
+/**
+ * Category config moved to shared/categories.ts (NEE-284) so cli/ and ui/
+ * compile one table; this module re-exports it for existing importers and
+ * keeps the legacy scorecard shapes the SPA never sees.
+ */
 
-export type Difficulty = 'easy' | 'medium' | 'hard';
+export * from '../../shared/categories.js';
+
+import type { CategorySlug, Difficulty } from '../../shared/categories.js';
 
 export type QuestionStatus = 'untouched' | 'in-progress' | 'solved' | 'attempted';
-
-export type QuestionType = 'coding' | 'design';
-
-export type CategoryGroup = 'react' | 'js-ts' | 'leetcode' | 'design';
-
-export interface CategoryConfig {
-  slug: CategorySlug;
-  name: string;
-  shortName: string;
-  hint: string;
-  type: QuestionType;
-  group: CategoryGroup;
-  suggestedTimes: Record<Difficulty, number>;
-  solutionFiles: string[];
-  testFiles: string[];
-  templateDir: string;
-}
 
 export interface Attempt {
   attempt: number;
@@ -54,124 +35,4 @@ export interface QuestionMeta {
   description: string;
   signature?: string;
   suggestedTime: number;
-}
-
-export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
-  'js-ts': {
-    slug: 'js-ts',
-    name: 'JS/TS Puzzles',
-    shortName: 'JS/TS',
-    hint: 'Closures, async patterns, type utilities',
-    type: 'coding',
-    group: 'js-ts',
-    suggestedTimes: { easy: 15, medium: 30, hard: 45 },
-    solutionFiles: ['solution.ts'],
-    testFiles: ['solution.test.ts'],
-    templateDir: 'js-ts',
-  },
-  'web-components': {
-    slug: 'web-components',
-    name: 'React Components',
-    shortName: 'React',
-    hint: 'Props, events, composition, reusable UI',
-    type: 'coding',
-    group: 'react',
-    suggestedTimes: { easy: 20, medium: 35, hard: 50 },
-    solutionFiles: ['Component.tsx'],
-    testFiles: ['Component.test.tsx'],
-    templateDir: 'web-components',
-  },
-  'react-apps': {
-    slug: 'react-apps',
-    name: 'React Web Apps',
-    shortName: 'React',
-    hint: 'Hooks, state, routing, full features',
-    type: 'coding',
-    group: 'react',
-    suggestedTimes: { easy: 25, medium: 45, hard: 60 },
-    solutionFiles: ['App.tsx'],
-    testFiles: ['App.test.tsx'],
-    templateDir: 'react-apps',
-  },
-  'leetcode-ds': {
-    slug: 'leetcode-ds',
-    name: 'LeetCode Data Structures',
-    shortName: 'LC-DS',
-    hint: 'Trees, graphs, heaps, hash maps',
-    type: 'coding',
-    group: 'leetcode',
-    suggestedTimes: { easy: 15, medium: 30, hard: 45 },
-    solutionFiles: ['solution.ts'],
-    testFiles: ['solution.test.ts'],
-    templateDir: 'leetcode-ds',
-  },
-  'leetcode-algo': {
-    slug: 'leetcode-algo',
-    name: 'LeetCode Algorithms',
-    shortName: 'LC-Algo',
-    hint: 'DP, greedy, two pointers, sorting',
-    type: 'coding',
-    group: 'leetcode',
-    suggestedTimes: { easy: 15, medium: 30, hard: 45 },
-    solutionFiles: ['solution.ts'],
-    testFiles: ['solution.test.ts'],
-    templateDir: 'leetcode-algo',
-  },
-  'design-fe': {
-    slug: 'design-fe',
-    name: 'System Design — Frontend',
-    shortName: 'Design-FE',
-    hint: 'Component architecture, state, rendering',
-    type: 'design',
-    group: 'design',
-    suggestedTimes: { easy: 25, medium: 40, hard: 55 },
-    solutionFiles: ['notes.md'],
-    testFiles: [],
-    templateDir: 'design',
-  },
-  'design-be': {
-    slug: 'design-be',
-    name: 'System Design — Backend',
-    shortName: 'Design-BE',
-    hint: 'APIs, databases, caching, queues',
-    type: 'design',
-    group: 'design',
-    suggestedTimes: { easy: 25, medium: 40, hard: 55 },
-    solutionFiles: ['notes.md'],
-    testFiles: [],
-    templateDir: 'design',
-  },
-  'design-full': {
-    slug: 'design-full',
-    name: 'System Design — Full Stack',
-    shortName: 'Design-Full',
-    hint: 'End-to-end systems, trade-offs',
-    type: 'design',
-    group: 'design',
-    suggestedTimes: { easy: 30, medium: 45, hard: 60 },
-    solutionFiles: ['notes.md'],
-    testFiles: [],
-    templateDir: 'design',
-  },
-};
-
-export const CATEGORY_SLUGS = Object.keys(CATEGORIES) as CategorySlug[];
-
-export function getCategoryConfig(slug: CategorySlug): CategoryConfig {
-  return CATEGORIES[slug];
-}
-
-export function getSuggestedTime(slug: CategorySlug, difficulty: Difficulty): number {
-  return CATEGORIES[slug].suggestedTimes[difficulty];
-}
-
-export function isDesignCategory(slug: CategorySlug): boolean {
-  return CATEGORIES[slug].type === 'design';
-}
-
-export function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
 }
