@@ -58,9 +58,11 @@ export interface AiRunFeed {
  * still running, so elapsed labels advance.
  *
  * `filter` must be stable for the life of the caller: `refId` scopes the
- * seed/reseed GETs server-side and drops 'ai-run-started' events for other
- * refIds. Step-level events carry only runId, so foreign ones land in the
- * raced stashes below and simply never get applied.
+ * seed/reseed GETs server-side, and every SSE handler drops events for other
+ * refIds before touching state or the raced stashes (step- and run-level
+ * events repeat their run's refId for exactly this). That keeps the stashes
+ * transient in filtered instances too: everything stashed belongs to a run
+ * this feed will eventually seed, so applyRaced always consumes it.
  */
 export function useAiRunFeed(filter: { refId?: string; limit?: number } = {}): AiRunFeed {
   const { refId, limit } = filter;
@@ -198,12 +200,16 @@ export function useAiRunFeed(filter: { refId?: string; limit?: number } = {}): A
     });
   }
 
+  // Every handler below drops foreign-refId events up front — a filtered
+  // instance must never stash them (nothing would ever consume the stash).
   useSseEvent('ai-run-started', ({ run }) => {
     if (refId != null && run.refId !== refId) return;
     upsertRun({ ...run, steps: [] });
   });
 
-  useSseEvent('ai-step-started', ({ runId, step }) => {
+  useSseEvent('ai-step-started', (evt) => {
+    if (refId != null && evt.refId !== refId) return;
+    const { runId, step } = evt;
     setRuns((prev) => {
       const idx = prev.findIndex((r) => r.id === runId);
       if (idx === -1) {
@@ -224,7 +230,9 @@ export function useAiRunFeed(filter: { refId?: string; limit?: number } = {}): A
     });
   });
 
-  useSseEvent('ai-step-chunk', ({ stepId, ops }) => {
+  useSseEvent('ai-step-chunk', (evt) => {
+    if (refId != null && evt.refId !== refId) return;
+    const { stepId, ops } = evt;
     setLiveText((prev) => {
       const next = new Map(prev);
       const perKey = new Map(next.get(stepId));
@@ -237,11 +245,15 @@ export function useAiRunFeed(filter: { refId?: string; limit?: number } = {}): A
     });
   });
 
-  useSseEvent('ai-step-done', ({ runId, stepId, status, detail, errorMessage, finishedAt }) => {
+  useSseEvent('ai-step-done', (evt) => {
+    if (refId != null && evt.refId !== refId) return;
+    const { runId, stepId, status, detail, errorMessage, finishedAt } = evt;
     patchStep(runId, stepId, { status, detail, errorMessage, finishedAt });
   });
 
-  useSseEvent('ai-run-done', ({ runId, status, errorMessage, finishedAt }) => {
+  useSseEvent('ai-run-done', (evt) => {
+    if (refId != null && evt.refId !== refId) return;
+    const { runId, status, errorMessage, finishedAt } = evt;
     patchRun(runId, { status, errorMessage, finishedAt });
   });
 

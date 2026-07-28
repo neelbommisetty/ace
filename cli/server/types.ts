@@ -367,17 +367,21 @@ export interface SseEventMap {
    * text ops; prompts NEVER ride SSE (multi-KB × every connected tab) —
    * clients fetch the full step on demand. `withheldKeys` arrives on
    * ai-step-started so the `█ withheld █` lines can render while the stream
-   * is still filling.
+   * is still filling. Every step- and run-level event repeats the owning
+   * run's `refId` so refId-filtered feeds (the per-job drawer, NEE-272) can
+   * drop foreign events statelessly instead of accumulating them.
    */
   'ai-run-started': { run: AiRunRow };
-  'ai-step-started': { runId: string; step: AiStepSummary };
+  'ai-step-started': { runId: string; refId: string | null; step: AiStepSummary };
   'ai-step-chunk': {
     runId: string;
+    refId: string | null;
     stepId: string;
     ops: Array<{ key: string; op: 'append' | 'set'; text: string }>;
   };
   'ai-step-done': {
     runId: string;
+    refId: string | null;
     stepId: string;
     status: 'done' | 'error' | 'skipped';
     detail: string | null;
@@ -386,6 +390,7 @@ export interface SseEventMap {
   };
   'ai-run-done': {
     runId: string;
+    refId: string | null;
     status: 'done' | 'error';
     errorMessage: string | null;
     finishedAt: string;

@@ -109,6 +109,9 @@ describe('createAiLog recorder', () => {
     const startedStep = events.find((e) => e.name === 'ai-step-started')!;
     const summary = startedStep.data.step as AiStepSummary;
     expect(startedStep.data.runId).toBe(run.runId);
+    // Step- and run-level events repeat the run's refId — refId-filtered
+    // feeds (the per-job drawer, NEE-272) drop foreign events on it.
+    expect(startedStep.data.refId).toBe('job-1');
     expect(summary.slug).toBe('generate');
     expect(summary.promptWithheld).toBe(false);
     // withheldKeys declared on STARTED: schema keys minus WIRE_SAFE_KEYS.
@@ -128,6 +131,7 @@ describe('createAiLog recorder', () => {
     const doneStep = events.find((e) => e.name === 'ai-step-done')!;
     expect(doneStep.data).toMatchObject({
       runId: run.runId,
+      refId: 'job-1',
       stepId: summary.id,
       status: 'done',
       detail: 'all good',
@@ -137,7 +141,12 @@ describe('createAiLog recorder', () => {
 
     run.done();
     const doneRun = events.find((e) => e.name === 'ai-run-done')!;
-    expect(doneRun.data).toMatchObject({ runId: run.runId, status: 'done', errorMessage: null });
+    expect(doneRun.data).toMatchObject({
+      runId: run.runId,
+      refId: 'job-1',
+      status: 'done',
+      errorMessage: null,
+    });
     expect(db.getAiRun(run.runId)!.status).toBe('done');
   });
 
@@ -177,8 +186,9 @@ describe('createAiLog recorder', () => {
 
     vi.advanceTimersByTime(AI_CHUNK_FLUSH_MS);
     expect(chunkEvents()).toHaveLength(1);
-    // Three partials coalesced into ONE append op.
+    // Three partials coalesced into ONE append op; chunks carry refId too.
     expect(chunkEvents()[0].data.ops).toEqual([{ key: 'title', op: 'append', text: 'Hello wor' }]);
+    expect(chunkEvents()[0].data.refId).toBeNull();
     expect(db.getAiStep(stepId)!.responseText).toBe(
       JSON.stringify({ title: 'Hello wor' }, null, 2),
     );

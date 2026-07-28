@@ -126,16 +126,23 @@ describe('Activity', () => {
 
     // Mock mode resolves in a microtask: the full lifecycle beats the seed.
     emit('ai-run-started', { run: run() });
-    emit('ai-step-started', { runId: 'r1', step: stepSummary() });
+    emit('ai-step-started', { runId: 'r1', refId: 'job-1', step: stepSummary() });
     emit('ai-step-done', {
       runId: 'r1',
+      refId: 'job-1',
       stepId: 's1',
       status: 'done',
       detail: '12/12 passed',
       errorMessage: null,
       finishedAt: T1,
     });
-    emit('ai-run-done', { runId: 'r1', status: 'done', errorMessage: null, finishedAt: T1 });
+    emit('ai-run-done', {
+      runId: 'r1',
+      refId: 'job-1',
+      status: 'done',
+      errorMessage: null,
+      finishedAt: T1,
+    });
 
     await act(async () => {
       resolveSeed({ runs: [] }); // snapshot predates the run entirely
@@ -160,17 +167,25 @@ describe('Activity', () => {
     // and terminal events race ahead of the in-flight seed GET instead.
     emit('ai-step-started', {
       runId: 'r1',
+      refId: 'job-1',
       step: stepSummary({ id: 's2', seq: 2, slug: 'verify', label: 'run tests' }),
     });
     emit('ai-step-done', {
       runId: 'r1',
+      refId: 'job-1',
       stepId: 's2',
       status: 'done',
       detail: '8/8 passed',
       errorMessage: null,
       finishedAt: T1,
     });
-    emit('ai-run-done', { runId: 'r1', status: 'done', errorMessage: null, finishedAt: T1 });
+    emit('ai-run-done', {
+      runId: 'r1',
+      refId: 'job-1',
+      status: 'done',
+      errorMessage: null,
+      finishedAt: T1,
+    });
 
     await act(async () => {
       resolveSeed({
@@ -192,11 +207,13 @@ describe('Activity', () => {
 
     emit('ai-step-chunk', {
       runId: 'r1',
+      refId: 'job-1',
       stepId: 's1',
       ops: [{ key: 'text', op: 'append', text: 'hello ' }],
     });
     emit('ai-step-chunk', {
       runId: 'r1',
+      refId: 'job-1',
       stepId: 's1',
       ops: [{ key: 'text', op: 'append', text: 'world' }],
     });
@@ -265,6 +282,7 @@ describe('Activity', () => {
 
     emit('ai-step-chunk', {
       runId: 'r1',
+      refId: 'job-1',
       stepId: 's1',
       ops: [{ key: 'text', op: 'append', text: 'pre-gap text' }],
     });
@@ -284,6 +302,7 @@ describe('Activity', () => {
     });
     emit('ai-step-done', {
       runId: 'r1',
+      refId: 'job-1',
       stepId: 's1',
       status: 'done',
       detail: null,

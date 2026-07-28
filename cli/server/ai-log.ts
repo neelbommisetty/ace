@@ -178,7 +178,7 @@ export function createAiLog(opts: { db: AceDb; bus: Bus }): AiLog {
         } catch {
           // best-effort
         }
-        bus.emit('ai-run-done', { runId, status, errorMessage, finishedAt });
+        bus.emit('ai-run-done', { runId, refId: spec.refId, status, errorMessage, finishedAt });
         // Retention runs after each terminal run — no timers (see AceDb).
         try {
           db.pruneAiRuns();
@@ -218,7 +218,7 @@ export function createAiLog(opts: { db: AceDb; bus: Bus }): AiLog {
         {
           // Summary shape: never put the multi-KB prompt/response on the wire.
           const { promptText: _prompt, responseText: _response, ...step } = stepRow;
-          bus.emit('ai-step-started', { runId, step });
+          bus.emit('ai-step-started', { runId, refId: spec.refId, step });
         }
 
         const differ = new PartialDiffer();
@@ -280,7 +280,7 @@ export function createAiLog(opts: { db: AceDb; bus: Bus }): AiLog {
               }
             }
             pendingOps = [];
-            if (ops.length > 0) bus.emit('ai-step-chunk', { runId, stepId, ops });
+            if (ops.length > 0) bus.emit('ai-step-chunk', { runId, refId: spec.refId, stepId, ops });
           }
           if (dirty) {
             dirty = false;
@@ -309,7 +309,15 @@ export function createAiLog(opts: { db: AceDb; bus: Bus }): AiLog {
           } catch {
             // best-effort
           }
-          bus.emit('ai-step-done', { runId, stepId, status, detail, errorMessage, finishedAt });
+          bus.emit('ai-step-done', {
+            runId,
+            refId: spec.refId,
+            stepId,
+            status,
+            detail,
+            errorMessage,
+            finishedAt,
+          });
         };
 
         const interrupt = (): void =>

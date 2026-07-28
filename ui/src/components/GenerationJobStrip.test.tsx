@@ -306,6 +306,7 @@ describe('GenerationJobStrip', () => {
       emit('ai-run-started', { run: aiRun({ id: 'r2' }) });
       emit('ai-step-started', {
         runId: 'r2',
+        refId: 'job-1',
         step: aiStep({ id: 's2', runId: 'r2', kind: 'scaffold', slug: 'scaffold', label: 'scaffold files' }),
       });
       // …while runs for other jobs never enter this drawer.
@@ -317,6 +318,80 @@ describe('GenerationJobStrip', () => {
         'ai-run-card-r1',
       ]);
       expect(screen.getByText('scaffold files')).toBeInTheDocument();
+    });
+
+    it('drops other jobs\' step-level events but still applies raced patches for its own run', async () => {
+      // Seed GET held in flight: our own run's terminal events race ahead of
+      // it (the mock-mode microtask shape) while another job streams too.
+      let resolveSeed!: (v: { runs: unknown[] }) => void;
+      getGenerationJobs.mockResolvedValue({ jobs: [job()] });
+      getAiRuns.mockReturnValue(
+        new Promise((res) => {
+          resolveSeed = res;
+        }),
+      );
+      renderStrip();
+      fireEvent.click(await screen.findByRole('button', { name: 'Show step log' }));
+      await waitFor(() => expect(getAiRuns).toHaveBeenCalled());
+
+      const T1 = new Date().toISOString();
+      // Own run r1: step + run go terminal before the seed resolves.
+      emit('ai-step-done', {
+        runId: 'r1',
+        refId: 'job-1',
+        stepId: 's1',
+        status: 'done',
+        detail: '9/9 passed',
+        errorMessage: null,
+        finishedAt: T1,
+      });
+      emit('ai-run-done', {
+        runId: 'r1',
+        refId: 'job-1',
+        status: 'done',
+        errorMessage: null,
+        finishedAt: T1,
+      });
+      // Another job's full lifecycle rides the same shared SSE stream; none
+      // of it may enter (or stick to) this refId-filtered drawer.
+      emit('ai-run-started', { run: aiRun({ id: 'r9', refId: 'job-other' }) });
+      emit('ai-step-started', {
+        runId: 'r9',
+        refId: 'job-other',
+        step: aiStep({ id: 's9', runId: 'r9', label: 'foreign step' }),
+      });
+      emit('ai-step-chunk', {
+        runId: 'r9',
+        refId: 'job-other',
+        stepId: 's9',
+        ops: [{ key: 'text', op: 'append', text: 'foreign text' }],
+      });
+      emit('ai-step-done', {
+        runId: 'r9',
+        refId: 'job-other',
+        stepId: 's9',
+        status: 'done',
+        detail: null,
+        errorMessage: null,
+        finishedAt: T1,
+      });
+      emit('ai-run-done', {
+        runId: 'r9',
+        refId: 'job-other',
+        status: 'done',
+        errorMessage: null,
+        finishedAt: T1,
+      });
+
+      await act(async () => {
+        resolveSeed({ runs: [{ ...aiRun(), steps: [aiStep()] }] });
+      });
+
+      // The raced own-run patches applied on seed; the foreign run never landed.
+      expect(screen.getByTestId('ai-run-card-r1')).toHaveClass('ai-run-card-done');
+      expect(screen.getByText(/9\/9 passed/)).toBeInTheDocument();
+      expect(screen.queryByTestId('ai-run-card-r9')).toBeNull();
+      expect(screen.queryByText('foreign step')).toBeNull();
     });
 
     it('shows the pre-activity-logging message for a job with no runs', async () => {
