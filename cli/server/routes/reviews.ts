@@ -1,6 +1,6 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import type { Hono } from 'hono';
+import { readFileOr } from '../../lib/read-file-or.js';
 import { readBlob } from '../blobs.js';
 import { questionLookup, requireProvider } from '../route-helpers.js';
 import { getReviewGuardError } from '../reviews.js';
@@ -43,24 +43,17 @@ export function registerReviewRoutes(app: Hono, ctx: RouteContext): void {
 
   // Post-review debrief: the hidden interviewer packet + reference solution
   // written at generation time. Server-side gated — 404 until the question
-  // has at least one review, so nothing can render it pre-review. Nulls for
-  // manual/pre-overhaul questions that have no debrief files.
+  // has at least one review, so nothing can render it pre-review. Empty
+  // strings for manual/pre-overhaul questions that have no debrief files.
   app.get('/api/questions/:category/:slug/debrief', lookupQuestion, (c) => {
     const { db } = ctx.requireSession();
     const question = c.get('question');
     if (db.listReviews(question.id).length === 0) {
       return c.json({ error: 'the debrief unlocks after your first review' }, 404);
     }
-    const readOrNull = (name: string): string | null => {
-      try {
-        return fs.readFileSync(path.join(question.dirPath, name), 'utf8');
-      } catch {
-        return null;
-      }
-    };
     return c.json({
-      interviewerPacket: readOrNull('.interviewer.md'),
-      referenceSolution: readOrNull('.reference.md'),
+      interviewerPacket: readFileOr(path.join(question.dirPath, '.interviewer.md')),
+      referenceSolution: readFileOr(path.join(question.dirPath, '.reference.md')),
     });
   });
 }

@@ -142,6 +142,16 @@ export function getCategoryConfig(slug: CategorySlug): CategoryConfig {
   return CATEGORIES[slug];
 }
 
+/** Config for a db-sourced category string, or null when the slug is unknown. */
+export function lookupCategoryConfig(category: string): CategoryConfig | null {
+  return (CATEGORIES as Record<string, CategoryConfig | undefined>)[category] ?? null;
+}
+
+/** Type guard so a validated category can be narrowed once, not asserted repeatedly. */
+export function isCategorySlug(category: string): category is CategorySlug {
+  return category in CATEGORIES;
+}
+
 export function getSuggestedTime(slug: CategorySlug, difficulty: Difficulty): number {
   return CATEGORIES[slug].suggestedTimes[difficulty];
 }

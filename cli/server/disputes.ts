@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { CATEGORIES, type CategoryConfig } from '../lib/categories.js';
+import { lookupCategoryConfig, type CategoryConfig } from '../lib/categories.js';
 import { getImportMetaDirname } from '../lib/import-meta.js';
 import { chatObjectStream, type LLMMessage } from '../lib/llm.js';
+import { readFileOr } from '../lib/read-file-or.js';
 import { buildQuestionSection } from '../lib/prompt-builder.js';
 import { NULL_AI_LOG, type AiLog } from './ai-log.js';
 import { saveBlob } from './blobs.js';
@@ -40,7 +41,7 @@ type DisputeResult = z.infer<typeof DisputeResultSchema>;
 /** Returns an actionable error when the run is not disputable, else null. */
 export function getDisputeGuardError(question: QuestionRow, run: TestRunRow): string | null {
   if (run.questionId !== question.id) return 'test run does not belong to this question';
-  const config = (CATEGORIES as Record<string, CategoryConfig | undefined>)[question.category];
+  const config = lookupCategoryConfig(question.category);
   if (!config) return `unknown category "${question.category}"`;
   if (config.testFiles.length === 0) {
     return 'this question has no test files — there is nothing to dispute';
@@ -135,14 +136,14 @@ export function createDisputeEngine(opts: {
       const provider = resolveProvider();
       if (!provider) throw new Error('no LLM API key configured — add one in Settings');
 
-      const readme = readOr(path.join(question.dirPath, 'README.md'));
+      const readme = readFileOr(path.join(question.dirPath, 'README.md'));
 
       // Prompt assembly: the structured run results stand in for raw vitest
       // output. This is the only dispute prompt builder — the CLI copy that
       // used to shadow it was deleted with the rest of the retired commands.
       let solutionContent = '';
       for (const name of config.solutionFiles) {
-        const content = readOr(path.join(question.dirPath, name));
+        const content = readFileOr(path.join(question.dirPath, name));
         if (content) solutionContent += `\n--- ${name} ---\n${content}\n`;
       }
 
@@ -150,7 +151,7 @@ export function createDisputeEngine(opts: {
       let testAbs = '';
       for (const name of config.testFiles) {
         const abs = path.join(question.dirPath, name);
-        const content = readOr(abs);
+        const content = readFileOr(abs);
         if (content) {
           testContent += content;
           testAbs = abs;
@@ -244,14 +245,6 @@ ${buildFailureOutput(run)}
     }
   }
 
-  function readOr(absPath: string): string {
-    try {
-      return fs.readFileSync(absPath, 'utf8');
-    } catch {
-      return '';
-    }
-  }
-
   return {
     start(question, run, argument) {
       inFlight.assertNotDisposed();
@@ -259,9 +252,7 @@ ${buildFailureOutput(run)}
         question.id,
         'a dispute analysis is already running for this question',
       );
-      const config = (CATEGORIES as Record<string, CategoryConfig | undefined>)[
-        question.category
-      ];
+      const config = lookupCategoryConfig(question.category);
       if (!config) throw new Error(`unknown category "${question.category}"`);
 
       const disputeJobId = uuidv7();

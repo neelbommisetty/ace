@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { CATEGORIES, type CategoryConfig, type CategorySlug } from '../lib/categories.js';
+import { lookupCategoryConfig } from '../lib/categories.js';
 import { getStubContent } from '../lib/scaffold.js';
 import { readBlob, saveBlob } from './blobs.js';
 import { readWorkspaceFile, toWorkspaceRelPath, writeWorkspaceFile } from './files.js';
@@ -83,7 +83,7 @@ export function collectRestorePlan(db: AceDb, workspaceRoot: string): RestorePla
 
   for (const question of db.listQuestions()) {
     if (question.missingAt != null) continue;
-    const config = (CATEGORIES as Record<string, CategoryConfig | undefined>)[question.category];
+    const config = lookupCategoryConfig(question.category);
     if (!config) continue;
 
     for (const name of config.solutionFiles) {
@@ -92,8 +92,7 @@ export function collectRestorePlan(db: AceDb, workspaceRoot: string): RestorePla
 
       const scaffoldSnapshot = db.getFirstSnapshot(question.id, relPath, 'scaffold');
       const blobContent = scaffoldSnapshot ? readBlob(workspaceRoot, scaffoldSnapshot.hash) : null;
-      const baselineContent =
-        blobContent ?? getStubContent(question.category as CategorySlug, name);
+      const baselineContent = blobContent ?? getStubContent(config.slug, name);
 
       const onDisk = readWorkspaceFile(workspaceRoot, relPath);
       plan.push({

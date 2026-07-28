@@ -1,13 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import {
-  CATEGORIES,
-  isDesignCategory,
-  type CategoryConfig,
-  type CategorySlug,
-} from '../lib/categories.js';
+import { isDesignCategory, lookupCategoryConfig, type CategoryConfig } from '../lib/categories.js';
 import { chatObject, chatStream, getModelId, type LLMMessage } from '../lib/llm.js';
+import { readFileOr } from '../lib/read-file-or.js';
 import { buildQuestionSection, buildSystemPrompt } from '../lib/prompt-builder.js';
 import { getStubContent } from '../lib/scaffold.js';
 import { WITHHELD_MARKER } from '../lib/spoilers.js';
@@ -106,14 +102,6 @@ function hasMeaningfulNotes(notes: string): boolean {
     .some((line) => line.length > 0 && !line.startsWith('#') && !line.startsWith('<!--'));
 }
 
-function readFileOr(absPath: string, fallback: string): string {
-  try {
-    return fs.readFileSync(absPath, 'utf8');
-  } catch {
-    return fallback;
-  }
-}
-
 /**
  * Pure stub heuristic (unit-tested). getStubContent renders with EMPTY
  * placeholders while scaffolded files carry the real signature/title, so plain
@@ -139,11 +127,11 @@ export function isEffectivelyStub(content: string, renderedEmptyStub: string): b
 
 /** Returns an actionable error when the question is not reviewable yet, else null. */
 export function getReviewGuardError(question: QuestionRow, db?: AceDb): string | null {
-  const config = (CATEGORIES as Record<string, CategoryConfig | undefined>)[question.category];
+  const config = lookupCategoryConfig(question.category);
   if (!config) return `unknown category "${question.category}"`;
 
-  if (isDesignCategory(question.category as CategorySlug)) {
-    const notes = readFileOr(path.join(question.dirPath, 'notes.md'), '');
+  if (isDesignCategory(config.slug)) {
+    const notes = readFileOr(path.join(question.dirPath, 'notes.md'));
     if (!hasMeaningfulNotes(notes)) {
       return 'notes.md has no design notes yet — write your design before requesting a review';
     }
@@ -160,7 +148,7 @@ export function getReviewGuardError(question: QuestionRow, db?: AceDb): string |
   if (content === null) {
     return `${primary} is missing — write your solution before requesting a review`;
   }
-  const stub = getStubContent(question.category as CategorySlug, primary);
+  const stub = getStubContent(config.slug, primary);
   if (isEffectivelyStub(content, stub)) {
     return `${primary} is still the untouched stub — write your solution before requesting a review`;
   }
@@ -187,12 +175,12 @@ function buildReviewMessages(
   config: CategoryConfig,
   kind: 'code' | 'design',
 ): { messages: LLMMessage[]; maskedPrompt: string } {
-  const systemPrompt = buildSystemPrompt('review', question.category as CategorySlug);
-  const readme = readFileOr(path.join(question.dirPath, 'README.md'), '');
+  const systemPrompt = buildSystemPrompt('review', config.slug);
+  const readme = readFileOr(path.join(question.dirPath, 'README.md'));
 
   let userContent: string;
   if (kind === 'design') {
-    const notes = readFileOr(path.join(question.dirPath, 'notes.md'), '');
+    const notes = readFileOr(path.join(question.dirPath, 'notes.md'));
     const designSubType =
       question.category === 'design-fe'
         ? 'frontend'
@@ -209,12 +197,12 @@ ${notes}`;
   } else {
     let solutionContent = '';
     for (const name of config.solutionFiles) {
-      const content = readFileOr(path.join(question.dirPath, name), '');
+      const content = readFileOr(path.join(question.dirPath, name));
       if (content) solutionContent += `\n--- ${name} ---\n${content}\n`;
     }
     let testContent = '';
     for (const name of config.testFiles) {
-      const content = readFileOr(path.join(question.dirPath, name), '');
+      const content = readFileOr(path.join(question.dirPath, name));
       if (content) testContent += `\n--- ${name} ---\n${content}\n`;
     }
 
@@ -233,7 +221,7 @@ ${testContent}`;
   // masked twin for the activity log is CONSTRUCTED from the same parts
   // (gen-pipeline's BuiltPrompt convention) — packets embed their own `## `
   // headings, which would split maskPromptText's section scan if parsed.
-  const packet = readFileOr(path.join(question.dirPath, '.interviewer.md'), '').trim();
+  const packet = readFileOr(path.join(question.dirPath, '.interviewer.md')).trim();
   const maskedPrompt = packet
     ? `${userContent}\n\n## Interviewer Packet\n\n${WITHHELD_MARKER}`
     : userContent;
@@ -331,7 +319,7 @@ export function createReviewEngine(opts: {
         trigger: 'review',
       });
 
-      const { messages, maskedPrompt } = buildReviewMessages(question, config, kindOf(question));
+      const { messages, maskedPrompt } = buildReviewMessages(question, config, kindOf(config));
 
       // A silently-stalled provider connection would otherwise hold the
       // per-question in-flight slot (and its 409) until server restart.
@@ -491,17 +479,15 @@ export function createReviewEngine(opts: {
     }
   }
 
-  function kindOf(question: QuestionRow): 'code' | 'design' {
-    return isDesignCategory(question.category as CategorySlug) ? 'design' : 'code';
+  function kindOf(config: CategoryConfig): 'code' | 'design' {
+    return isDesignCategory(config.slug) ? 'design' : 'code';
   }
 
   return {
     start(question, attemptId) {
       inFlight.assertNotDisposed();
       inFlight.assertNotRunning(question.id, 'a review is already running for this question');
-      const config = (CATEGORIES as Record<string, CategoryConfig | undefined>)[
-        question.category
-      ];
+      const config = lookupCategoryConfig(question.category);
       if (!config) throw new Error(`unknown category "${question.category}"`);
 
       const job: ReviewJob = { jobId: uuidv7(), flushTimer: null };
@@ -509,7 +495,7 @@ export function createReviewEngine(opts: {
       bus.emit('review-started', {
         jobId: job.jobId,
         questionId: question.id,
-        kind: kindOf(question),
+        kind: kindOf(config),
       });
       void runJob(job, question, attemptId, config);
       return { jobId: job.jobId };

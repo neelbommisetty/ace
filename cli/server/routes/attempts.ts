@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Hono } from 'hono';
-import { CATEGORIES, type CategoryConfig, type CategorySlug } from '../../lib/categories.js';
+import { lookupCategoryConfig } from '../../lib/categories.js';
 import { getStubContent } from '../../lib/scaffold.js';
 import { isAttemptSolved, isQuestionSolved } from '../app.js';
 import { readBlob, saveBlob } from '../blobs.js';
@@ -39,7 +39,7 @@ const TRIGGERS: ReadonlySet<string> = new Set<TestRunTrigger>(['manual', 'save']
 function captureScaffoldBaseline(ctx: RouteContext, question: QuestionRow): void {
   const workspaceRoot = ctx.requireWorkspaceRoot();
   const { db } = ctx.requireSession();
-  const config = (CATEGORIES as Record<string, CategoryConfig | undefined>)[question.category];
+  const config = lookupCategoryConfig(question.category);
   if (!config) return;
   for (const name of [...config.solutionFiles, ...config.testFiles]) {
     const abs = path.join(question.dirPath, name);
@@ -218,7 +218,7 @@ export function registerAttemptRoutes(app: Hono, ctx: RouteContext): void {
 
     const question = db.getQuestionById(attempt.questionId);
     if (!question) return c.json({ error: 'question not found for attempt' }, 404);
-    const config = (CATEGORIES as Record<string, CategoryConfig | undefined>)[question.category];
+    const config = lookupCategoryConfig(question.category);
     if (!config) return c.json({ error: `unknown category "${question.category}"` }, 400);
 
     if (!attempt.endedAt) {
@@ -253,8 +253,7 @@ export function registerAttemptRoutes(app: Hono, ctx: RouteContext): void {
         // drop the exported signature the test file imports.
         const baseline = db.getFirstSnapshot(question.id, rel, 'scaffold');
         const original = baseline ? readBlob(workspaceRoot, baseline.hash) : null;
-        const stubContent =
-          original ?? getStubContent(question.category as CategorySlug, name);
+        const stubContent = original ?? getStubContent(config.slug, name);
         writeWorkspaceFile(workspaceRoot, rel, stubContent);
         // What we just wrote is the new pristine baseline for the guard.
         try {

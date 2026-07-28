@@ -8,17 +8,12 @@
  * old lookup-table fallbacks.
  */
 
-import {
-  CATEGORIES,
-  CATEGORY_SLUGS,
-  type CategoryConfig,
-  type Difficulty,
-} from '@shared/categories';
+import { CATEGORY_SLUGS, lookupCategoryConfig, type Difficulty } from '@shared/categories';
 
 export { CATEGORY_SLUGS };
 
-function configFor(slug: string): CategoryConfig | undefined {
-  return (CATEGORIES as Record<string, CategoryConfig | undefined>)[slug];
+function configFor(slug: string) {
+  return lookupCategoryConfig(slug);
 }
 
 export function categoryShortName(slug: string): string {

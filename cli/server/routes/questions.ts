@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Hono } from 'hono';
-import { CATEGORIES, type CategoryConfig } from '../../lib/categories.js';
+import { lookupCategoryConfig } from '../../lib/categories.js';
 import { toWorkspaceRelPath } from '../files.js';
 import { questionLookup } from '../route-helpers.js';
 import type { QuestionDetail, QuestionFileInfo } from '../types.js';
@@ -24,7 +24,7 @@ export function registerQuestionRoutes(app: Hono, ctx: RouteContext): void {
       // missing README → ''
     }
 
-    const config = (CATEGORIES as Record<string, CategoryConfig | undefined>)[question.category];
+    const config = lookupCategoryConfig(question.category);
     const files: QuestionFileInfo[] = [];
     if (config) {
       for (const name of config.solutionFiles) {
