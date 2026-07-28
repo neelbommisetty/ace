@@ -150,6 +150,10 @@ export interface GenerationJobRow {
   errorMessage: string | null;
   questionId: string | null;
   createdAt: string;
+  // Anchor for the UI's elapsed clock: stamped at creation, re-stamped on
+  // every retry (NEE-277) — created_at stays fixed so strip ordering never
+  // changes. Backfilled to created_at by migration 6, so never null.
+  runStartedAt: string;
   finishedAt: string | null;
 }
 
@@ -529,7 +533,9 @@ export interface AceDb {
   /**
    * Throws when the existing row's status is already 'done' (terminal rows
    * are immutable). Stamps `finishedAt` when the patch's resulting status is
-   * 'done' or 'error'; leaves it null for any other status.
+   * 'done' or 'error'; leaves it null for any other status. `runStartedAt`
+   * is only ever re-stamped when the patch supplies it (retry does; nothing
+   * else should).
    */
   patchGenerationJob(
     id: string,
@@ -541,6 +547,7 @@ export interface AceDb {
       rawText?: string | null;
       errorMessage?: string | null;
       questionId?: string | null;
+      runStartedAt?: string;
     },
   ): GenerationJobRow;
   getGenerationJob(id: string): GenerationJobRow | null;

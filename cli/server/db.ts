@@ -180,6 +180,9 @@ function rowToGenerationJob(r: SqlRow): GenerationJobRow {
     errorMessage: (r.error_message as string | null) ?? null,
     questionId: (r.question_id as string | null) ?? null,
     createdAt: r.created_at as string,
+    // Backfilled to created_at by migration 6, so non-null in practice; the
+    // fallback only guards a row somehow written without it.
+    runStartedAt: (r.run_started_at as string | null) ?? (r.created_at as string),
     finishedAt: (r.finished_at as string | null) ?? null,
   };
 }
@@ -875,13 +878,14 @@ class SqliteAceDb implements AceDb {
     brainstormSessionId?: string | null;
   }): GenerationJobRow {
     const id = uuidv7();
+    const now = nowIso();
     this.db
       .prepare(
         `INSERT INTO generation_jobs
-          (id, status, category, difficulty, topic, brainstorm_session_id, created_at)
-         VALUES (?, 'running', ?, ?, ?, ?, ?)`,
+          (id, status, category, difficulty, topic, brainstorm_session_id, created_at, run_started_at)
+         VALUES (?, 'running', ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, j.category, j.difficulty, j.topic, j.brainstormSessionId ?? null, nowIso());
+      .run(id, j.category, j.difficulty, j.topic, j.brainstormSessionId ?? null, now, now);
     const row = this.getGenerationJob(id);
     if (!row) throw new Error(`createGenerationJob failed for ${j.category}`);
     return row;
@@ -897,6 +901,7 @@ class SqliteAceDb implements AceDb {
       rawText?: string | null;
       errorMessage?: string | null;
       questionId?: string | null;
+      runStartedAt?: string;
     },
   ): GenerationJobRow {
     const existing = this.getGenerationJob(id);
@@ -913,6 +918,10 @@ class SqliteAceDb implements AceDb {
     const errorMessage =
       patch.errorMessage !== undefined ? patch.errorMessage : existing.errorMessage;
     const questionId = patch.questionId !== undefined ? patch.questionId : existing.questionId;
+    // run_started_at is re-stamped only when the patch supplies it (retry
+    // does, so the elapsed clock restarts) — every other patch preserves it.
+    const runStartedAt =
+      patch.runStartedAt !== undefined ? patch.runStartedAt : existing.runStartedAt;
     // finished_at is stamped only when the resulting status is terminal
     // ('done' | 'error'); any other status (including a retry moving an
     // 'error' row back to 'running') leaves it null.
@@ -922,7 +931,7 @@ class SqliteAceDb implements AceDb {
       .prepare(
         `UPDATE generation_jobs SET
            status = ?, title = ?, slug = ?, result_json = ?, raw_text = ?,
-           error_message = ?, question_id = ?, finished_at = ?
+           error_message = ?, question_id = ?, run_started_at = ?, finished_at = ?
          WHERE id = ?`,
       )
       .run(
@@ -933,6 +942,7 @@ class SqliteAceDb implements AceDb {
         rawText,
         errorMessage,
         questionId,
+        runStartedAt,
         finishedAt,
         id,
       );

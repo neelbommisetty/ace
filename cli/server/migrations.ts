@@ -238,4 +238,15 @@ CREATE INDEX idx_ai_runs_started_at ON ai_runs (started_at);
 CREATE INDEX idx_ai_runs_ref ON ai_runs (kind, ref_id);
 CREATE INDEX idx_ai_steps_run_seq ON ai_steps (run_id, seq);
 `,
+  // Migration 6 (NEE-277): per-run start timestamp for generation jobs.
+  // retry() deliberately reuses the job row (the preserved result/slug is
+  // what drives the scaffold-only resume), so the UI's elapsed clock needs
+  // its own anchor — stamped at creation and re-stamped on every retry —
+  // rather than created_at, which must stay fixed so strip ordering
+  // (idx_generation_jobs_created_at) never changes on retry. Backfilled to
+  // created_at so historical jobs keep their current (correct) reading.
+  `
+ALTER TABLE generation_jobs ADD COLUMN run_started_at TEXT;
+UPDATE generation_jobs SET run_started_at = created_at;
+`,
 ];

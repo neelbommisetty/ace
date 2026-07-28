@@ -34,8 +34,12 @@ function isTerminal(job: GenerationJobRow): boolean {
   return job.status === 'done' || job.status === 'error';
 }
 
-function elapsedLabel(createdAt: string): string {
-  const secs = Math.max(0, Math.floor((Date.now() - Date.parse(createdAt)) / 1000));
+// Anchored to the current run (runStartedAt) rather than job creation, so a
+// retried job's clock restarts at 0:00 instead of counting from the original
+// attempt (NEE-277); the caller falls back to createdAt when the server
+// predates the field.
+function elapsedLabel(startedAt: string): string {
+  const secs = Math.max(0, Math.floor((Date.now() - Date.parse(startedAt)) / 1000));
   return formatClock(secs);
 }
 
@@ -243,7 +247,7 @@ function GenerationJobCard({ job, jobPhase }: { job: GenerationJobRow; jobPhase?
             <div className="job-card-title">{label}</div>
             <div className="job-card-meta">
               {categoryShortName(job.category)} · {phaseLabel(jobPhase)}{' '}
-              {elapsedLabel(job.createdAt)}
+              {elapsedLabel(job.runStartedAt ?? job.createdAt)}
             </div>
           </div>
           {caret}

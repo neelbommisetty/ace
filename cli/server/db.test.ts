@@ -55,7 +55,7 @@ describe('openDb', () => {
   it('creates .ace and .ace/tmp and tracks schema_version', () => {
     expect(fs.existsSync(path.join(tempRoot, '.ace', 'ace.db'))).toBe(true);
     expect(fs.statSync(path.join(tempRoot, '.ace', 'tmp')).isDirectory()).toBe(true);
-    expect(db.getMeta('schema_version')).toBe('5');
+    expect(db.getMeta('schema_version')).toBe('6');
   });
 
   it('reopens an existing db without re-running migrations', () => {
@@ -64,7 +64,7 @@ describe('openDb', () => {
     db.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('5');
+    expect(db.getMeta('schema_version')).toBe('6');
     expect(db.getMeta('custom')).toBe('kept');
     expect(db.getQuestionById(q.id)?.slug).toBe('debounce');
   });
@@ -72,7 +72,7 @@ describe('openDb', () => {
 
 describe('migration 3 (generation jobs + brainstorm sessions)', () => {
   it('lands schema_version=3 and creates the new tables + indexes', () => {
-    expect(db.getMeta('schema_version')).toBe('5');
+    expect(db.getMeta('schema_version')).toBe('6');
 
     const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
     try {
@@ -137,9 +137,10 @@ describe('migration 3 (generation jobs + brainstorm sessions)', () => {
 
     db = openDb(tempRoot);
     // openDb runs every migration after the seeded version, so this now also
-    // picks up migration 4 (NEE-178 backfill) and migration 5 (NEE-266 AI
-    // activity log) on top of migration 3.
-    expect(db.getMeta('schema_version')).toBe('5');
+    // picks up migration 4 (NEE-178 backfill), migration 5 (NEE-266 AI
+    // activity log) and migration 6 (NEE-277 run_started_at) on top of
+    // migration 3.
+    expect(db.getMeta('schema_version')).toBe('6');
     expect(db.getQuestionById('seed-q1')?.slug).toBe('debounce');
 
     const raw = new DatabaseSync(dbPath);
@@ -230,7 +231,7 @@ describe('migration 4 (NEE-178 backfill: close stale solved-question attempts)',
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('5');
+    expect(db.getMeta('schema_version')).toBe('6');
 
     const a1 = db.getAttempt('a1')!;
     expect(a1.endReason).toBe('solved');
@@ -251,7 +252,7 @@ describe('migration 4 (NEE-178 backfill: close stale solved-question attempts)',
 
 describe('migration 5 (NEE-266: ai activity log)', () => {
   it('creates ai_runs/ai_steps and their indexes', () => {
-    expect(db.getMeta('schema_version')).toBe('5');
+    expect(db.getMeta('schema_version')).toBe('6');
 
     const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
     try {
@@ -313,9 +314,41 @@ describe('migration 5 (NEE-266: ai activity log)', () => {
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('5');
+    expect(db.getMeta('schema_version')).toBe('6');
     expect(db.getQuestionById('seed-q1')?.slug).toBe('debounce');
     expect(db.listAiRuns()).toEqual([]);
+  });
+});
+
+describe('migration 6 (NEE-277: generation_jobs.run_started_at)', () => {
+  it('migrates a db pre-seeded at schema_version 5 and backfills run_started_at to created_at', () => {
+    db.close();
+    const dbPath = path.join(tempRoot, '.ace', 'ace.db');
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(`${dbPath}-wal`, { force: true });
+    fs.rmSync(`${dbPath}-shm`, { force: true });
+
+    const seed = new DatabaseSync(dbPath);
+    seed.exec('PRAGMA journal_mode = WAL');
+    for (const m of MIGRATIONS.slice(0, 5)) seed.exec(m);
+    seed.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('schema_version', '5');
+    // A pre-migration job row has no run_started_at column at all.
+    seed
+      .prepare(
+        `INSERT INTO generation_jobs
+          (id, status, category, difficulty, topic, error_message, created_at, finished_at)
+         VALUES (?, 'error', 'js-ts', 'medium', 'pre-migration job', 'boom', ?, ?)`,
+      )
+      .run('gj-old', '2026-01-01T00:00:00.000Z', '2026-01-01T00:05:00.000Z');
+    seed.close();
+
+    db = openDb(tempRoot);
+    expect(db.getMeta('schema_version')).toBe('6');
+    const migrated = db.getGenerationJob('gj-old')!;
+    // Backfilled to created_at so historical jobs keep their current reading.
+    expect(migrated.runStartedAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(migrated.createdAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(migrated.status).toBe('error');
   });
 });
 
@@ -896,6 +929,7 @@ describe('generation jobs', () => {
     expect(job.errorMessage).toBeNull();
     expect(job.questionId).toBeNull();
     expect(job.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(job.runStartedAt).toBe(job.createdAt); // first run starts at creation
     expect(job.finishedAt).toBeNull();
 
     expect(db.getGenerationJob(job.id)).toEqual(job);
@@ -945,6 +979,25 @@ describe('generation jobs', () => {
     expect(errored.errorMessage).toBe('LLM call timed out');
     expect(errored.rawText).toBe('not quite json');
     expect(errored.finishedAt).not.toBeNull();
+  });
+
+  it('re-stamps run_started_at only when the patch supplies it, preserving created_at', () => {
+    const job = db.createGenerationJob({ category: 'js-ts', difficulty: 'medium', topic: 'x' });
+
+    // Ordinary patches (stage results, error transitions) leave it alone.
+    const errored = db.patchGenerationJob(job.id, { status: 'error', errorMessage: 'boom' });
+    expect(errored.runStartedAt).toBe(job.runStartedAt);
+
+    // A retry-shaped patch re-stamps it; created_at (strip ordering) and
+    // finished_at (cleared on the way back to 'running') behave as before.
+    const restarted = db.patchGenerationJob(job.id, {
+      status: 'running',
+      errorMessage: null,
+      runStartedAt: '2026-07-27T12:00:00.000Z',
+    });
+    expect(restarted.runStartedAt).toBe('2026-07-27T12:00:00.000Z');
+    expect(restarted.createdAt).toBe(job.createdAt);
+    expect(restarted.finishedAt).toBeNull();
   });
 
   it('throws when patching an already-done job', () => {

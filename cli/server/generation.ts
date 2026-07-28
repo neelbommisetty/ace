@@ -19,6 +19,7 @@ import { chatObjectStream, type LLMProvider } from '../lib/llm.js';
 import { formatReferenceSolutionMd, scaffoldQuestionAt } from '../lib/scaffold.js';
 import { splitSpoilers } from '../lib/spoilers.js';
 import { NULL_AI_LOG, type AiLog } from './ai-log.js';
+import { nowIso } from './ids.js';
 import { resolveProvider as resolveProviderFromSettings } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, Difficulty, GenerationJobRow, QuestionRow } from './types.js';
@@ -447,11 +448,17 @@ Question type: ${config.type}`;
         );
       }
 
-      // Clears the stale error message on the way back to 'running'; every
-      // other field (result, title, slug, ...) is omitted from the patch and
-      // so is preserved as-is — that preserved `result`/`slug` is exactly
-      // what makes the scaffold-only resume path possible below.
-      const resumed = db.patchGenerationJob(job.id, { status: 'running', errorMessage: null });
+      // Clears the stale error message on the way back to 'running' and
+      // re-stamps runStartedAt so the UI's elapsed clock restarts from this
+      // retry, not the original creation (NEE-277); every other field
+      // (result, title, slug, ...) is omitted from the patch and so is
+      // preserved as-is — that preserved `result`/`slug` is exactly what
+      // makes the scaffold-only resume path possible below.
+      const resumed = db.patchGenerationJob(job.id, {
+        status: 'running',
+        errorMessage: null,
+        runStartedAt: nowIso(),
+      });
       inFlight.add(resumed.id);
       bus.emit('generation-started', { job: redactGenerationJob(resumed) });
       void runJob(resumed, { resumeFromResult: resumed.result != null });

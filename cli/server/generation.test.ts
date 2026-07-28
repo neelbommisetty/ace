@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VerifyFn, VerifyResult } from '../lib/gen-verify.js';
 import type { LLMMessage, LLMProvider } from '../lib/llm.js';
@@ -718,6 +719,57 @@ describe('createGenerationEngine', () => {
       const finalJob = db.getGenerationJob(jobId)!;
       expect(finalJob.status).toBe('done');
       expect(finalJob.result).toEqual(VALID_GENERATED_PAYLOAD);
+    });
+
+    it('re-stamps run_started_at (elapsed clock restarts) without moving created_at (NEE-277)', async () => {
+      const { llm } = makeFakeLlm([
+        () => {
+          throw new Error('simulated transient provider failure');
+        },
+        () => VALID_GENERATED_PAYLOAD,
+      ]);
+      const engine = createGenerationEngine({
+        db,
+        bus,
+        workspaceRoot: tempRoot,
+        llm,
+        resolveProvider: FAKE_PROVIDER,
+        verify: FAKE_VERIFY_GREEN,
+      });
+
+      const errored = waitFor('generation-error');
+      const { jobId } = engine.start({
+        category: 'leetcode-ds',
+        difficulty: 'medium',
+        topic: 'two sum variant',
+      });
+      await errored;
+
+      // Backdate the row so the retry's fresh stamp is unambiguously newer
+      // even when this whole test runs within a single millisecond.
+      const PAST = '2026-01-01T00:00:00.000Z';
+      const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
+      raw
+        .prepare('UPDATE generation_jobs SET created_at = ?, run_started_at = ? WHERE id = ?')
+        .run(PAST, PAST, jobId);
+      raw.close();
+
+      const startedEvents: any[] = [];
+      bus.subscribe((name, data) => {
+        if (name === 'generation-started') startedEvents.push(data);
+      });
+
+      const done = waitFor('generation-done');
+      engine.retry(db.getGenerationJob(jobId)!);
+
+      const retried = db.getGenerationJob(jobId)!;
+      // created_at anchors strip ordering and must never move on a retry.
+      expect(retried.createdAt).toBe(PAST);
+      expect(Date.parse(retried.runStartedAt)).toBeGreaterThan(Date.parse(PAST));
+      // The re-emitted 'generation-started' row carries the fresh stamp — the
+      // strip's clock reads it straight off the SSE payload after a retry.
+      expect(startedEvents[0].job.runStartedAt).toBe(retried.runStartedAt);
+      await done;
     });
 
     it('corrects provenance to generated when a question row was already pre-inserted as manual (boot-reconcile race)', async () => {

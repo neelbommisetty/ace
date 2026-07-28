@@ -203,6 +203,10 @@ export interface GenerationJobRow {
   errorMessage: string | null;
   questionId: string | null;
   createdAt: string;
+  // Anchor for the elapsed clock: stamped at creation, re-stamped by the
+  // server on every retry (NEE-277). Optional so a server that predates the
+  // field degrades to the createdAt fallback instead of a NaN clock.
+  runStartedAt?: string | null;
   finishedAt: string | null;
 }
 

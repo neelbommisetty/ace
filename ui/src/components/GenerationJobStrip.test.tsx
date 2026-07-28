@@ -61,6 +61,7 @@ function emit<K extends SseEventName>(name: K, payload: SseEventMap[K]) {
 }
 
 function job(overrides: Partial<GenerationJobRow> = {}): GenerationJobRow {
+  const createdAt = new Date().toISOString();
   return {
     id: 'job-1',
     status: 'running',
@@ -74,7 +75,8 @@ function job(overrides: Partial<GenerationJobRow> = {}): GenerationJobRow {
     rawText: null,
     errorMessage: null,
     questionId: null,
-    createdAt: new Date().toISOString(),
+    createdAt,
+    runStartedAt: createdAt,
     finishedAt: null,
     ...overrides,
   };
@@ -261,6 +263,55 @@ describe('GenerationJobStrip', () => {
 
     const btn = await screen.findByRole('button', { name: 'Retry' });
     expect(within(btn).queryByText(/no new LLM call/)).toBeNull();
+  });
+
+  describe('retry elapsed clock (NEE-277)', () => {
+    // A job that first ran 100 minutes ago: anchored to createdAt the clock
+    // would read 1:40:0x, anchored to a fresh runStartedAt it reads 00:0x.
+    const LONG_AGO = () => new Date(Date.now() - 100 * 60 * 1000).toISOString();
+
+    it('restarts the clock at 0:00 when the retried row arrives with a fresh runStartedAt', async () => {
+      const createdAt = LONG_AGO();
+      getGenerationJobs.mockResolvedValue({
+        jobs: [job({ status: 'error', errorMessage: 'boom', createdAt, runStartedAt: createdAt })],
+      });
+      renderStrip();
+      await screen.findByRole('button', { name: 'Retry' });
+
+      // The server re-emits 'generation-started' with the SAME row, re-stamped.
+      emit('generation-started', {
+        job: job({ status: 'running', createdAt, runStartedAt: new Date().toISOString() }),
+      });
+
+      expect(await screen.findByText(/00:0\d/)).toBeInTheDocument();
+      expect(screen.queryByText(/1:40:/)).toBeNull();
+    });
+
+    it('survives a reload mid-retry: the seed fetch row anchors the clock to runStartedAt', async () => {
+      // Reload after a retry: the server row still has the original createdAt
+      // but a runStartedAt from the retry ~1 minute ago.
+      getGenerationJobs.mockResolvedValue({
+        jobs: [
+          job({
+            createdAt: LONG_AGO(),
+            runStartedAt: new Date(Date.now() - 60 * 1000).toISOString(),
+          }),
+        ],
+      });
+      renderStrip();
+
+      expect(await screen.findByText(/01:0\d/)).toBeInTheDocument();
+      expect(screen.queryByText(/1:40:/)).toBeNull();
+    });
+
+    it('falls back to createdAt when runStartedAt is absent (server predates the field)', async () => {
+      getGenerationJobs.mockResolvedValue({
+        jobs: [job({ createdAt: LONG_AGO(), runStartedAt: null })],
+      });
+      renderStrip();
+
+      expect(await screen.findByText(/1:40:0\d/)).toBeInTheDocument();
+    });
   });
 
   describe('step-log drawer (NEE-272)', () => {
