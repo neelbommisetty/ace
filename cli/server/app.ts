@@ -57,20 +57,24 @@ export interface ImporterApi {
 
 export interface CreateAppOptions {
   bus: Bus;
-  workspaceRoot: string;
   token: string;
   uiDir: string | null;
   version: string;
   importer: ImporterApi;
-  /** Accessor for the current WorkspaceSession — handlers read db/engines from it at entry. */
-  getSession: () => WorkspaceSession;
-  /** True while a workspace reset is in flight. Defaults to always false. */
-  isResetting?: () => boolean;
-  /** Swaps the live session — called by POST /api/workspace/reset after a successful reset. */
-  swapSession?: (session: WorkspaceSession) => void;
-  /** Flips the resetting flag; read by both the mid-reset 503 gate and this route's own guard. */
-  setResetting?: (resetting: boolean) => void;
-  /** Defaults to the real engine factories; tests inject fakes for the reset route too. */
+  /** Accessor for the mounted workspace root — null in picker mode (NEE-164). */
+  getWorkspaceRoot: () => string | null;
+  /**
+   * Accessor for the current WorkspaceSession — handlers read db/engines from
+   * it at entry. Null while no workspace is mounted (picker mode, NEE-164).
+   */
+  getSession: () => WorkspaceSession | null;
+  /** True while a workspace reset or switch is in flight. Defaults to always false. */
+  isSwapping?: () => boolean;
+  /** Atomically swaps the live root+session pair — called by the reset/switch orchestrators. */
+  swapWorkspace?: (root: string | null, session: WorkspaceSession | null) => void;
+  /** Flips the swapping flag; read by the mid-swap 503 gate and both routes' own guards. */
+  setSwapping?: (swapping: boolean) => void;
+  /** Defaults to the real engine factories; tests inject fakes for the reset/switch routes too. */
   engines?: EngineFactories;
 }
 
@@ -145,11 +149,30 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 export function createApp(opts: CreateAppOptions): Hono {
-  const { bus, workspaceRoot, token, uiDir, version, importer, getSession, engines } = opts;
-  const isResetting = opts.isResetting ?? (() => false);
-  const swapSession = opts.swapSession ?? (() => {});
-  const setResetting = opts.setResetting ?? (() => {});
+  const { bus, token, uiDir, version, importer, getWorkspaceRoot, getSession, engines } = opts;
+  const isSwapping = opts.isSwapping ?? (() => false);
+  const swapWorkspace = opts.swapWorkspace ?? (() => {});
+  const setSwapping = opts.setSwapping ?? (() => {});
   const app = new Hono();
+
+  /**
+   * For routes behind the no-workspace 409 gate below, which guarantees a
+   * mounted session — they assert the mount here instead of null-checking at
+   * every call site. Throwing (→ onError 500) is correct for the impossible
+   * case: it means a route was added without thinking about picker mode.
+   */
+  function requireSession(): WorkspaceSession {
+    const session = getSession();
+    if (!session) throw new Error('no workspace mounted');
+    return session;
+  }
+
+  /** Same contract as requireSession, for the root. */
+  function requireWorkspaceRoot(): string {
+    const root = getWorkspaceRoot();
+    if (root == null) throw new Error('no workspace mounted');
+    return root;
+  }
 
   app.onError((err, c) => {
     if (err instanceof ScopeError) {
@@ -179,16 +202,40 @@ export function createApp(opts: CreateAppOptions): Hono {
     await next();
   });
 
-  // While a workspace reset is in flight, block all other /api/* traffic —
-  // except health checks (so the UI can still poll) and the reset route
-  // itself, whose own route-level guard answers a concurrent reset with a
-  // more specific 409 instead of being swallowed here.
+  // Picker mode (NEE-164): while no workspace is mounted, every workspace-
+  // bound route answers 409 so the SPA can tell "server up, nothing mounted"
+  // apart from a dead server. Only what the picker itself needs passes:
+  // health, the SSE stream (its hello carries workspaceRoot: null), the
+  // recents list, and the switch route that performs the mount. Auth (above)
+  // still applies; static/SPA serving is not under /api/* at all.
   app.use('/api/*', async (c, next) => {
-    if (isResetting()) {
+    if (getSession() == null) {
+      const p = c.req.path;
+      const exempt =
+        p === '/api/health' ||
+        (p === '/api/events' && c.req.method === 'GET') ||
+        (p === '/api/workspace/recents' && c.req.method === 'GET') ||
+        (p === '/api/workspace/switch' && c.req.method === 'POST');
+      if (!exempt) return c.json({ error: 'no workspace mounted' }, 409);
+    }
+    await next();
+  });
+
+  // While a workspace reset or switch is in flight, block all other /api/*
+  // traffic — except health checks (so the UI can still poll) and the
+  // reset/switch routes themselves, whose own route-level guards answer a
+  // concurrent request with a more specific 409 instead of being swallowed
+  // here.
+  app.use('/api/*', async (c, next) => {
+    if (isSwapping()) {
       const isHealth = c.req.path === '/api/health';
       const isResetRoute = c.req.path === '/api/workspace/reset' && c.req.method === 'POST';
-      if (!isHealth && !isResetRoute) {
-        return c.json({ error: 'workspace reset in progress — retry in a moment' }, 503);
+      const isSwitchRoute = c.req.path === '/api/workspace/switch' && c.req.method === 'POST';
+      if (!isHealth && !isResetRoute && !isSwitchRoute) {
+        return c.json(
+          { error: 'a workspace reset or switch is in progress — retry in a moment' },
+          503,
+        );
       }
     }
     await next();
@@ -197,18 +244,20 @@ export function createApp(opts: CreateAppOptions): Hono {
   // Tracks requests that passed the gate above and are actively running
   // handler code against the *current* session (db/engines) — everything
   // except the long-lived SSE stream (never expected to drain), the health
-  // check, and the reset route's own request (which would otherwise wait on
-  // itself). This is what lets performWorkspaceReset's beforeDbClose hook
-  // wait out a request that was already mid-flight (e.g. suspended in
-  // `await c.req.json()`) when `resetting` flipped to true, instead of that
-  // request resuming against a session whose db/watcher have already been
-  // torn down. See closeWorkspaceSession's `beforeDbClose` doc comment.
+  // check, and the reset/switch routes' own requests (which would otherwise
+  // wait on themselves). This is what lets the reset/switch orchestrators'
+  // beforeDbClose hook wait out a request that was already mid-flight (e.g.
+  // suspended in `await c.req.json()`) when `swapping` flipped to true,
+  // instead of that request resuming against a session whose db/watcher have
+  // already been torn down. See closeWorkspaceSession's `beforeDbClose` doc
+  // comment.
   let inFlightRequests = 0;
   app.use('/api/*', async (c, next) => {
     const isHealth = c.req.path === '/api/health';
     const isSSE = c.req.path === '/api/events';
     const isResetRoute = c.req.path === '/api/workspace/reset' && c.req.method === 'POST';
-    if (isHealth || isSSE || isResetRoute) {
+    const isSwitchRoute = c.req.path === '/api/workspace/switch' && c.req.method === 'POST';
+    if (isHealth || isSSE || isResetRoute || isSwitchRoute) {
       await next();
       return;
     }
@@ -221,13 +270,13 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   /**
-   * Waits for requests already past the gate above to finish, so
-   * performWorkspaceReset can be sure nothing still holds a reference to the
-   * about-to-be-closed session's db. Polls rather than tracking individual
+   * Waits for requests already past the gate above to finish, so the
+   * reset/switch orchestrators can be sure nothing still holds a reference to
+   * the about-to-be-closed session's db. Polls rather than tracking individual
    * promises — simplest correct option for what's expected to be 0 or 1
    * stragglers — and gives up after `timeoutMs` so a wedged handler can never
-   * hang a reset forever (best-effort, matching the rest of this file's
-   * reset-failure recovery posture).
+   * hang a reset/switch forever (best-effort, matching the rest of this
+   * file's failure-recovery posture).
    */
   async function waitForRequestDrain(timeoutMs = 5000): Promise<void> {
     const start = Date.now();
@@ -255,9 +304,10 @@ export function createApp(opts: CreateAppOptions): Hono {
 
   app.get('/api/health', (c) => c.json({ ok: true, version }));
 
-  /** Shared by GET /api/workspace and the reset route's 200 response. */
+  /** Shared by GET /api/workspace and the reset/switch routes' 200 responses. */
   function computeWorkspaceInfo(): WorkspaceInfo {
-    const { db, skippedDirs } = getSession();
+    const workspaceRoot = requireWorkspaceRoot();
+    const { db, skippedDirs } = requireSession();
     const questions = db.listQuestions();
     let attempts = 0;
     let testRuns = 0;
@@ -290,10 +340,11 @@ export function createApp(opts: CreateAppOptions): Hono {
 
   app.get('/api/workspace', (c) => c.json(computeWorkspaceInfo()));
 
-  app.get('/api/questions', (c) => c.json(getSession().db.listQuestions()));
+  app.get('/api/questions', (c) => c.json(requireSession().db.listQuestions()));
 
   app.get('/api/questions/:category/:slug', (c) => {
-    const { db } = getSession();
+    const workspaceRoot = requireWorkspaceRoot();
+    const { db } = requireSession();
     const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
     if (!question) return c.json({ error: 'question not found' }, 404);
 
@@ -341,7 +392,8 @@ export function createApp(opts: CreateAppOptions): Hono {
    * reset compare against / restore from.
    */
   function captureScaffoldBaseline(question: QuestionRow): void {
-    const { db } = getSession();
+    const workspaceRoot = requireWorkspaceRoot();
+    const { db } = requireSession();
     const config = (CATEGORIES as Record<string, CategoryConfig | undefined>)[question.category];
     if (!config) return;
     for (const name of [...config.solutionFiles, ...config.testFiles]) {
@@ -365,7 +417,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   }
 
   app.post('/api/questions/:category/:slug/attempts', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
     if (!question) return c.json({ error: 'question not found' }, 404);
 
@@ -395,14 +447,14 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/attempts/:id', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const attempt = db.getAttempt(c.req.param('id'));
     if (!attempt) return c.json({ error: 'attempt not found' }, 404);
     return c.json({ attempt, events: db.listAttemptEvents(attempt.id) });
   });
 
   app.patch('/api/attempts/:id', async (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const attempt = db.getAttempt(c.req.param('id'));
     if (!attempt) return c.json({ error: 'attempt not found' }, 404);
 
@@ -439,7 +491,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.post('/api/attempts/:id/events', async (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const attempt = db.getAttempt(c.req.param('id'));
     if (!attempt) return c.json({ error: 'attempt not found' }, 404);
 
@@ -471,13 +523,14 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/resume', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const latest = db.getLatestActiveAttempt();
     if (!latest) return c.json({ attempt: null });
     return c.json({ attempt: latest.attempt, question: latest.question });
   });
 
   app.get('/api/file', (c) => {
+    const workspaceRoot = requireWorkspaceRoot();
     const rel = c.req.query('path');
     if (!rel) return c.json({ error: 'path query param is required' }, 400);
     const abs = resolveWorkspacePath(workspaceRoot, rel); // throws ScopeError → 400
@@ -494,7 +547,8 @@ export function createApp(opts: CreateAppOptions): Hono {
     // torn down mid-request (e.g. a reset racing this write) throws on the
     // very first db call just as easily as on a later one.
     try {
-      const { db } = getSession();
+      const workspaceRoot = requireWorkspaceRoot();
+      const { db } = requireSession();
       // relPath shape: questions/<category>/<slug>/<file...>
       const segments = relPath.split('/');
       if (segments.length < 4 || segments[0] !== 'questions') return;
@@ -516,6 +570,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   }
 
   app.put('/api/file', async (c) => {
+    const workspaceRoot = requireWorkspaceRoot();
     const body = await readJsonBody(c);
     if (!body) return c.json({ error: 'invalid JSON body' }, 400);
     const { path: rel, content } = body;
@@ -529,7 +584,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.post('/api/attempts/:id/test-runs', async (c) => {
-    const { db, runner } = getSession();
+    const { db, runner } = requireSession();
     const attempt = db.getAttempt(c.req.param('id'));
     if (!attempt) return c.json({ error: 'attempt not found' }, 404);
 
@@ -548,7 +603,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/test-runs', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const questionId = c.req.query('questionId');
     if (!questionId) return c.json({ error: 'questionId query param is required' }, 400);
     const rawLimit = c.req.query('limit');
@@ -564,17 +619,17 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/import/preview', (c) =>
-    c.json({ items: importer.previewImport(getSession().db, workspaceRoot) }),
+    c.json({ items: importer.previewImport(requireSession().db, requireWorkspaceRoot()) }),
   );
 
-  app.post('/api/import/run', (c) => c.json(importer.runImport(getSession().db, workspaceRoot)));
+  app.post('/api/import/run', (c) => c.json(importer.runImport(requireSession().db, requireWorkspaceRoot())));
 
   // -------------------------------------------------------------------------
   // Reviews
   // -------------------------------------------------------------------------
 
   app.post('/api/questions/:category/:slug/reviews', (c) => {
-    const { db, reviews } = getSession();
+    const { db, reviews } = requireSession();
     const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
     if (!question) return c.json({ error: 'question not found' }, 404);
 
@@ -593,18 +648,18 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/questions/:category/:slug/reviews', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
     if (!question) return c.json({ error: 'question not found' }, 404);
     return c.json(db.listReviews(question.id));
   });
 
   app.get('/api/reviews/:id', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const review = db.getReview(c.req.param('id'));
     if (!review) return c.json({ error: 'review not found' }, 404);
     const snapshotContent = review.snapshotHash
-      ? readBlob(workspaceRoot, review.snapshotHash)
+      ? readBlob(requireWorkspaceRoot(), review.snapshotHash)
       : null;
     return c.json({ ...review, snapshotContent });
   });
@@ -614,7 +669,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   // has at least one review, so nothing can render it pre-review. Nulls for
   // manual/pre-overhaul questions that have no debrief files.
   app.get('/api/questions/:category/:slug/debrief', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
     if (!question) return c.json({ error: 'question not found' }, 404);
     if (db.listReviews(question.id).length === 0) {
@@ -638,7 +693,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   // -------------------------------------------------------------------------
 
   app.post('/api/test-runs/:runId/disputes', async (c) => {
-    const { db, disputes } = getSession();
+    const { db, disputes } = requireSession();
     const run = db.getTestRun(c.req.param('runId'));
     if (!run) return c.json({ error: 'test run not found' }, 404);
     const question = db.getQuestionById(run.questionId);
@@ -668,18 +723,18 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/questions/:category/:slug/disputes', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const question = db.getQuestion(c.req.param('category'), c.req.param('slug'));
     if (!question) return c.json({ error: 'question not found' }, 404);
     return c.json(db.listDisputes(question.id));
   });
 
   app.post('/api/disputes/:id/apply', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const dispute = db.getDispute(c.req.param('id'));
     if (!dispute) return c.json({ error: 'dispute not found' }, 404);
     try {
-      return c.json({ dispute: applyDispute({ db, workspaceRoot, dispute }) });
+      return c.json({ dispute: applyDispute({ db, workspaceRoot: requireWorkspaceRoot(), dispute }) });
     } catch (err) {
       if (err instanceof DisputeApplyError) return c.json({ error: err.message }, err.status);
       throw err;
@@ -694,7 +749,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   const GENERATION_CAP_ERROR = 'three generations are already running — let one finish first';
 
   app.post('/api/generation/jobs', async (c) => {
-    const { db, generation } = getSession();
+    const { db, generation } = requireSession();
     const body = await readJsonBody(c);
     if (!body) return c.json({ error: 'invalid JSON body' }, 400);
 
@@ -739,7 +794,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/generation/jobs', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const rawLimit = c.req.query('limit');
     let limit = 20;
     if (rawLimit !== undefined && rawLimit !== '') {
@@ -755,14 +810,14 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/generation/jobs/:id', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const job = db.getGenerationJob(c.req.param('id'));
     if (!job) return c.json({ error: 'generation job not found' }, 404);
     return c.json({ job: redactGenerationJob(job) });
   });
 
   app.post('/api/generation/jobs/:id/retry', (c) => {
-    const { db, generation } = getSession();
+    const { db, generation } = requireSession();
     const job = db.getGenerationJob(c.req.param('id'));
     if (!job) return c.json({ error: 'generation job not found' }, 404);
     if (job.status !== 'error') {
@@ -794,7 +849,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   // -------------------------------------------------------------------------
 
   app.post('/api/brainstorm/turns', async (c) => {
-    const { db, brainstorm } = getSession();
+    const { db, brainstorm } = requireSession();
     const body = await readJsonBody(c);
     if (!body) return c.json({ error: 'invalid JSON body' }, 400);
 
@@ -829,7 +884,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/brainstorm/sessions', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const rawLimit = c.req.query('limit');
     let limit = 20;
     if (rawLimit !== undefined && rawLimit !== '') {
@@ -849,7 +904,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/brainstorm/sessions/:id', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const session = db.getBrainstormSession(c.req.param('id'));
     if (!session) return c.json({ error: 'brainstorm session not found' }, 404);
     return c.json({ session });
@@ -860,7 +915,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   // -------------------------------------------------------------------------
 
   app.get('/api/ai/runs', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const rawLimit = c.req.query('limit');
     let limit = 30;
     if (rawLimit !== undefined && rawLimit !== '') {
@@ -885,7 +940,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   });
 
   app.get('/api/ai/runs/:id', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const run = db.getAiRun(c.req.param('id'));
     if (!run) return c.json({ error: 'ai run not found' }, 404);
     return c.json({ run, steps: db.listAiSteps(run.id) });
@@ -894,7 +949,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   // The ONLY endpoint that returns promptText/responseText (both already
   // masked at write time — see ai-log.ts); clients fetch it lazily on expand.
   app.get('/api/ai/steps/:id', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const step = db.getAiStep(c.req.param('id'));
     if (!step) return c.json({ error: 'ai step not found' }, 404);
     return c.json({ step });
@@ -905,7 +960,8 @@ export function createApp(opts: CreateAppOptions): Hono {
   // -------------------------------------------------------------------------
 
   app.post('/api/attempts/:id/fresh', async (c) => {
-    const { db } = getSession();
+    const workspaceRoot = requireWorkspaceRoot();
+    const { db } = requireSession();
     const attempt = db.getAttempt(c.req.param('id'));
     if (!attempt) return c.json({ error: 'attempt not found' }, 404);
 
@@ -981,7 +1037,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   // -------------------------------------------------------------------------
 
   app.get('/api/history', (c) => {
-    const { db } = getSession();
+    const { db } = requireSession();
     const q = c.req.query('q');
     const category = c.req.query('category');
 
@@ -1089,7 +1145,35 @@ export function createApp(opts: CreateAppOptions): Hono {
 
   const VALID_RESET_MODES: ReadonlySet<string> = new Set<WorkspaceResetMode>(['progress', 'full']);
 
+  const SWAP_IN_PROGRESS_ERROR = 'a workspace reset or switch is already in progress';
+
+  /**
+   * The five idle-engine preconditions shared by POST /api/workspace/reset
+   * and POST /api/workspace/switch (NEE-164): both tear the session down,
+   * which must never happen under a live test run or a paid LLM stream.
+   * Returns the user-facing refusal, or null when every engine is idle.
+   */
+  function getBusyEngineError(session: WorkspaceSession): string | null {
+    if (session.runner.isBusy()) {
+      return 'a test run is in progress — wait for it to finish and try again';
+    }
+    if (session.reviews.isAnyRunning()) {
+      return 'a review is streaming — wait for it to finish and try again';
+    }
+    if (session.disputes.isAnyRunning()) {
+      return 'a dispute analysis is in progress — wait for it to finish and try again';
+    }
+    if (session.generation.isAnyRunning()) {
+      return 'a generation is in progress — wait for it to finish and try again';
+    }
+    if (session.brainstorm.isAnyRunning()) {
+      return 'a brainstorm turn is in progress — wait for it to finish and try again';
+    }
+    return null;
+  }
+
   app.post('/api/workspace/reset', async (c) => {
+    const workspaceRoot = requireWorkspaceRoot();
     const body = await readJsonBody(c);
     if (!body) return c.json({ error: 'invalid JSON body' }, 400);
 
@@ -1120,51 +1204,24 @@ export function createApp(opts: CreateAppOptions): Hono {
         : crypto.randomUUID();
 
     // Checked at route entry — reachable only because this route is exempt
-    // from the mid-reset 503 gate above (a concurrent reset POST answers
+    // from the mid-swap 503 gate above (a concurrent reset POST answers
     // from here, not the gate).
-    if (isResetting()) {
-      return c.json({ error: 'a workspace reset is already in progress' }, 409);
+    if (isSwapping()) {
+      return c.json({ error: SWAP_IN_PROGRESS_ERROR }, 409);
     }
 
-    const { runner, reviews, disputes, generation, brainstorm } = getSession();
-    if (runner.isBusy()) {
-      return c.json(
-        { error: 'a test run is in progress — wait for it to finish and try again' },
-        409,
-      );
-    }
-    if (reviews.isAnyRunning()) {
-      return c.json(
-        { error: 'a review is streaming — wait for it to finish and try again' },
-        409,
-      );
-    }
-    if (disputes.isAnyRunning()) {
-      return c.json(
-        { error: 'a dispute analysis is in progress — wait for it to finish and try again' },
-        409,
-      );
-    }
-    if (generation.isAnyRunning()) {
-      return c.json(
-        { error: 'a generation is in progress — wait for it to finish and try again' },
-        409,
-      );
-    }
-    if (brainstorm.isAnyRunning()) {
-      return c.json(
-        { error: 'a brainstorm turn is in progress — wait for it to finish and try again' },
-        409,
-      );
-    }
+    const busyError = getBusyEngineError(requireSession());
+    if (busyError) return c.json({ error: busyError }, 409);
 
     try {
       const result = await performWorkspaceReset({
         workspaceRoot,
         bus,
-        getSession,
-        swapSession,
-        setResetting,
+        getSession: requireSession,
+        // A reset rebuilds the session over the SAME root — only the session
+        // half of the pair swaps.
+        swapSession: (session) => swapWorkspace(workspaceRoot, session),
+        setSwapping,
         mode,
         confirm,
         requestId,
@@ -1207,7 +1264,11 @@ export function createApp(opts: CreateAppOptions): Hono {
       try {
         await stream.writeSSE({
           event: 'hello',
-          data: JSON.stringify({ version, workspaceRoot, epoch: getSession().epoch }),
+          data: JSON.stringify({
+            version,
+            workspaceRoot: getWorkspaceRoot(),
+            epoch: getSession()?.epoch ?? null,
+          }),
         });
       } catch {
         stop();

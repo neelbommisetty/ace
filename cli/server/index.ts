@@ -12,7 +12,8 @@ import {
 import { createBus } from './sse.js';
 
 export interface StartAceServerOptions {
-  workspaceRoot: string;
+  /** Null boots in picker mode (NEE-164): no session until a switch mounts one. */
+  workspaceRoot: string | null;
   port: number;
   token: string;
   uiDir: string | null;
@@ -42,49 +43,51 @@ function readPackageVersion(): string {
 }
 
 export async function startAceServer(opts: StartAceServerOptions): Promise<AceServer> {
-  const { workspaceRoot, port, token, uiDir } = opts;
+  const { port, token, uiDir } = opts;
 
   // The bus lives OUTSIDE the session for the process lifetime — a future
-  // reset rebuilds the session but connected EventSource clients (subscribed
-  // to this same bus) survive it and receive the completion event.
+  // reset/switch rebuilds the session but connected EventSource clients
+  // (subscribed to this same bus) survive it and receive the completion event.
   const bus = createBus();
 
-  let session: WorkspaceSession | null = null;
+  // Mutable across the process lifetime: POST /api/workspace/reset and
+  // POST /api/workspace/switch tear down and rebuild the session (the switch
+  // also repoints the root) without restarting the HTTP listener; `swapping`
+  // gates the mid-swap 503 middleware and both routes' own "already in
+  // progress" 409s. Both start null in picker mode.
+  let activeRoot: string | null = opts.workspaceRoot;
+  let activeSession: WorkspaceSession | null = null;
   try {
-    session = createWorkspaceSession({ workspaceRoot, bus });
+    if (activeRoot != null) {
+      activeSession = createWorkspaceSession({ workspaceRoot: activeRoot, bus });
 
-    // Clear stranded runner output files from previous (crashed) sessions.
-    const tmpDir = path.join(workspaceRoot, '.ace', 'tmp');
-    try {
-      for (const name of fs.readdirSync(tmpDir)) {
-        fs.rmSync(path.join(tmpDir, name), { force: true });
+      // Clear stranded runner output files from previous (crashed) sessions.
+      const tmpDir = path.join(activeRoot, '.ace', 'tmp');
+      try {
+        for (const name of fs.readdirSync(tmpDir)) {
+          fs.rmSync(path.join(tmpDir, name), { force: true });
+        }
+      } catch {
+        // tmp dir may not exist yet
       }
-    } catch {
-      // tmp dir may not exist yet
     }
 
-    // Mutable across the process lifetime: POST /api/workspace/reset tears
-    // down and rebuilds `activeSession` (via swapSession) without restarting
-    // the HTTP listener; `resetting` gates the mid-reset 503 middleware and
-    // the reset route's own "already in progress" 409.
-    let activeSession = session;
-    let resetting = false;
-    const getSession = () => activeSession;
+    let swapping = false;
     const app = createApp({
       bus,
-      workspaceRoot,
       token,
       uiDir,
       version: readPackageVersion(),
       importer: { previewImport, runImport },
-      getSession,
-      isResetting: () => resetting,
-      swapSession: (next) => {
-        activeSession = next;
-        session = next; // keep the boot-scope reference in sync for close()/error teardown
+      getWorkspaceRoot: () => activeRoot,
+      getSession: () => activeSession,
+      isSwapping: () => swapping,
+      swapWorkspace: (root, session) => {
+        activeRoot = root;
+        activeSession = session;
       },
-      setResetting: (value) => {
-        resetting = value;
+      setSwapping: (value) => {
+        swapping = value;
       },
     });
 
@@ -100,23 +103,26 @@ export async function startAceServer(opts: StartAceServerOptions): Promise<AceSe
       url: `http://127.0.0.1:${port}`,
       port,
       async close() {
+        const closeHttp = () =>
+          new Promise<void>((resolve, reject) => {
+            server.close((err) => (err ? reject(err) : resolve()));
+            // Open SSE connections would keep close() waiting forever.
+            const s = server as { closeAllConnections?: () => void };
+            s.closeAllConnections?.();
+          });
         // db.close() must run after the HTTP server has fully closed, not
         // before — an in-flight request handler (e.g. a PUT /api/file
         // autosave) can resume mid-shutdown and needs the db still open.
-        await closeWorkspaceSession(activeSession, {
-          beforeDbClose: () =>
-            new Promise<void>((resolve, reject) => {
-              server.close((err) => (err ? reject(err) : resolve()));
-              // Open SSE connections would keep close() waiting forever.
-              const s = server as { closeAllConnections?: () => void };
-              s.closeAllConnections?.();
-            }),
-        });
+        if (activeSession) {
+          await closeWorkspaceSession(activeSession, { beforeDbClose: closeHttp });
+        } else {
+          await closeHttp();
+        }
       },
     };
   } catch (err) {
     // Listen (or boot) failed — release everything so the caller can retry.
-    if (session) await closeWorkspaceSessionSafe(session);
+    if (activeSession) await closeWorkspaceSessionSafe(activeSession);
     throw err;
   }
 }

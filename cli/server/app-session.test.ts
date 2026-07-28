@@ -69,17 +69,17 @@ afterEach(async () => {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
-function buildApp(isResetting: () => boolean = () => false) {
+function buildApp(isSwapping: () => boolean = () => false) {
   const bus = createBus();
   return createApp({
     bus,
-    workspaceRoot: tempRoot,
+    getWorkspaceRoot: () => tempRoot,
     token: TOKEN,
     uiDir: null,
     version: '0.0.0-test',
     importer: { previewImport, runImport },
     getSession: () => session,
-    isResetting,
+    isSwapping,
   });
 }
 

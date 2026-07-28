@@ -32,7 +32,7 @@ export interface PerformWorkspaceResetOptions {
   bus: Bus;
   getSession: () => WorkspaceSession;
   swapSession: (session: WorkspaceSession) => void;
-  setResetting: (resetting: boolean) => void;
+  setSwapping: (swapping: boolean) => void;
   mode: WorkspaceResetMode;
   confirm: string;
   /**
@@ -47,7 +47,7 @@ export interface PerformWorkspaceResetOptions {
   /**
    * Awaited right before the old session's db is closed (wired through as
    * closeWorkspaceSession's `beforeDbClose`) — lets the HTTP layer drain any
-   * request that was already past the resetting-gate and mid-flight against
+   * request that was already past the swapping-gate and mid-flight against
    * the old session when the reset began, so it can't resume against a
    * closed db. Defaults to a no-op; tests generally omit it.
    */
@@ -62,7 +62,7 @@ export interface PerformWorkspaceResetResult {
 /**
  * Runs the reset in the exact load-bearing order:
  *
- *   set resetting flag -> collectRestorePlan (old db) -> (full only)
+ *   set swapping flag -> collectRestorePlan (old db) -> (full only)
  *   snapshotPreResetState (old db) -> closeWorkspaceSession -> archiveAceDir
  *   -> createWorkspaceSession({ watch: false }) (fresh db + reconcile) ->
  *   applyRestorePlan -> setMeta('reset_archived_from', archivedTo) ->
@@ -88,11 +88,11 @@ export interface PerformWorkspaceResetResult {
 export async function performWorkspaceReset(
   opts: PerformWorkspaceResetOptions,
 ): Promise<PerformWorkspaceResetResult> {
-  const { workspaceRoot, bus, getSession, swapSession, setResetting, mode, engines } = opts;
+  const { workspaceRoot, bus, getSession, swapSession, setSwapping, mode, engines } = opts;
   const requestId = opts.requestId ?? crypto.randomUUID();
   const drainRequests = opts.drainRequests ?? (async () => {});
 
-  setResetting(true);
+  setSwapping(true);
 
   const oldSession = getSession();
   let closed = false;
@@ -106,7 +106,7 @@ export async function performWorkspaceReset(
 
     // beforeDbClose runs after the watcher/engines are torn down but before
     // db.close() — wait out any request that got past the 503 gate before
-    // `setResetting(true)` took effect (e.g. suspended in `await
+    // `setSwapping(true)` took effect (e.g. suspended in `await
     // c.req.json()`) so it resumes against a still-open db instead of a
     // closed one. See closeWorkspaceSession's doc comment for this seam.
     await closeWorkspaceSession(oldSession, { beforeDbClose: drainRequests });
@@ -119,7 +119,7 @@ export async function performWorkspaceReset(
       workspaceRoot,
       bus,
       swapSession,
-      setResetting,
+      setSwapping,
       mode,
       requestId,
       plan,
@@ -137,7 +137,7 @@ export async function performWorkspaceReset(
         // the accessor keeps pointing at the now-closed old session.
       }
     }
-    setResetting(false);
+    setSwapping(false);
     throw err;
   }
 }
@@ -146,14 +146,14 @@ async function bringUpAfterArchive(opts: {
   workspaceRoot: string;
   bus: Bus;
   swapSession: (session: WorkspaceSession) => void;
-  setResetting: (resetting: boolean) => void;
+  setSwapping: (swapping: boolean) => void;
   mode: WorkspaceResetMode;
   requestId: string;
   plan: RestorePlan;
   archivedTo: string;
   engines?: EngineFactories;
 }): Promise<PerformWorkspaceResetResult> {
-  const { workspaceRoot, bus, swapSession, setResetting, mode, requestId, plan, archivedTo, engines } =
+  const { workspaceRoot, bus, swapSession, setSwapping, mode, requestId, plan, archivedTo, engines } =
     opts;
 
   let newSession: WorkspaceSession | undefined;
@@ -164,7 +164,7 @@ async function bringUpAfterArchive(opts: {
     startSessionWatcher(newSession);
 
     swapSession(newSession);
-    setResetting(false);
+    setSwapping(false);
     bus.emit('workspace-reset', { mode, archivedTo, requestId });
 
     return { archivedTo, restored };
@@ -187,7 +187,7 @@ async function bringUpAfterArchive(opts: {
       }
     }
     if (recovered) swapSession(recovered);
-    setResetting(false);
+    setSwapping(false);
 
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`workspace reset failed after archiving to ${archivedTo}: ${message}`);

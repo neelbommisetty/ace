@@ -62,7 +62,7 @@ function fakeEngines(): EngineFactories {
   };
 }
 
-/** Minimal in-test harness mimicking index.ts's getSession/swapSession/isResetting refs. */
+/** Minimal in-test harness mimicking index.ts's getSession/swapSession/isSwapping refs. */
 function makeHarness(bus: ReturnType<typeof createBus>) {
   let session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines: fakeEngines() });
   let resetting = false;
@@ -74,10 +74,10 @@ function makeHarness(bus: ReturnType<typeof createBus>) {
     swapSession: (s: WorkspaceSession) => {
       session = s;
     },
-    setResetting: (v: boolean) => {
+    setSwapping: (v: boolean) => {
       resetting = v;
     },
-    isResetting: () => resetting,
+    isSwapping: () => resetting,
     async cleanup() {
       await closeWorkspaceSession(session).catch(() => {});
     },
@@ -112,7 +112,7 @@ describe('performWorkspaceReset — happy path (progress)', () => {
       bus,
       getSession: harness.getSession,
       swapSession: harness.swapSession,
-      setResetting: harness.setResetting,
+      setSwapping: harness.setSwapping,
       mode: 'progress',
       confirm: path.basename(tempRoot),
       requestId: 'req-1',
@@ -135,7 +135,7 @@ describe('performWorkspaceReset — happy path (progress)', () => {
     // progress mode (see workspace-reset.test.ts), but that's internal
     // bookkeeping, not a restoration — the reported counts are zeros.
     expect(result.restored).toEqual({ questions: 0, files: 0 });
-    expect(harness.isResetting()).toBe(false);
+    expect(harness.isSwapping()).toBe(false);
     expect(events).toEqual([
       { mode: 'progress', archivedTo: result.archivedTo, requestId: 'req-1' },
     ]);
@@ -174,7 +174,7 @@ describe('performWorkspaceReset — happy path (full)', () => {
       bus,
       getSession: harness.getSession,
       swapSession: harness.swapSession,
-      setResetting: harness.setResetting,
+      setSwapping: harness.setSwapping,
       mode: 'full',
       confirm: path.basename(tempRoot),
       engines: fakeEngines(),
@@ -217,7 +217,7 @@ describe('performWorkspaceReset — happy path (full)', () => {
       bus,
       getSession: harness.getSession,
       swapSession: harness.swapSession,
-      setResetting: harness.setResetting,
+      setSwapping: harness.setSwapping,
       mode: 'full',
       confirm: path.basename(tempRoot),
       engines: fakeEngines(),
@@ -249,7 +249,7 @@ describe('performWorkspaceReset — archive failure recovery', () => {
           bus,
           getSession: harness.getSession,
           swapSession: harness.swapSession,
-          setResetting: harness.setResetting,
+          setSwapping: harness.setSwapping,
           mode: 'progress',
           confirm: path.basename(tempRoot),
           engines: fakeEngines(),
@@ -259,7 +259,7 @@ describe('performWorkspaceReset — archive failure recovery', () => {
       fs.chmodSync(tempRoot, 0o755);
     }
 
-    expect(harness.isResetting()).toBe(false);
+    expect(harness.isSwapping()).toBe(false);
     expect(fs.existsSync(path.join(tempRoot, '.ace', 'ace.db'))).toBe(true);
 
     // The accessor still resolves to a live, usable session.

@@ -127,7 +127,7 @@ function buildApp() {
   const bus = createBus();
   return createApp({
     bus,
-    workspaceRoot: tempRoot,
+    getWorkspaceRoot: () => tempRoot,
     token: TOKEN,
     uiDir: null,
     version: '0.0.0-test',

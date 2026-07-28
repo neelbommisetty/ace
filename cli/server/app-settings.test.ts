@@ -86,13 +86,13 @@ afterEach(() => {
 function buildApp() {
   return createApp({
     bus: createBus(),
-    workspaceRoot: tempRoot,
+    getWorkspaceRoot: () => tempRoot,
     token: TOKEN,
     uiDir: null,
     version: '0.0.0-test',
     importer: { previewImport, runImport },
     getSession: () => session,
-    isResetting: () => false,
+    isSwapping: () => false,
   });
 }
 

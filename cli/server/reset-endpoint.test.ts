@@ -98,19 +98,23 @@ function fakeEngines(flags: BusyFlags): EngineFactories {
   };
 }
 
-/** Mimics the mutable getSession/swapSession/isResetting refs index.ts wires
- * into createApp — the route reads/writes these across the reset. */
+/** Mimics the mutable getWorkspaceRoot/getSession/swapWorkspace/isSwapping
+ * refs index.ts wires into createApp — the route reads/writes these across
+ * the reset. */
 function makeHarness(initialSession: WorkspaceSession) {
-  let activeSession = initialSession;
-  let resetting = false;
+  let activeRoot: string | null = tempRoot;
+  let activeSession: WorkspaceSession | null = initialSession;
+  let swapping = false;
   return {
+    getWorkspaceRoot: () => activeRoot,
     getSession: () => activeSession,
-    swapSession: (s: WorkspaceSession) => {
+    swapWorkspace: (root: string | null, s: WorkspaceSession | null) => {
+      activeRoot = root;
       activeSession = s;
     },
-    isResetting: () => resetting,
-    setResetting: (v: boolean) => {
-      resetting = v;
+    isSwapping: () => swapping,
+    setSwapping: (v: boolean) => {
+      swapping = v;
     },
   };
 }
@@ -122,15 +126,15 @@ function buildApp(
 ) {
   return createApp({
     bus,
-    workspaceRoot: tempRoot,
     token: TOKEN,
     uiDir: null,
     version: '0.0.0-test',
     importer: { previewImport, runImport },
+    getWorkspaceRoot: harness.getWorkspaceRoot,
     getSession: harness.getSession,
-    isResetting: harness.isResetting,
-    swapSession: harness.swapSession,
-    setResetting: harness.setResetting,
+    isSwapping: harness.isSwapping,
+    swapWorkspace: harness.swapWorkspace,
+    setSwapping: harness.setSwapping,
     engines,
   });
 }
@@ -229,10 +233,10 @@ describe('POST /api/workspace/reset — happy path', () => {
     ]);
 
     // New session is live with a fresh epoch and an attached watcher.
-    const newSession = harness.getSession();
+    const newSession = harness.getSession()!;
     expect(newSession.epoch).not.toBe(oldEpoch);
     expect(newSession.watcher).not.toBeNull();
-    expect(harness.isResetting()).toBe(false);
+    expect(harness.isSwapping()).toBe(false);
 
     await closeWorkspaceSession(newSession);
   });
@@ -261,7 +265,7 @@ describe('POST /api/workspace/reset — happy path', () => {
     expect(events).toHaveLength(1);
     expect(events[0].requestId).toBe('client-generated-id-123');
 
-    await closeWorkspaceSession(harness.getSession());
+    await closeWorkspaceSession(harness.getSession()!);
   });
 
   it('full mode: restores solution files to the scaffold baseline, leaves test files untouched, snapshots old code into the archive', async () => {
@@ -318,7 +322,7 @@ describe('POST /api/workspace/reset — happy path', () => {
     archivedDb.close();
     fs.rmSync(archiveCheckRoot, { recursive: true, force: true });
 
-    await closeWorkspaceSession(harness.getSession());
+    await closeWorkspaceSession(harness.getSession()!);
   });
 
   it('full mode with no prior scaffold snapshot: restores to the template stub', async () => {
@@ -336,7 +340,7 @@ describe('POST /api/workspace/reset — happy path', () => {
     const solutionAbs = path.join(dir, 'solution.ts');
     expect(fs.readFileSync(solutionAbs, 'utf-8')).toBe(getStubContent('js-ts', 'solution.ts'));
 
-    await closeWorkspaceSession(harness.getSession());
+    await closeWorkspaceSession(harness.getSession()!);
   });
 });
 
@@ -467,22 +471,22 @@ describe('POST /api/workspace/reset — concurrency', () => {
     // Poll (rather than guessing a fixed microtask-tick count) until the
     // first request's continuation has run far enough to set the resetting
     // flag and block on the awaited watcher.close() call.
-    for (let i = 0; i < 200 && !harness.isResetting(); i++) {
+    for (let i = 0; i < 200 && !harness.isSwapping(); i++) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    expect(harness.isResetting()).toBe(true);
+    expect(harness.isSwapping()).toBe(true);
 
     const secondRes = await postReset(app, { mode: 'progress', confirm: path.basename(tempRoot) });
     expect(secondRes.status).toBe(409);
     expect((await secondRes.json()) as { error: string }).toEqual({
-      error: 'a workspace reset is already in progress',
+      error: 'a workspace reset or switch is already in progress',
     });
 
     releaseClose();
     const firstRes = await firstReq;
     expect(firstRes.status).toBe(200);
 
-    await closeWorkspaceSession(harness.getSession());
+    await closeWorkspaceSession(harness.getSession()!);
   });
 
   it('a PUT /api/file already past the gate when a reset begins finishes against the old db (no 500) and the reset waits for it before closing that db', async () => {
@@ -519,10 +523,10 @@ describe('POST /api/workspace/reset — concurrency', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const resetPromise = postReset(app, { mode: 'progress', confirm: path.basename(tempRoot) });
-    for (let i = 0; i < 200 && !harness.isResetting(); i++) {
+    for (let i = 0; i < 200 && !harness.isSwapping(); i++) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    expect(harness.isResetting()).toBe(true);
+    expect(harness.isSwapping()).toBe(true);
 
     // The reset must not sail through independently of the still-open PUT —
     // race it against a short timer to prove it's genuinely blocked (in
@@ -545,7 +549,7 @@ describe('POST /api/workspace/reset — concurrency', () => {
     expect(putRes.status).toBe(200);
     expect(resetRes.status).toBe(200);
 
-    await closeWorkspaceSession(harness.getSession());
+    await closeWorkspaceSession(harness.getSession()!);
   });
 
   it('while the resetting flag is set: GET /api/questions -> 503, POST /api/workspace/reset -> 409', async () => {
@@ -557,7 +561,7 @@ describe('POST /api/workspace/reset — concurrency', () => {
     const harness = makeHarness(session);
     const app = buildApp(bus, harness, engines);
 
-    harness.setResetting(true);
+    harness.setSwapping(true);
     try {
       const questions = await request(app, `http://localhost/api/questions?t=${TOKEN}`);
       expect(questions.status).toBe(503);
@@ -565,13 +569,13 @@ describe('POST /api/workspace/reset — concurrency', () => {
       const reset = await postReset(app, { mode: 'progress', confirm: path.basename(tempRoot) });
       expect(reset.status).toBe(409);
       expect((await reset.json()) as { error: string }).toEqual({
-        error: 'a workspace reset is already in progress',
+        error: 'a workspace reset or switch is already in progress',
       });
     } finally {
-      harness.setResetting(false);
+      harness.setSwapping(false);
     }
 
-    await closeWorkspaceSession(harness.getSession());
+    await closeWorkspaceSession(harness.getSession()!);
   });
 });
 
@@ -597,13 +601,13 @@ describe('POST /api/workspace/reset — archive-failure recovery', () => {
       fs.chmodSync(tempRoot, 0o755);
     }
 
-    expect(harness.isResetting()).toBe(false);
+    expect(harness.isSwapping()).toBe(false);
     expect(fs.existsSync(path.join(tempRoot, '.ace', 'ace.db'))).toBe(true);
 
     // The workspace is still usable via the (recovered) live session.
     const workspaceRes = await request(app, `http://localhost/api/workspace?t=${TOKEN}`);
     expect(workspaceRes.status).toBe(200);
 
-    await closeWorkspaceSession(harness.getSession());
+    await closeWorkspaceSession(harness.getSession()!);
   });
 });

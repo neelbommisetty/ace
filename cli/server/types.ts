@@ -319,7 +319,14 @@ export interface WorkspaceResetResult {
 // ---------------------------------------------------------------------------
 
 export interface SseEventMap {
-  hello: { version: string; workspaceRoot: string; epoch: string };
+  /**
+   * Sent once per SSE connection. `workspaceRoot`/`epoch` are null while the
+   * server is unmounted (picker mode, NEE-164). A reconnecting tab compares
+   * both against what it first saw: a different epoch means a workspace
+   * reset happened while it was disconnected; a different root means a
+   * workspace switch did.
+   */
+  hello: { version: string; workspaceRoot: string | null; epoch: string | null };
   /** A file changed on disk from OUTSIDE the server (VS Code etc.). */
   'file-changed': { relPath: string; hash: string };
   /** Question dirs were added/removed; clients should refetch the library. */
@@ -409,6 +416,14 @@ export interface SseEventMap {
    * race independently and can arrive in either order.
    */
   'workspace-reset': { mode: WorkspaceResetMode; archivedTo: string; requestId: string };
+  /**
+   * Emitted once after a workspace switch swaps the new session live
+   * (NEE-164), with the same `requestId` echo contract as `workspace-reset`.
+   * Every tab whose first-seen root differs — the initiator included —
+   * responds with a full page reload: the hard reset is what guarantees no
+   * per-workspace cache (or Monaco model) survives into the new workspace.
+   */
+  'workspace-switched': { workspaceRoot: string; epoch: string; requestId: string };
 }
 
 export type SseEventName = keyof SseEventMap;

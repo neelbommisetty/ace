@@ -103,7 +103,7 @@ describe('performWorkspaceReset — watcher ordering', () => {
       session = s;
     };
     let resetting = false;
-    const setResetting = (v: boolean) => {
+    const setSwapping = (v: boolean) => {
       resetting = v;
     };
 
@@ -112,7 +112,7 @@ describe('performWorkspaceReset — watcher ordering', () => {
       bus,
       getSession,
       swapSession,
-      setResetting,
+      setSwapping,
       mode: 'progress',
       confirm: path.basename(tempRoot),
       engines: fakeEngines(),
