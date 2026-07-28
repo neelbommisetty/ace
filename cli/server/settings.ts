@@ -26,7 +26,8 @@ export class SettingsValidationError extends Error {
 /**
  * Provider for server-initiated LLM calls. In mock mode there is always a
  * provider (llm.ts short-circuits every call); otherwise the configured
- * default. Never use requireProvider from server code — it process.exit()s.
+ * default. Returns null rather than exiting: a keyless workspace is a normal
+ * state the routes answer with a 503, never a reason to kill the server.
  */
 export function resolveProvider(): LLMProvider | null {
   if (isMockLlm()) return 'openai';

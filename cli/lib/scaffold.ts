@@ -4,7 +4,7 @@ import Handlebars from 'handlebars';
 import type { CategorySlug, Difficulty } from './categories.js';
 import { getCategoryConfig, getSuggestedTime, isDesignCategory } from './categories.js';
 import { createScorecard, writeScorecardAt } from './scorecard.js';
-import { resolveWorkspaceRoot, getQuestionsDir as getQuestionsDirPath } from './paths.js';
+import { getQuestionsDir as getQuestionsDirPath } from './paths.js';
 import { getImportMetaDirname } from './import-meta.js';
 
 const TEMPLATES_DIR = path.resolve(getImportMetaDirname(import.meta), '../templates');
@@ -39,12 +39,6 @@ function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-}
-
-export function getQuestionDir(category: CategorySlug, slug: string): string {
-  const root = resolveWorkspaceRoot();
-  const questionsDir = getQuestionsDirPath(root);
-  return path.join(questionsDir, category, slug);
 }
 
 /**
@@ -155,12 +149,6 @@ export function formatReferenceSolutionMd(code: string): string {
   // Four-backtick fence so a reference solution that itself contains a
   // ``` fence (e.g. in a doc comment) cannot break out of the block.
   return `# Reference Solution\n\n\`\`\`\`tsx\n${code.replace(/\n?$/, '\n')}\`\`\`\`\n`;
-}
-
-/** Thin cwd-resolving wrapper preserving the legacy CLI behavior byte-for-byte. */
-export function scaffoldQuestion(opts: ScaffoldOptions): string {
-  const { dir } = scaffoldQuestionAt(resolveWorkspaceRoot(), opts, { writeScorecard: true });
-  return dir;
 }
 
 /**

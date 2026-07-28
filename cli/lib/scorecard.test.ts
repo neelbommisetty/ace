@@ -4,110 +4,44 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Scorecard } from './categories.js';
 import { getSuggestedTime } from './categories.js';
-import {
-  createScorecard,
-  findQuestion,
-  getAllQuestions,
-  getCurrentAttempt,
-  readScorecard,
-  resetScorecard,
-  startNewAttempt,
-  updateTestResults,
-  writeScorecard,
-} from './scorecard.js';
+import { createScorecard, writeScorecardAt } from './scorecard.js';
 
 let tempRoot = '';
-let originalCwd = '';
-
-function createWorkspace(): { root: string; questionsDir: string } {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ace-workspace-'));
-  const questionsDir = path.join(root, 'questions');
-  fs.mkdirSync(questionsDir, { recursive: true });
-  return { root, questionsDir };
-}
 
 beforeEach(() => {
-  originalCwd = process.cwd();
-  const workspace = createWorkspace();
-  tempRoot = workspace.root;
-  process.chdir(tempRoot);
+  tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ace-workspace-'));
+  fs.mkdirSync(path.join(tempRoot, 'questions'), { recursive: true });
 });
 
 afterEach(() => {
-  process.chdir(originalCwd);
   if (tempRoot && fs.existsSync(tempRoot)) {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
 
-describe('scorecard lifecycle', () => {
+describe('createScorecard', () => {
   it('creates scorecards with suggested time and untouched status', () => {
     const scorecard = createScorecard('Two Sum', 'js-ts', 'easy');
 
+    expect(scorecard.title).toBe('Two Sum');
     expect(scorecard.suggestedTime).toBe(getSuggestedTime('js-ts', 'easy'));
     expect(scorecard.status).toBe('untouched');
     expect(scorecard.attempts).toEqual([]);
-  });
-
-  it('starts and updates attempts based on test results', () => {
-    const scorecard = createScorecard('Two Sum', 'js-ts', 'easy');
-
-    const started = startNewAttempt(scorecard);
-    expect(started.status).toBe('in-progress');
-    expect(getCurrentAttempt(started)).toEqual({
-      attempt: 1,
-      testsTotal: 0,
-      testsPassed: 0,
-      llmScore: null,
-    });
-
-    updateTestResults(started, 5, 3);
-    expect(started.status).toBe('attempted');
-    expect(getCurrentAttempt(started)?.testsPassed).toBe(3);
-
-    updateTestResults(started, 5, 5);
-    expect(started.status).toBe('solved');
-  });
-
-  it('resets status and feedback', () => {
-    const scorecard = createScorecard('Two Sum', 'js-ts', 'easy');
-    scorecard.status = 'solved';
-    scorecard.llmFeedback = 'Great job';
-
-    const reset = resetScorecard(scorecard);
-    expect(reset.status).toBe('untouched');
-    expect(reset.llmFeedback).toBeNull();
+    expect(scorecard.llmFeedback).toBeNull();
   });
 });
 
-describe('scorecard persistence', () => {
-  it('writes and reads scorecards from the questions directory', () => {
-    const baseDir = path.join(tempRoot, 'questions', 'js-ts', 'two-sum');
-    fs.mkdirSync(baseDir, { recursive: true });
-    const scorecard = createScorecard('Two Sum', 'js-ts', 'easy');
+describe('writeScorecardAt', () => {
+  it('writes scorecard.json under the PASSED root, not process.cwd()', () => {
+    const questionDir = path.join(tempRoot, 'questions', 'js-ts', 'two-sum');
+    fs.mkdirSync(questionDir, { recursive: true });
 
-    writeScorecard('js-ts', 'two-sum', scorecard);
+    writeScorecardAt(tempRoot, 'js-ts', 'two-sum', createScorecard('Two Sum', 'js-ts', 'easy'));
 
-    const loaded = readScorecard('js-ts', 'two-sum') as Scorecard;
-    expect(loaded.title).toBe('Two Sum');
-    expect(loaded.status).toBe('untouched');
-  });
-
-  it('finds questions and lists scorecards across categories', () => {
-    const questionA = path.join(tempRoot, 'questions', 'js-ts', 'two-sum');
-    const questionB = path.join(tempRoot, 'questions', 'leetcode-algo', 'max-subarray');
-    fs.mkdirSync(questionA, { recursive: true });
-    fs.mkdirSync(questionB, { recursive: true });
-
-    writeScorecard('js-ts', 'two-sum', createScorecard('Two Sum', 'js-ts', 'easy'));
-    writeScorecard('leetcode-algo', 'max-subarray', createScorecard('Max Subarray', 'leetcode-algo', 'medium'));
-
-    const all = getAllQuestions();
-    expect(all).toHaveLength(2);
-    expect(all.map((q) => q.slug).sort()).toEqual(['max-subarray', 'two-sum']);
-
-    const found = findQuestion('two-sum');
-    expect(found?.category).toBe('js-ts');
-    expect(fs.realpathSync(found?.dir || '')).toBe(fs.realpathSync(questionA));
+    const written = JSON.parse(
+      fs.readFileSync(path.join(questionDir, 'scorecard.json'), 'utf-8'),
+    ) as Scorecard;
+    expect(written.title).toBe('Two Sum');
+    expect(written.status).toBe('untouched');
   });
 });

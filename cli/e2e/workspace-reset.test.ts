@@ -2,8 +2,9 @@
 //
 // In-process integration coverage for "clear workspace" (NEE-165) over a REAL
 // booted server — startAceServer(), driven entirely through fetch (including
-// the raw SSE stream), against a workspace produced by the real `ace init` /
-// `ace generate` CLI commands. No LLM calls: ACE_E2E_MOCK_LLM=1 throughout
+// the raw SSE stream), against a workspace produced by the real `ace init`
+// command plus an in-process scaffold (see seedWorkspace below).
+// No LLM calls: ACE_E2E_MOCK_LLM=1 throughout
 // (set before the server module graph is evaluated, since llm.ts computes its
 // mock flag at import time — see the dynamic import below).
 //
@@ -28,7 +29,7 @@ process.env.ACE_E2E_MOCK_LLM = '1';
 const { startAceServer } = await import('../server/index.js');
 const { openDb } = await import('../server/db.js');
 const { readBlob } = await import('../server/blobs.js');
-const { getStubContent } = await import('../lib/scaffold.js');
+const { getStubContent, scaffoldQuestionAt } = await import('../lib/scaffold.js');
 type AceServer = Awaited<ReturnType<typeof startAceServer>>;
 
 function isAddrInUse(err: unknown): boolean {
@@ -171,17 +172,28 @@ async function connectSse(baseUrl: string, token: string): Promise<SseClient> {
   };
 }
 
-/** `ace init` + `ace generate` (mocked LLM, always emits js-ts/two-sum) into
- * a fresh temp workspace, ready for a real server boot. */
+/**
+ * `ace init` + a scaffolded js-ts/two-sum question, into a fresh temp
+ * workspace ready for a real server boot.
+ *
+ * The question is scaffolded in-process rather than shelled out to a CLI
+ * command: generation is no longer a CLI surface, and this test only needs a
+ * question dir on disk to reset — not the generation pipeline. The values
+ * mirror what the old `ACE_MOCK_LLM_MODE=generate` payload produced, so the
+ * scaffolded files are byte-identical to what this suite ran against before.
+ */
 function seedWorkspace(): { root: string; home: string; cleanup: () => void } {
   const { root, home, cleanup } = createTempWorkspace();
   const initResult = runAce(['init', '--skip-install'], { cwd: root, env: { HOME: home } });
   expect(initResult.status).toBe(0);
-  const generateResult = runAce(
-    ['generate', '--category', 'js-ts', '--difficulty', 'easy', '--topic', 'two sum'],
-    { cwd: root, env: { HOME: home, ACE_MOCK_LLM_MODE: 'generate' } },
-  );
-  expect(generateResult.status).toBe(0);
+  scaffoldQuestionAt(root, {
+    title: 'Two Sum',
+    slug: 'two-sum',
+    category: 'js-ts',
+    difficulty: 'easy',
+    description: 'Return indices of the two numbers such that they add up to target.',
+    signature: 'export function twoSum(nums: number[], target: number): number[]',
+  });
   return { root, home, cleanup };
 }
 

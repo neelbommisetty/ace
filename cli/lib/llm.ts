@@ -1,7 +1,6 @@
 import { generateObject, streamText, Output, type LanguageModel } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
-import chalk from 'chalk';
 import type { z } from 'zod';
 import { loadAceConfig, type AceConfig } from './config.js';
 
@@ -156,35 +155,6 @@ export function getDefaultProvider(): LLMProvider | null {
   // Default to openai if available, otherwise first available
   if (available.includes('openai')) return 'openai';
   return available[0];
-}
-
-export function requireProvider(preferred?: string): LLMProvider {
-  if (mockLlm) {
-    if (preferred === 'openai' || preferred === 'anthropic') {
-      return preferred;
-    }
-    return 'openai';
-  }
-
-  const config = getConfig();
-
-  if (preferred === 'openai' || preferred === 'anthropic') {
-    const key = preferred === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY';
-    if (!config[key]) {
-      console.error(chalk.red(`Error: ${key} is not configured.`));
-      console.error(chalk.dim('Run `ace setup` to configure API keys.'));
-      process.exit(1);
-    }
-    return preferred;
-  }
-
-  const provider = getDefaultProvider();
-  if (!provider) {
-    console.error(chalk.red('Error: No LLM API key found.'));
-    console.error(chalk.dim('Run `ace setup` to configure API keys.'));
-    process.exit(1);
-  }
-  return provider;
 }
 
 /** What a given LLM call is for — selects the model via PURPOSE_TIERS + TIER_MODELS below. */
