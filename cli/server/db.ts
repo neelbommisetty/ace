@@ -3,6 +3,12 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
   AceDb,
+  AiRunKind,
+  AiRunRow,
+  AiRunStatus,
+  AiStepKind,
+  AiStepRow,
+  AiStepStatus,
   AttemptEndReason,
   AttemptEventRow,
   AttemptEventType,
@@ -187,6 +193,64 @@ function rowToBrainstormSession(r: SqlRow): BrainstormSessionRow {
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
   };
+}
+
+function rowToAiRun(r: SqlRow): AiRunRow {
+  return {
+    id: r.id as string,
+    kind: r.kind as AiRunKind,
+    refId: (r.ref_id as string | null) ?? null,
+    questionId: (r.question_id as string | null) ?? null,
+    label: r.label as string,
+    status: r.status as AiRunStatus,
+    errorMessage: (r.error_message as string | null) ?? null,
+    startedAt: r.started_at as string,
+    finishedAt: (r.finished_at as string | null) ?? null,
+  };
+}
+
+function rowToAiStep(r: SqlRow): AiStepRow {
+  return {
+    id: r.id as string,
+    runId: r.run_id as string,
+    seq: r.seq as number,
+    kind: r.kind as AiStepKind,
+    slug: r.slug as string,
+    label: r.label as string,
+    status: r.status as AiStepStatus,
+    attempt: r.attempt as number,
+    promptText: (r.prompt_text as string | null) ?? null,
+    promptWithheld: r.prompt_withheld === 1,
+    responseText: (r.response_text as string | null) ?? null,
+    withheldKeys:
+      r.withheld_keys == null ? null : (JSON.parse(r.withheld_keys as string) as string[]),
+    detail: (r.detail as string | null) ?? null,
+    errorMessage: (r.error_message as string | null) ?? null,
+    startedAt: r.started_at as string,
+    finishedAt: (r.finished_at as string | null) ?? null,
+  };
+}
+
+/**
+ * Per-field write cap for ai_steps prompt/response text (mirrors
+ * FAILURE_REPORT_CAP in gen-verify.ts). The repair prompt embeds a >20KB
+ * question JSON and responses run up to the pipeline's 16k output tokens
+ * (~64KB), so oversized text is stored head-and-tail around an elision
+ * marker rather than unbounded.
+ */
+export const AI_LOG_TEXT_CAP = 64 * 1024;
+
+function capAiLogText(text: string): string {
+  if (text.length <= AI_LOG_TEXT_CAP) return text;
+  const half = Math.floor(AI_LOG_TEXT_CAP / 2);
+  let head = text.slice(0, half);
+  let tail = text.slice(text.length - half);
+  // Never split a surrogate pair at either cut point — node:sqlite would
+  // persist the dangling half as U+FFFD.
+  if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1);
+  if (/^[\uDC00-\uDFFF]/.test(tail)) tail = tail.slice(1);
+  const elided = text.length - head.length - tail.length;
+  return `${head}\n… (${elided} chars elided) …\n${tail}`;
 }
 
 const BRAINSTORM_TITLE_MAX = 80;
@@ -958,6 +1022,174 @@ class SqliteAceDb implements AceDb {
     return row;
   }
 
+  // -- ai activity log --------------------------------------------------------
+
+  createAiRun(r: {
+    kind: AiRunKind;
+    refId?: string | null;
+    questionId?: string | null;
+    label: string;
+  }): AiRunRow {
+    const id = uuidv7();
+    this.db
+      .prepare(
+        `INSERT INTO ai_runs (id, kind, ref_id, question_id, label, status, started_at)
+         VALUES (?, ?, ?, ?, ?, 'running', ?)`,
+      )
+      .run(id, r.kind, r.refId ?? null, r.questionId ?? null, r.label, nowIso());
+    const row = this.getAiRun(id);
+    if (!row) throw new Error(`createAiRun failed for ${r.kind}`);
+    return row;
+  }
+
+  finishAiRun(
+    id: string,
+    patch: { status: 'done' | 'error'; errorMessage?: string | null },
+  ): AiRunRow {
+    const existing = this.getAiRun(id);
+    if (!existing) throw new Error(`unknown ai run: ${id}`);
+    this.db
+      .prepare('UPDATE ai_runs SET status = ?, error_message = ?, finished_at = ? WHERE id = ?')
+      .run(patch.status, patch.errorMessage ?? null, nowIso(), id);
+    const row = this.getAiRun(id);
+    if (!row) throw new Error(`unknown ai run: ${id}`);
+    return row;
+  }
+
+  createAiStep(s: {
+    runId: string;
+    kind: AiStepKind;
+    slug: string;
+    label: string;
+    attempt?: number;
+    promptText?: string | null;
+    promptWithheld?: boolean;
+    withheldKeys?: string[] | null;
+  }): AiStepRow {
+    const run = this.getAiRun(s.runId);
+    if (!run) throw new Error(`unknown ai run: ${s.runId}`);
+    const seqRow = this.db
+      .prepare('SELECT COALESCE(MAX(seq), 0) AS s FROM ai_steps WHERE run_id = ?')
+      .get(s.runId) as SqlRow;
+    const seq = (seqRow.s as number) + 1;
+    const id = uuidv7();
+    this.db
+      .prepare(
+        `INSERT INTO ai_steps
+          (id, run_id, seq, kind, slug, label, status, attempt, prompt_text,
+           prompt_withheld, withheld_keys, started_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        s.runId,
+        seq,
+        s.kind,
+        s.slug,
+        s.label,
+        s.attempt ?? 1,
+        s.promptText != null ? capAiLogText(s.promptText) : null,
+        s.promptWithheld ? 1 : 0,
+        s.withheldKeys && s.withheldKeys.length > 0 ? JSON.stringify(s.withheldKeys) : null,
+        nowIso(),
+      );
+    const row = this.getAiStep(id);
+    if (!row) throw new Error(`createAiStep failed for run ${s.runId}`);
+    return row;
+  }
+
+  appendAiStepResponse(id: string, responseText: string): AiStepRow {
+    const existing = this.getAiStep(id);
+    if (!existing) throw new Error(`unknown ai step: ${id}`);
+    // Snapshot semantics: the full accumulated text replaces the previous
+    // flush, so throttled re-flushes are idempotent (see AceDb contract).
+    this.db
+      .prepare('UPDATE ai_steps SET response_text = ? WHERE id = ?')
+      .run(capAiLogText(responseText), id);
+    const row = this.getAiStep(id);
+    if (!row) throw new Error(`unknown ai step: ${id}`);
+    return row;
+  }
+
+  finishAiStep(
+    id: string,
+    patch: {
+      status: 'done' | 'error' | 'skipped';
+      detail?: string | null;
+      errorMessage?: string | null;
+      responseText?: string | null;
+    },
+  ): AiStepRow {
+    const existing = this.getAiStep(id);
+    if (!existing) throw new Error(`unknown ai step: ${id}`);
+    // Omitted fields keep their current values — notably response_text
+    // streamed in via appendAiStepResponse before the finish.
+    const detail = patch.detail !== undefined ? patch.detail : existing.detail;
+    const errorMessage =
+      patch.errorMessage !== undefined ? patch.errorMessage : existing.errorMessage;
+    const responseText =
+      patch.responseText !== undefined
+        ? patch.responseText != null
+          ? capAiLogText(patch.responseText)
+          : null
+        : existing.responseText;
+    this.db
+      .prepare(
+        `UPDATE ai_steps SET status = ?, detail = ?, error_message = ?, response_text = ?,
+           finished_at = ?
+         WHERE id = ?`,
+      )
+      .run(patch.status, detail, errorMessage, responseText, nowIso(), id);
+    const row = this.getAiStep(id);
+    if (!row) throw new Error(`unknown ai step: ${id}`);
+    return row;
+  }
+
+  listAiRuns(opts: { limit?: number; kind?: AiRunKind; refId?: string } = {}): AiRunRow[] {
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+    if (opts.kind) {
+      where.push('kind = ?');
+      params.push(opts.kind);
+    }
+    if (opts.refId) {
+      where.push('ref_id = ?');
+      params.push(opts.refId);
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM ai_runs ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+         ORDER BY started_at DESC, id DESC LIMIT ?`,
+      )
+      .all(...params, opts.limit ?? 50) as SqlRow[];
+    return rows.map(rowToAiRun);
+  }
+
+  getAiRun(id: string): AiRunRow | null {
+    const r = this.db.prepare('SELECT * FROM ai_runs WHERE id = ?').get(id) as
+      | SqlRow
+      | undefined;
+    return r ? rowToAiRun(r) : null;
+  }
+
+  getAiStep(id: string): AiStepRow | null {
+    const r = this.db.prepare('SELECT * FROM ai_steps WHERE id = ?').get(id) as
+      | SqlRow
+      | undefined;
+    return r ? rowToAiStep(r) : null;
+  }
+
+  pruneAiRuns(keep = 200): number {
+    const result = this.db
+      .prepare(
+        `DELETE FROM ai_runs WHERE id NOT IN (
+           SELECT id FROM ai_runs ORDER BY started_at DESC, id DESC LIMIT ?
+         )`,
+      )
+      .run(keep);
+    return Number(result.changes);
+  }
+
   // -- interrupted-state sweep ------------------------------------------------
 
   sweepInterruptedGenerationState(): void {
@@ -979,6 +1211,20 @@ class SqliteAceDb implements AceDb {
         .prepare(
           `UPDATE brainstorm_sessions SET status = 'error', error_message = ?, updated_at = ?
            WHERE status = 'thinking'`,
+        )
+        .run('interrupted by a server restart', now);
+      // AI activity log rows: without this, Activity shows a run pulsing
+      // forever with no engine behind it after a restart.
+      this.db
+        .prepare(
+          `UPDATE ai_steps SET status = 'error', error_message = ?, finished_at = ?
+           WHERE status = 'running'`,
+        )
+        .run('interrupted by a server restart', now);
+      this.db
+        .prepare(
+          `UPDATE ai_runs SET status = 'error', error_message = ?, finished_at = ?
+           WHERE status = 'running'`,
         )
         .run('interrupted by a server restart', now);
     });

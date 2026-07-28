@@ -193,4 +193,49 @@ WHERE ended_at IS NULL
     ORDER BY t.at DESC, t.id DESC LIMIT 1
   ) = 1;
 `,
+  // Migration 5 (NEE-266): AI activity log. Two tables, not one flat event
+  // log: review and dispute jobs use ephemeral in-memory ids with no db row
+  // at all, so a run table is needed regardless, and it keeps status
+  // derivation and pruning off the hot read path. Deliberately NOT built: the
+  // llm_usage table sketched in docs/m3-spec.md — the user ruled out
+  // tokens/model/cost for this feature. ai_runs.id is minted per run and is
+  // NOT the engine's jobId on purpose: retry() re-runs the *same* generation
+  // job id, so a fresh run per attempt gives per-retry history keyed by
+  // ref_id for free. Pure CREATE only.
+  `
+CREATE TABLE ai_runs (
+  id TEXT PRIMARY KEY,              -- uuidv7, minted per run (NOT the engine's jobId)
+  kind TEXT NOT NULL,               -- 'generation'|'review'|'dispute'|'brainstorm'
+  ref_id TEXT,                      -- generation_jobs.id | review jobId | disputeJobId | brainstorm session id
+  question_id TEXT,                 -- no FK: a generation run precedes its question row
+  label TEXT NOT NULL,
+  status TEXT NOT NULL,             -- 'running'|'done'|'error'
+  error_message TEXT,
+  started_at TEXT NOT NULL,
+  finished_at TEXT
+);
+
+CREATE TABLE ai_steps (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES ai_runs (id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  kind TEXT NOT NULL,               -- 'llm'|'sandbox'|'static-check'|'scaffold'
+  slug TEXT NOT NULL,               -- 'generate'|'edge-audit'|'verify'|'repair'|'scaffold'|…
+  label TEXT NOT NULL,
+  status TEXT NOT NULL,             -- 'running'|'done'|'error'|'skipped'
+  attempt INTEGER NOT NULL DEFAULT 1,
+  prompt_text TEXT,                 -- ALREADY MASKED at write time; NULL when withheld
+  prompt_withheld INTEGER NOT NULL DEFAULT 0,
+  response_text TEXT,               -- ALREADY MASKED at write time
+  withheld_keys TEXT,               -- JSON array: ["referenceSolution","interviewerPacket"]
+  detail TEXT,                      -- one-line collapsed outcome, e.g. '12/12 passed'
+  error_message TEXT,
+  started_at TEXT NOT NULL,
+  finished_at TEXT
+);
+
+CREATE INDEX idx_ai_runs_started_at ON ai_runs (started_at);
+CREATE INDEX idx_ai_runs_ref ON ai_runs (kind, ref_id);
+CREATE INDEX idx_ai_steps_run_seq ON ai_steps (run_id, seq);
+`,
 ];

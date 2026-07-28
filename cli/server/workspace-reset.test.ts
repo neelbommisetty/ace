@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { AceDb } from './types.js';
 import { openDb } from './db.js';
@@ -96,6 +97,28 @@ describe('archiveAceDir', () => {
     const today = new Date().toISOString().slice(0, 10);
     const archived = archiveAceDir(tempRoot);
     expect(archived).toBe(path.join(tempRoot, `.ace-archive-${today}`));
+  });
+
+  it('archives ai activity log runs along with the rest of .ace', () => {
+    const run = db.createAiRun({ kind: 'generation', refId: 'job-1', label: 'Generate: debounce' });
+    db.createAiStep({ runId: run.id, kind: 'llm', slug: 'generate', label: 'Author question' });
+    db.close();
+
+    const archived = archiveAceDir(tempRoot, '2026-07-27');
+
+    // the fresh post-reset db starts empty
+    db = openDb(tempRoot);
+    expect(db.listAiRuns()).toEqual([]);
+    expect(db.getAiRun(run.id)).toBeNull();
+
+    // the archived db still holds the run + step (renamed wholesale)
+    const raw = new DatabaseSync(path.join(archived, 'ace.db'));
+    try {
+      expect((raw.prepare('SELECT COUNT(*) AS n FROM ai_runs').get() as { n: number }).n).toBe(1);
+      expect((raw.prepare('SELECT COUNT(*) AS n FROM ai_steps').get() as { n: number }).n).toBe(1);
+    } finally {
+      raw.close();
+    }
   });
 });
 

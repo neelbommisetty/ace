@@ -177,6 +177,49 @@ export interface BrainstormSessionRow {
   updatedAt: string;
 }
 
+export type AiRunKind = 'generation' | 'review' | 'dispute' | 'brainstorm';
+export type AiRunStatus = 'running' | 'done' | 'error';
+export type AiStepKind = 'llm' | 'sandbox' | 'static-check' | 'scaffold';
+export type AiStepStatus = 'running' | 'done' | 'error' | 'skipped';
+
+export interface AiRunRow {
+  id: string; // minted per run — NOT the engine's jobId (retry re-uses that)
+  kind: AiRunKind;
+  refId: string | null; // generation_jobs.id | review jobId | disputeJobId | brainstorm session id
+  questionId: string | null; // no FK: a generation run precedes its question row
+  label: string;
+  status: AiRunStatus;
+  errorMessage: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface AiStepRow {
+  id: string;
+  runId: string;
+  seq: number; // 1-based, per run
+  kind: AiStepKind;
+  slug: string; // 'generate' | 'edge-audit' | 'verify' | 'repair' | 'scaffold' | …
+  label: string;
+  status: AiStepStatus;
+  attempt: number;
+  promptText: string | null; // ALREADY MASKED at write time; null when withheld
+  promptWithheld: boolean;
+  responseText: string | null; // ALREADY MASKED at write time
+  withheldKeys: string[] | null; // e.g. ['referenceSolution', 'interviewerPacket']
+  detail: string | null; // one-line collapsed outcome, e.g. '12/12 passed'
+  errorMessage: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+/**
+ * `AiStepRow` minus the multi-KB prompt/response bodies — the list-response
+ * shape. Keeping that text out of the feed is what makes a 30-run listing
+ * cheap; clients fetch the full step on demand.
+ */
+export type AiStepSummary = Omit<AiStepRow, 'promptText' | 'responseText'>;
+
 export interface ProviderSettings {
   configured: boolean;
   masked: string | null; // '...abcd'
@@ -510,14 +553,81 @@ export interface AceDb {
   ): BrainstormSessionRow;
 
   /**
+   * Creates an AI activity log run: status starts 'running', `startedAt` is
+   * stamped now. `refId`/`questionId` default to null when omitted.
+   */
+  createAiRun(r: {
+    kind: AiRunKind;
+    refId?: string | null;
+    questionId?: string | null;
+    label: string;
+  }): AiRunRow;
+  /** Marks a run terminal, stamping `finishedAt`. Throws on an unknown id. */
+  finishAiRun(
+    id: string,
+    patch: { status: 'done' | 'error'; errorMessage?: string | null },
+  ): AiRunRow;
+  /**
+   * Creates a step under a run: status starts 'running', `seq` is assigned
+   * per-run (max + 1), `attempt` defaults to 1. `promptText` must already be
+   * masked by the caller and is capped head-and-tail at `AI_LOG_TEXT_CAP`;
+   * pass `promptWithheld` with a null `promptText` when the whole prompt is
+   * withheld. Throws on an unknown run id.
+   */
+  createAiStep(s: {
+    runId: string;
+    kind: AiStepKind;
+    slug: string;
+    label: string;
+    attempt?: number;
+    promptText?: string | null;
+    promptWithheld?: boolean;
+    withheldKeys?: string[] | null;
+  }): AiStepRow;
+  /**
+   * Replaces `responseText` with the full accumulated (already-masked) text —
+   * snapshot semantics, not concatenation, so the recorder's throttled
+   * re-flushes are idempotent and each flush is one cheap UPDATE. Capped
+   * head-and-tail at `AI_LOG_TEXT_CAP`. Throws on an unknown id.
+   */
+  appendAiStepResponse(id: string, responseText: string): AiStepRow;
+  /**
+   * Marks a step terminal, stamping `finishedAt`. Omitted fields are
+   * preserved (notably `responseText` streamed via `appendAiStepResponse`);
+   * a provided `responseText` replaces it (capped). Throws on an unknown id.
+   */
+  finishAiStep(
+    id: string,
+    patch: {
+      status: 'done' | 'error' | 'skipped';
+      detail?: string | null;
+      errorMessage?: string | null;
+      responseText?: string | null;
+    },
+  ): AiStepRow;
+  /** Newest first (by `startedAt`), optionally filtered by kind and/or refId. */
+  listAiRuns(opts?: { limit?: number; kind?: AiRunKind; refId?: string }): AiRunRow[];
+  getAiRun(id: string): AiRunRow | null;
+  getAiStep(id: string): AiStepRow | null;
+  /**
+   * Deletes runs outside the newest `keep` (default 200); ON DELETE CASCADE
+   * drops their steps. Called after each run terminates — no timers. Returns
+   * the number of runs deleted.
+   */
+  pruneAiRuns(keep?: number): number;
+
+  /**
    * Run once at session build, before anything else touches these tables.
    * Flips every non-terminal in-flight row left behind by an unclean
    * shutdown: 'running' generation jobs -> 'error' ("interrupted by a server
    * restart — retry"); 'llm_done' generation jobs -> 'error' ("interrupted by
    * a server restart — retry (no new LLM call)"), preserving `result`/`title`/
    * `slug`/`rawText` so retry is scaffold-only with no re-spend; 'thinking'
-   * brainstorm sessions -> 'error' ("interrupted by a server restart").
-   * Terminal job rows ('done', 'error') and 'idle' sessions are untouched.
+   * brainstorm sessions -> 'error' ("interrupted by a server restart");
+   * 'running' ai_runs and ai_steps -> 'error' ("interrupted by a server
+   * restart"), stamping `finishedAt` — otherwise Activity would show a run
+   * pulsing forever with no engine behind it. Terminal job rows ('done',
+   * 'error'), 'idle' sessions, and terminal runs/steps are untouched.
    */
   sweepInterruptedGenerationState(): void;
 

@@ -55,7 +55,7 @@ describe('openDb', () => {
   it('creates .ace and .ace/tmp and tracks schema_version', () => {
     expect(fs.existsSync(path.join(tempRoot, '.ace', 'ace.db'))).toBe(true);
     expect(fs.statSync(path.join(tempRoot, '.ace', 'tmp')).isDirectory()).toBe(true);
-    expect(db.getMeta('schema_version')).toBe('4');
+    expect(db.getMeta('schema_version')).toBe('5');
   });
 
   it('reopens an existing db without re-running migrations', () => {
@@ -64,7 +64,7 @@ describe('openDb', () => {
     db.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('4');
+    expect(db.getMeta('schema_version')).toBe('5');
     expect(db.getMeta('custom')).toBe('kept');
     expect(db.getQuestionById(q.id)?.slug).toBe('debounce');
   });
@@ -72,7 +72,7 @@ describe('openDb', () => {
 
 describe('migration 3 (generation jobs + brainstorm sessions)', () => {
   it('lands schema_version=3 and creates the new tables + indexes', () => {
-    expect(db.getMeta('schema_version')).toBe('4');
+    expect(db.getMeta('schema_version')).toBe('5');
 
     const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
     try {
@@ -137,8 +137,9 @@ describe('migration 3 (generation jobs + brainstorm sessions)', () => {
 
     db = openDb(tempRoot);
     // openDb runs every migration after the seeded version, so this now also
-    // picks up migration 4 (NEE-178 backfill) on top of migration 3.
-    expect(db.getMeta('schema_version')).toBe('4');
+    // picks up migration 4 (NEE-178 backfill) and migration 5 (NEE-266 AI
+    // activity log) on top of migration 3.
+    expect(db.getMeta('schema_version')).toBe('5');
     expect(db.getQuestionById('seed-q1')?.slug).toBe('debounce');
 
     const raw = new DatabaseSync(dbPath);
@@ -229,7 +230,7 @@ describe('migration 4 (NEE-178 backfill: close stale solved-question attempts)',
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('4');
+    expect(db.getMeta('schema_version')).toBe('5');
 
     const a1 = db.getAttempt('a1')!;
     expect(a1.endReason).toBe('solved');
@@ -245,6 +246,76 @@ describe('migration 4 (NEE-178 backfill: close stale solved-question attempts)',
 
     expect(db.getAttempt('a5')!.endedAt).toBeNull();
     expect(db.getAttempt('a6')!.endedAt).toBeNull();
+  });
+});
+
+describe('migration 5 (NEE-266: ai activity log)', () => {
+  it('creates ai_runs/ai_steps and their indexes', () => {
+    expect(db.getMeta('schema_version')).toBe('5');
+
+    const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
+    try {
+      const tables = (
+        raw
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name IN ('ai_runs', 'ai_steps')
+             ORDER BY name`,
+          )
+          .all() as Array<{ name: string }>
+      ).map((r) => r.name);
+      expect(tables).toEqual(['ai_runs', 'ai_steps']);
+
+      const indexes = (
+        raw
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'index'
+               AND name IN ('idx_ai_runs_started_at', 'idx_ai_runs_ref', 'idx_ai_steps_run_seq')
+             ORDER BY name`,
+          )
+          .all() as Array<{ name: string }>
+      ).map((r) => r.name);
+      expect(indexes).toEqual(['idx_ai_runs_ref', 'idx_ai_runs_started_at', 'idx_ai_steps_run_seq']);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('migrates a db pre-seeded at schema_version 4 cleanly to 5, preserving existing data', () => {
+    db.close();
+    const dbPath = path.join(tempRoot, '.ace', 'ace.db');
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(`${dbPath}-wal`, { force: true });
+    fs.rmSync(`${dbPath}-shm`, { force: true });
+
+    const seed = new DatabaseSync(dbPath);
+    seed.exec('PRAGMA journal_mode = WAL');
+    for (const m of MIGRATIONS.slice(0, 4)) seed.exec(m);
+    seed.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('schema_version', '4');
+    seed
+      .prepare(
+        `INSERT INTO questions
+          (id, category, slug, title, difficulty, suggested_minutes, dir_path, source, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'seed-q1',
+        'js-ts',
+        'debounce',
+        'Debounce',
+        'medium',
+        30,
+        '/tmp/debounce',
+        'manual',
+        nowIso(),
+      );
+    seed.close();
+
+    db = openDb(tempRoot);
+    expect(db.getMeta('schema_version')).toBe('5');
+    expect(db.getQuestionById('seed-q1')?.slug).toBe('debounce');
+    expect(db.listAiRuns()).toEqual([]);
   });
 });
 
@@ -1112,6 +1183,237 @@ describe('brainstorm sessions', () => {
   });
 });
 
+describe('ai activity log', () => {
+  it('round-trips a run', () => {
+    const run = db.createAiRun({
+      kind: 'generation',
+      refId: 'job-1',
+      questionId: null,
+      label: 'Generate: debounce utility',
+    });
+
+    expect(run.kind).toBe('generation');
+    expect(run.refId).toBe('job-1');
+    expect(run.questionId).toBeNull();
+    expect(run.label).toBe('Generate: debounce utility');
+    expect(run.status).toBe('running');
+    expect(run.errorMessage).toBeNull();
+    expect(run.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(run.finishedAt).toBeNull();
+
+    expect(db.getAiRun(run.id)).toEqual(run);
+    expect(db.getAiRun('nope')).toBeNull();
+  });
+
+  it('createAiRun defaults refId/questionId to null when omitted', () => {
+    const run = db.createAiRun({ kind: 'brainstorm', label: 'Brainstorm' });
+    expect(run.refId).toBeNull();
+    expect(run.questionId).toBeNull();
+  });
+
+  it('finishAiRun stamps finishedAt for done and error outcomes', () => {
+    const done = db.finishAiRun(db.createAiRun({ kind: 'review', label: 'r' }).id, {
+      status: 'done',
+    });
+    expect(done.status).toBe('done');
+    expect(done.errorMessage).toBeNull();
+    expect(done.finishedAt).not.toBeNull();
+
+    const errored = db.finishAiRun(db.createAiRun({ kind: 'dispute', label: 'd' }).id, {
+      status: 'error',
+      errorMessage: 'LLM call timed out',
+    });
+    expect(errored.status).toBe('error');
+    expect(errored.errorMessage).toBe('LLM call timed out');
+    expect(errored.finishedAt).not.toBeNull();
+
+    expect(() => db.finishAiRun('nope', { status: 'done' })).toThrow(/unknown ai run/);
+  });
+
+  it('createAiStep assigns seq per run and round-trips fields', () => {
+    const run = db.createAiRun({ kind: 'generation', refId: 'job-1', label: 'g' });
+    const other = db.createAiRun({ kind: 'generation', refId: 'job-2', label: 'g2' });
+
+    const s1 = db.createAiStep({
+      runId: run.id,
+      kind: 'llm',
+      slug: 'generate',
+      label: 'Author question',
+      promptText: 'the masked prompt',
+      withheldKeys: ['referenceSolution', 'interviewerPacket'],
+    });
+    expect(s1.runId).toBe(run.id);
+    expect(s1.seq).toBe(1);
+    expect(s1.kind).toBe('llm');
+    expect(s1.slug).toBe('generate');
+    expect(s1.label).toBe('Author question');
+    expect(s1.status).toBe('running');
+    expect(s1.attempt).toBe(1);
+    expect(s1.promptText).toBe('the masked prompt');
+    expect(s1.promptWithheld).toBe(false);
+    expect(s1.responseText).toBeNull();
+    expect(s1.withheldKeys).toEqual(['referenceSolution', 'interviewerPacket']);
+    expect(s1.detail).toBeNull();
+    expect(s1.errorMessage).toBeNull();
+    expect(s1.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(s1.finishedAt).toBeNull();
+
+    const s2 = db.createAiStep({
+      runId: run.id,
+      kind: 'sandbox',
+      slug: 'verify',
+      label: 'Verify tests',
+      attempt: 2,
+    });
+    expect(s2.seq).toBe(2);
+    expect(s2.attempt).toBe(2);
+    expect(s2.promptText).toBeNull();
+    expect(s2.withheldKeys).toBeNull();
+
+    // seq is scoped per run, not global
+    const sOther = db.createAiStep({ runId: other.id, kind: 'llm', slug: 'generate', label: 'x' });
+    expect(sOther.seq).toBe(1);
+
+    expect(db.getAiStep(s1.id)).toEqual(s1);
+    expect(db.getAiStep('nope')).toBeNull();
+    expect(() =>
+      db.createAiStep({ runId: 'nope', kind: 'llm', slug: 'generate', label: 'x' }),
+    ).toThrow(/unknown ai run/);
+  });
+
+  it('a fully withheld prompt stores promptWithheld with a null promptText', () => {
+    const run = db.createAiRun({ kind: 'generation', label: 'g' });
+    const step = db.createAiStep({
+      runId: run.id,
+      kind: 'llm',
+      slug: 'edge-audit',
+      label: 'Edge audit',
+      promptText: null,
+      promptWithheld: true,
+    });
+    expect(step.promptText).toBeNull();
+    expect(step.promptWithheld).toBe(true);
+  });
+
+  it('appendAiStepResponse replaces the accumulated snapshot, idempotently', () => {
+    const run = db.createAiRun({ kind: 'generation', label: 'g' });
+    const step = db.createAiStep({ runId: run.id, kind: 'llm', slug: 'generate', label: 'x' });
+
+    expect(db.appendAiStepResponse(step.id, 'partial').responseText).toBe('partial');
+    expect(db.appendAiStepResponse(step.id, 'partial, now longer').responseText).toBe(
+      'partial, now longer',
+    );
+    // re-flushing the same accumulated buffer is a no-op
+    expect(db.appendAiStepResponse(step.id, 'partial, now longer').responseText).toBe(
+      'partial, now longer',
+    );
+    expect(() => db.appendAiStepResponse('nope', 'x')).toThrow(/unknown ai step/);
+  });
+
+  it('caps oversized prompt/response text head-and-tail with an elision marker', () => {
+    const cap = 64 * 1024;
+    const big = 'a'.repeat(100_000);
+    const run = db.createAiRun({ kind: 'generation', label: 'g' });
+
+    const step = db.createAiStep({
+      runId: run.id,
+      kind: 'llm',
+      slug: 'repair',
+      label: 'Repair',
+      promptText: big,
+    });
+    // head + tail survive around the marker; total stays near the cap
+    expect(step.promptText!.length).toBeLessThan(cap + 100);
+    expect(step.promptText!.startsWith('a'.repeat(1000))).toBe(true);
+    expect(step.promptText!.endsWith('a'.repeat(1000))).toBe(true);
+    expect(step.promptText).toContain(`… (${100_000 - cap} chars elided) …`);
+
+    const flushed = db.appendAiStepResponse(step.id, big);
+    expect(flushed.responseText).toContain('chars elided');
+    expect(flushed.responseText!.length).toBeLessThan(cap + 100);
+
+    // under-cap text is stored verbatim
+    const small = db.createAiStep({
+      runId: run.id,
+      kind: 'llm',
+      slug: 'generate',
+      label: 'x',
+      promptText: 'short prompt',
+    });
+    expect(small.promptText).toBe('short prompt');
+  });
+
+  it('finishAiStep sets a terminal status and preserves streamed response when omitted', () => {
+    const run = db.createAiRun({ kind: 'generation', label: 'g' });
+    const step = db.createAiStep({ runId: run.id, kind: 'sandbox', slug: 'verify', label: 'v' });
+    db.appendAiStepResponse(step.id, 'streamed so far');
+
+    const done = db.finishAiStep(step.id, { status: 'done', detail: '12/12 passed' });
+    expect(done.status).toBe('done');
+    expect(done.detail).toBe('12/12 passed');
+    expect(done.responseText).toBe('streamed so far');
+    expect(done.errorMessage).toBeNull();
+    expect(done.finishedAt).not.toBeNull();
+
+    const errored = db.finishAiStep(
+      db.createAiStep({ runId: run.id, kind: 'llm', slug: 'repair', label: 'r' }).id,
+      { status: 'error', errorMessage: 'boom', responseText: 'final salvage' },
+    );
+    expect(errored.status).toBe('error');
+    expect(errored.errorMessage).toBe('boom');
+    expect(errored.responseText).toBe('final salvage');
+
+    const skipped = db.finishAiStep(
+      db.createAiStep({ runId: run.id, kind: 'llm', slug: 'edge-audit', label: 'e' }).id,
+      { status: 'skipped' },
+    );
+    expect(skipped.status).toBe('skipped');
+
+    expect(() => db.finishAiStep('nope', { status: 'done' })).toThrow(/unknown ai step/);
+  });
+
+  it('listAiRuns returns newest first with limit/kind/refId filters', () => {
+    const r1 = db.createAiRun({ kind: 'generation', refId: 'job-1', label: 'one' });
+    const r2 = db.createAiRun({ kind: 'review', refId: 'rev-1', label: 'two' });
+    // a retry of job-1: same ref_id, fresh run — per-retry history for free
+    const r3 = db.createAiRun({ kind: 'generation', refId: 'job-1', label: 'three' });
+
+    expect(db.listAiRuns().map((r) => r.id)).toEqual([r3.id, r2.id, r1.id]);
+    expect(db.listAiRuns({ limit: 2 }).map((r) => r.id)).toEqual([r3.id, r2.id]);
+    expect(db.listAiRuns({ kind: 'generation' }).map((r) => r.id)).toEqual([r3.id, r1.id]);
+    expect(db.listAiRuns({ refId: 'job-1' }).map((r) => r.id)).toEqual([r3.id, r1.id]);
+    expect(db.listAiRuns({ kind: 'review', refId: 'rev-1' }).map((r) => r.id)).toEqual([r2.id]);
+    expect(db.listAiRuns({ kind: 'review', refId: 'job-1' })).toEqual([]);
+    expect(db.listAiRuns({ kind: 'generation', refId: 'job-1', limit: 1 }).map((r) => r.id)).toEqual(
+      [r3.id],
+    );
+  });
+
+  it('pruneAiRuns keeps the newest N and cascade-deletes their steps', () => {
+    const runs = ['one', 'two', 'three', 'four', 'five'].map((label) => {
+      const run = db.createAiRun({ kind: 'generation', label });
+      const step = db.createAiStep({ runId: run.id, kind: 'llm', slug: 'generate', label });
+      return { run, step };
+    });
+
+    expect(db.pruneAiRuns(2)).toBe(3);
+    expect(db.listAiRuns().map((r) => r.id)).toEqual([runs[4].run.id, runs[3].run.id]);
+
+    // ON DELETE CASCADE dropped the pruned runs' steps, kept the rest
+    expect(db.getAiStep(runs[0].step.id)).toBeNull();
+    expect(db.getAiStep(runs[1].step.id)).toBeNull();
+    expect(db.getAiStep(runs[2].step.id)).toBeNull();
+    expect(db.getAiStep(runs[3].step.id)).not.toBeNull();
+    expect(db.getAiStep(runs[4].step.id)).not.toBeNull();
+
+    // pruning again is a no-op
+    expect(db.pruneAiRuns(2)).toBe(0);
+    // and the default keep of 200 deletes nothing here
+    expect(db.pruneAiRuns()).toBe(0);
+    expect(db.listAiRuns()).toHaveLength(2);
+  });
+});
+
 describe('sweepInterruptedGenerationState', () => {
   it('flips only non-terminal generation_jobs/brainstorm_sessions rows, preserving llm_done payload', () => {
     const running = db.createGenerationJob({ category: 'js-ts', difficulty: 'easy', topic: 'a' });
@@ -1185,5 +1487,53 @@ describe('sweepInterruptedGenerationState', () => {
     const erroredSessionAfter = db.getBrainstormSession(erroredSession.id)!;
     expect(erroredSessionAfter.status).toBe('error');
     expect(erroredSessionAfter.errorMessage).toBe('pre-existing error');
+  });
+
+  it('flips running ai runs/steps to error, leaving terminal rows untouched', () => {
+    const interrupted = db.createAiRun({ kind: 'generation', refId: 'job-1', label: 'mid-run' });
+    const runningStep = db.createAiStep({
+      runId: interrupted.id,
+      kind: 'llm',
+      slug: 'generate',
+      label: 'Author question',
+    });
+    const doneStep = db.createAiStep({
+      runId: interrupted.id,
+      kind: 'sandbox',
+      slug: 'verify',
+      label: 'Verify tests',
+    });
+    db.finishAiStep(doneStep.id, { status: 'done', detail: '5/5 passed' });
+
+    const finishedSeed = db.createAiRun({ kind: 'review', label: 'already finished' });
+    const finishedStep = db.createAiStep({
+      runId: finishedSeed.id,
+      kind: 'llm',
+      slug: 'review',
+      label: 'Review',
+    });
+    const terminalStep = db.finishAiStep(finishedStep.id, { status: 'done' });
+    const finished = db.finishAiRun(finishedSeed.id, { status: 'done' });
+
+    db.sweepInterruptedGenerationState();
+
+    const sweptRun = db.getAiRun(interrupted.id)!;
+    expect(sweptRun.status).toBe('error');
+    expect(sweptRun.errorMessage).toBe('interrupted by a server restart');
+    expect(sweptRun.finishedAt).not.toBeNull();
+
+    const sweptStep = db.getAiStep(runningStep.id)!;
+    expect(sweptStep.status).toBe('error');
+    expect(sweptStep.errorMessage).toBe('interrupted by a server restart');
+    expect(sweptStep.finishedAt).not.toBeNull();
+
+    // terminal rows untouched, even inside the swept run
+    const doneStepAfter = db.getAiStep(doneStep.id)!;
+    expect(doneStepAfter.status).toBe('done');
+    expect(doneStepAfter.detail).toBe('5/5 passed');
+    expect(doneStepAfter.errorMessage).toBeNull();
+
+    expect(db.getAiRun(finished.id)).toEqual(finished);
+    expect(db.getAiStep(terminalStep.id)).toEqual(terminalStep);
   });
 });
