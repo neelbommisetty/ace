@@ -6,9 +6,11 @@ import {
   findDisallowedImports,
   generateVerifiedQuestion,
   GenerationVerifyError,
+  verifyFailureDetail,
   type EdgeAuditResult,
   type GeneratedQuestion,
   type GenerationPhase,
+  type GenerationStepsSink,
 } from './gen-pipeline.js';
 import { maskPromptText, WITHHELD_MARKER } from './spoilers.js';
 
@@ -254,6 +256,233 @@ describe('generateVerifiedQuestion', () => {
     expect(calls).toHaveLength(2);
     // Design audits get the critique framing, not code artifacts.
     expect(calls[1].user).not.toContain('## Test File');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Activity-log step recording (NEE-268) — via the structural steps sink.
+// ---------------------------------------------------------------------------
+
+interface RecordedStep {
+  slug: string;
+  label: string;
+  kind: string;
+  attempt?: number;
+  prompt?: string;
+  withholdPrompt?: boolean;
+  status?: 'done' | 'error' | 'skipped';
+  outcome?: string;
+  partials: number;
+}
+
+function makeStepsSink() {
+  const recorded: RecordedStep[] = [];
+  const secrets: string[] = [];
+  const sink: GenerationStepsSink = {
+    step(spec) {
+      const rec: RecordedStep = { ...spec, partials: 0 };
+      recorded.push(rec);
+      return {
+        append() {},
+        partial() {
+          rec.partials += 1;
+        },
+        done(detail?: string) {
+          rec.status = 'done';
+          rec.outcome = detail;
+        },
+        fail(message: string) {
+          rec.status = 'error';
+          rec.outcome = message;
+        },
+        skip(reason?: string) {
+          rec.status = 'skipped';
+          rec.outcome = reason;
+        },
+      };
+    },
+    registerSecret(text: string) {
+      secrets.push(text);
+    },
+  };
+  return { sink, recorded, secrets };
+}
+
+describe('step recording (NEE-268)', () => {
+  it('records the full taxonomy for a red-then-green run, with masked prompts and registered secrets', async () => {
+    const { llm } = makeLlm([STAGE1, STAGE1], [AUDIT_NOOP]);
+    const verify = makeVerify([RED, GREEN]);
+    const { sink, recorded, secrets } = makeStepsSink();
+
+    await generateVerifiedQuestion(PARAMS, { llm, verify, steps: sink });
+
+    expect(recorded.map((r) => [r.slug, r.status, r.outcome])).toEqual([
+      ['generate', 'done', undefined],
+      ['edge-audit', 'done', '1 edge case · 0 changes applied'],
+      ['static-check', 'done', 'ok'],
+      // Red verify: closed vocabulary — the failing test NAMES, never report text.
+      ['verify', 'error', 'autosaver › saves'],
+      ['repair', 'done', undefined],
+      ['static-check', 'done', 'ok'],
+      ['verify', 'done', '3/3 passed vs reference · stub fails as required'],
+    ]);
+
+    // The generate prompt is the caller's topic brief, shown as-is.
+    const generate = recorded[0];
+    expect(generate.prompt).toBe(PARAMS.userMessage);
+
+    // The audit prompt is the constructed masked twin — spoilers withheld.
+    const audit = recorded[1];
+    expect(audit.label).toBe('Auditing edge cases');
+    expect(audit.prompt).toContain(WITHHELD_MARKER);
+    expect(audit.prompt).not.toContain('return {} as never');
+
+    // Attempt labels carry the human-facing N/3.
+    expect(recorded[3].label).toBe('Running tests (attempt 1/3)');
+    expect(recorded[4].label).toBe('Fixing tests (attempt 2/3)');
+    expect(recorded[4].attempt).toBe(2);
+    expect(recorded[6].label).toBe('Running tests (attempt 2/3)');
+
+    // The repair prompt is masked: no reference body, no assertion diffs.
+    const repair = recorded[4];
+    expect(repair.prompt).toContain(WITHHELD_MARKER);
+    expect(repair.prompt).not.toContain('return {} as never');
+    expect(repair.prompt).not.toContain('expected 2 to be 1');
+
+    // Spoiler values AND the failure report registered as scrub literals.
+    expect(secrets).toContain(STAGE1.referenceSolution);
+    expect(secrets).toContain(STAGE1.interviewerPacket);
+    expect(secrets).toContain(RED.failureReport);
+  });
+
+  it('marks the last red step with the fixed exhausted phrase (never report text) when verification is exhausted', async () => {
+    const { llm } = makeLlm([STAGE1, STAGE1, STAGE1], [AUDIT_NOOP]);
+    const verify = makeVerify([RED, RED, RED]);
+    const { sink, recorded } = makeStepsSink();
+
+    await expect(
+      generateVerifiedQuestion(PARAMS, { llm, verify, steps: sink }),
+    ).rejects.toBeInstanceOf(GenerationVerifyError);
+
+    const verifies = recorded.filter((r) => r.slug === 'verify');
+    expect(verifies.map((r) => [r.status, r.outcome])).toEqual([
+      ['error', 'autosaver › saves'],
+      ['error', 'autosaver › saves'],
+      ['error', 'verification exhausted after 3 attempts'],
+    ]);
+  });
+
+  it('records static-check failures with the closed detail vocabulary', async () => {
+    const doubleTrouble: GeneratedQuestion = {
+      ...STAGE1,
+      referenceSolution: null,
+      testCode: "import userEvent from '@testing-library/user-event';\n",
+    };
+    const { sink, recorded } = makeStepsSink();
+    const { llm } = makeLlm([doubleTrouble, STAGE1], [AUDIT_NOOP]);
+
+    await generateVerifiedQuestion(PARAMS, { llm, verify: makeVerify([GREEN]), steps: sink });
+
+    const check = recorded.find((r) => r.slug === 'static-check')!;
+    expect(check.status).toBe('error');
+    expect(check.outcome).toBe(
+      'missing: referenceSolution · imports outside allowlist: @testing-library/user-event',
+    );
+  });
+
+  it('records a skipped sandbox step for design categories', async () => {
+    const designStage1: GeneratedQuestion = {
+      ...STAGE1,
+      signature: null,
+      testCode: null,
+      referenceSolution: null,
+    };
+    const { sink, recorded } = makeStepsSink();
+    const { llm } = makeLlm([designStage1], [AUDIT_NOOP]);
+
+    await generateVerifiedQuestion(
+      { ...PARAMS, category: 'design-fe' },
+      { llm, verify: makeVerify([]), steps: sink },
+    );
+
+    expect(recorded.map((r) => [r.slug, r.status, r.outcome])).toEqual([
+      ['generate', 'done', undefined],
+      ['edge-audit', 'done', '1 edge case · 0 changes applied'],
+      ['verify', 'skipped', 'not applicable to design questions'],
+    ]);
+    expect(recorded[1].label).toBe('Critiquing requirements');
+  });
+
+  it('fails the llm step (and rethrows) when the call dies mid-stream', async () => {
+    const { sink, recorded } = makeStepsSink();
+    const chatObjectStream = vi.fn(async () => {
+      throw new Error('provider 500 during generate');
+    });
+
+    await expect(
+      generateVerifiedQuestion(PARAMS, {
+        llm: { chatObjectStream: chatObjectStream as never },
+        verify: makeVerify([]),
+        steps: sink,
+      }),
+    ).rejects.toThrow('provider 500 during generate');
+
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({
+      slug: 'generate',
+      status: 'error',
+      outcome: 'provider 500 during generate',
+    });
+  });
+});
+
+describe('verifyFailureDetail (closed vocabulary)', () => {
+  it('surfaces only the ✕ test names, joined and capped', () => {
+    expect(verifyFailureDetail('✕ a\nexpected 1 to be 2\n\n✕ suite › b\nmore diff')).toBe(
+      'a · suite › b',
+    );
+    const long = `✕ ${'n'.repeat(300)}\nboom`;
+    const detail = verifyFailureDetail(long);
+    expect(detail.length).toBe(201);
+    expect(detail.endsWith('…')).toBe(true);
+  });
+
+  it('maps the known synthetic reports to fixed phrases', () => {
+    expect(verifyFailureDetail('verification run timed out after 120s — look for …')).toBe(
+      'verification run timed out',
+    );
+    expect(verifyFailureDetail('stub verification run timed out after 120s — …')).toBe(
+      'stub verification run timed out',
+    );
+    expect(
+      verifyFailureDetail('every test passes against the unimplemented starter stub — …'),
+    ).toBe('the suite is vacuous');
+    expect(
+      verifyFailureDetail('vitest produced no parseable JSON report (likely a syntax error)'),
+    ).toBe('vitest produced no parseable report');
+    expect(
+      verifyFailureDetail('the stub verification run produced no parseable JSON report'),
+    ).toBe('vitest produced no parseable report');
+    expect(verifyFailureDetail('no tests ran — the suite failed to load or compile:\nframes')).toBe(
+      'no tests ran — the suite failed to load or compile',
+    );
+    expect(verifyFailureDetail('the test file contains no tests — write real assertions')).toBe(
+      'the test file contains no tests',
+    );
+    expect(verifyFailureDetail('no tests ran against the starter stub — the stub …')).toBe(
+      'no tests ran against the starter stub',
+    );
+    expect(verifyFailureDetail('verification failed with no report')).toBe(
+      'verification failed with no report',
+    );
+  });
+
+  it('fails CLOSED on anything unrecognized — raw stderr never leaks', () => {
+    expect(
+      verifyFailureDetail(
+        'SyntaxError: unexpected token in solution.ts\n  const SECRET_REFERENCE_BODY = 42;',
+      ),
+    ).toBe('verification failed');
   });
 });
 

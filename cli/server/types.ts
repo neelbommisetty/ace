@@ -363,6 +363,34 @@ export interface SseEventMap {
   'generation-done': { jobId: string; question: QuestionRow };
   'generation-error': { jobId: string; message: string };
   /**
+   * AI activity log (NEE-268). Step responses stream as coalesced per-key
+   * text ops; prompts NEVER ride SSE (multi-KB × every connected tab) —
+   * clients fetch the full step on demand. `withheldKeys` arrives on
+   * ai-step-started so the `█ withheld █` lines can render while the stream
+   * is still filling.
+   */
+  'ai-run-started': { run: AiRunRow };
+  'ai-step-started': { runId: string; step: AiStepSummary };
+  'ai-step-chunk': {
+    runId: string;
+    stepId: string;
+    ops: Array<{ key: string; op: 'append' | 'set'; text: string }>;
+  };
+  'ai-step-done': {
+    runId: string;
+    stepId: string;
+    status: 'done' | 'error' | 'skipped';
+    detail: string | null;
+    errorMessage: string | null;
+    finishedAt: string;
+  };
+  'ai-run-done': {
+    runId: string;
+    status: 'done' | 'error';
+    errorMessage: string | null;
+    finishedAt: string;
+  };
+  /**
    * Emitted once, after the new session is live, at the end of a workspace
    * reset. `requestId` echoes back whatever the initiating
    * `POST /api/workspace/reset` request sent (or a server-minted fallback if

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { CATEGORY_SLUGS } from '../lib/categories.js';
 import { chatObject, type LLMMessage } from '../lib/llm.js';
 import { buildBrainstormPrompt } from '../lib/prompt-builder.js';
+import type { AiLog } from './ai-log.js';
 import { resolveProvider } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, BrainstormTurn } from './types.js';
@@ -91,6 +92,12 @@ export function createBrainstormEngine(opts: {
   bus: Bus;
   workspaceRoot: string;
   llm?: BrainstormLlm;
+  /**
+   * AI activity recorder (NEE-268) — accepted for uniform session wiring;
+   * this engine's runs are not recorded yet (generation is instrumented
+   * first).
+   */
+  aiLog?: AiLog;
 }): BrainstormEngine {
   const { db, bus } = opts;
   const llm = opts.llm ?? { chatObject };

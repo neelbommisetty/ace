@@ -11,15 +11,17 @@ import {
   generateVerifiedQuestion,
   GenerationVerifyError,
   GeneratedQuestionSchema,
+  MAX_VERIFY_ATTEMPTS,
   type GeneratedQuestion,
 } from '../lib/gen-pipeline.js';
 import type { VerifyFn } from '../lib/gen-verify.js';
 import { chatObjectStream, type LLMProvider } from '../lib/llm.js';
 import { formatReferenceSolutionMd, scaffoldQuestionAt } from '../lib/scaffold.js';
 import { splitSpoilers } from '../lib/spoilers.js';
+import { NULL_AI_LOG, type AiLog } from './ai-log.js';
 import { resolveProvider as resolveProviderFromSettings } from './settings.js';
 import type { Bus } from './sse.js';
-import type { AceDb, Difficulty, GenerationJobRow } from './types.js';
+import type { AceDb, Difficulty, GenerationJobRow, QuestionRow } from './types.js';
 
 // Canonical schema/type now live in cli/lib/gen-pipeline.ts (shared with the
 // CLI); re-exported so existing importers keep working.
@@ -128,10 +130,17 @@ export function createGenerationEngine(opts: {
    * the real sandbox verifier inside generateVerifiedQuestion.
    */
   verify?: VerifyFn;
+  /**
+   * AI activity recorder (NEE-268). Defaults to the zero-behaviour
+   * NULL_AI_LOG, so CLI-style embedding and every pre-existing test run
+   * unchanged; the server session passes the shared recorder.
+   */
+  aiLog?: AiLog;
 }): GenerationEngine {
   const { db, bus, workspaceRoot } = opts;
   const llm = opts.llm ?? { chatObjectStream };
   const resolveProvider = opts.resolveProvider ?? resolveProviderFromSettings;
+  const aiLog = opts.aiLog ?? NULL_AI_LOG;
   const inFlight = new Set<string>();
   let disposed = false;
 
@@ -145,6 +154,17 @@ export function createGenerationEngine(opts: {
     const jobId = job.id;
     const category = job.category as CategorySlug;
     const difficulty = job.difficulty;
+    // One activity-log run per runJob invocation — a retry mints a NEW run
+    // with the same refId (the run id is never the jobId). Created before
+    // anything can fail, so even a missing API key leaves a (zero-step)
+    // errored run behind for Activity to render. Recording is best-effort
+    // throughout and never touches the job's own state.
+    const run = aiLog.startRun({
+      kind: 'generation',
+      refId: jobId,
+      questionId: null,
+      label: job.topic,
+    });
     // True once generateVerifiedQuestion returned green (or we resumed from
     // an already-persisted result). Until then, any per-stage `result` in the
     // db is UNVERIFIED — an error must clear it so retry re-runs the full
@@ -196,6 +216,10 @@ Question type: ${config.type}`;
                 // llm_done patch below has the salvage path.
               }
             },
+            // The AiRunHandle structurally satisfies the pipeline's steps
+            // sink — the pipeline records its own llm/static-check/verify
+            // steps; only `scaffold` (below) lives out here.
+            steps: run,
           },
         );
         parsed = outcome.question;
@@ -226,107 +250,124 @@ Question type: ${config.type}`;
         }
       }
 
-      // Slug: if this job already has one recorded (a prior attempt — full
-      // run or retry — got at least as far as persisting it), reuse it as-is
-      // rather than re-resolving/re-suffixing — UNLESS a *generated* question
-      // already exists in the db under that (category, slug). An
-      // 'error'-state job's own `questionId` is always null (the only place
-      // that's ever set is the 'done' patch below, and 'done' jobs can't be
-      // retried), so an existing row with source 'generated' there can only
-      // be a DIFFERENT job's completed output that raced in after this job
-      // reserved the slug but before it scaffolded — reusing it would
-      // silently overwrite that job's question via upsertQuestion's ON
-      // CONFLICT. (A 'manual' row at this slug, by contrast, is exactly the
-      // boot-reconcile race this job's own leftover scaffold artifacts can
-      // produce — see the provenance re-assertion below — and must still be
-      // reused/corrected, not treated as a collision.) In the collision
-      // case, drop the stale reservation and resolve fresh instead.
-      // Otherwise resolve fresh: the LLM-supplied slug is validated/
-      // sanitized and, on a collision, suffixed -2..-9. Recorded on the job
-      // row BEFORE any file I/O so a retry after a scaffold failure reuses
-      // the same slug rather than re-suffixing or spending a second LLM call.
-      let slug: string;
-      let dir: string;
-      const staleSlugTaken = job.slug
-        ? db.getQuestion(category, job.slug)?.source === 'generated'
-        : false;
-      if (job.slug && !staleSlugTaken) {
-        slug = job.slug;
-        dir = path.join(workspaceRoot, 'questions', category, slug);
-      } else {
-        slug = resolveSlug(db, workspaceRoot, category, parsed.slug, title, job.topic);
-        dir = path.join(workspaceRoot, 'questions', category, slug);
-        db.patchGenerationJob(jobId, { slug });
-      }
-
-      // If the dir already exists (a partial prior attempt got as far as
-      // writing files before failing later in the pipeline), reuse it as-is —
-      // idempotent, no re-suffix, no re-scaffold. But a dir that exists with
-      // zero files is not a completed scaffold — it's the leftover of a
-      // prior write failure right after the dir was created (e.g. disk full
-      // on the very first file) — wipe it so the scaffold step below runs
-      // fresh instead of the job landing 'done' with a permanently empty,
-      // unrecoverable question dir (patchGenerationJob rejects any patch
-      // once status is 'done').
-      let dirAlreadyExists = fs.existsSync(dir);
-      if (dirAlreadyExists && fs.readdirSync(dir).length === 0) {
-        fs.rmSync(dir, { recursive: true, force: true });
-        dirAlreadyExists = false;
-      }
-
-      // LLM solutionCode is always discarded (anti-cheat rule) — the
-      // scaffold templates build a stub from the signature instead. Wrapped
-      // separately so a post-LLM-success I/O failure (disk full, permission
-      // denied, a last-instant dir collision) never loses the already-persisted
-      // result_json — the outer catch below patches status 'error' without
-      // touching the `result` field, so it stays intact for a scaffold-only retry.
-      if (!dirAlreadyExists) {
-        try {
-          ({ dir } = scaffoldQuestionAt(
-            workspaceRoot,
-            {
-              title,
-              slug,
-              category,
-              difficulty,
-              description: parsed.description || '',
-              signature: parsed.signature ?? undefined,
-              testCode: parsed.testCode ?? undefined,
-              interviewerPacket: parsed.interviewerPacket ?? undefined,
-              referenceSolutionMd: parsed.referenceSolution
-                ? formatReferenceSolutionMd(parsed.referenceSolution)
-                : undefined,
-            },
-            { writeScorecard: false },
-          ));
-        } catch (scaffoldErr) {
-          const reason = scaffoldErr instanceof Error ? scaffoldErr.message : String(scaffoldErr);
-          throw new Error(
-            `question files could not be written (${reason}) — result is saved, retry to resume`,
-          );
-        }
-      }
-
-      const upserted = db.upsertQuestion({
-        category,
-        slug,
-        title,
-        difficulty,
-        suggestedMinutes: getSuggestedTime(category, difficulty),
-        dirPath: dir,
-        source: 'generated',
+      // Everything from slug resolution through the question upsert is the
+      // 'scaffold' activity step — it lives outside the pipeline, so runJob
+      // records it itself. A scaffold-only retry resume shows exactly this
+      // one step, so the retry isn't invisible in Activity.
+      const scaffoldStep = run.step({
+        slug: 'scaffold',
+        label: 'Writing question files',
+        kind: 'scaffold',
       });
-      // Re-assert provenance: covers the crash window where boot-time
-      // reconcile already inserted this scorecard-less dir as source
-      // 'manual', which upsertQuestion's insert-only source semantics can
-      // never correct on its own. `upserted.source` itself may still read
-      // stale ('manual') here — the ON CONFLICT branch never touches
-      // `source` — so the corrected value is applied locally too, rather
-      // than emitting/persisting-on-the-job a snapshot that's already wrong.
-      db.setQuestionSource(upserted.id, 'generated');
-      const question = { ...upserted, source: 'generated' as const };
+      let question: QuestionRow;
+      let slug: string;
+      try {
+        // Slug: if this job already has one recorded (a prior attempt — full
+        // run or retry — got at least as far as persisting it), reuse it as-is
+        // rather than re-resolving/re-suffixing — UNLESS a *generated* question
+        // already exists in the db under that (category, slug). An
+        // 'error'-state job's own `questionId` is always null (the only place
+        // that's ever set is the 'done' patch below, and 'done' jobs can't be
+        // retried), so an existing row with source 'generated' there can only
+        // be a DIFFERENT job's completed output that raced in after this job
+        // reserved the slug but before it scaffolded — reusing it would
+        // silently overwrite that job's question via upsertQuestion's ON
+        // CONFLICT. (A 'manual' row at this slug, by contrast, is exactly the
+        // boot-reconcile race this job's own leftover scaffold artifacts can
+        // produce — see the provenance re-assertion below — and must still be
+        // reused/corrected, not treated as a collision.) In the collision
+        // case, drop the stale reservation and resolve fresh instead.
+        // Otherwise resolve fresh: the LLM-supplied slug is validated/
+        // sanitized and, on a collision, suffixed -2..-9. Recorded on the job
+        // row BEFORE any file I/O so a retry after a scaffold failure reuses
+        // the same slug rather than re-suffixing or spending a second LLM call.
+        let dir: string;
+        const staleSlugTaken = job.slug
+          ? db.getQuestion(category, job.slug)?.source === 'generated'
+          : false;
+        if (job.slug && !staleSlugTaken) {
+          slug = job.slug;
+          dir = path.join(workspaceRoot, 'questions', category, slug);
+        } else {
+          slug = resolveSlug(db, workspaceRoot, category, parsed.slug, title, job.topic);
+          dir = path.join(workspaceRoot, 'questions', category, slug);
+          db.patchGenerationJob(jobId, { slug });
+        }
+
+        // If the dir already exists (a partial prior attempt got as far as
+        // writing files before failing later in the pipeline), reuse it as-is —
+        // idempotent, no re-suffix, no re-scaffold. But a dir that exists with
+        // zero files is not a completed scaffold — it's the leftover of a
+        // prior write failure right after the dir was created (e.g. disk full
+        // on the very first file) — wipe it so the scaffold step below runs
+        // fresh instead of the job landing 'done' with a permanently empty,
+        // unrecoverable question dir (patchGenerationJob rejects any patch
+        // once status is 'done').
+        let dirAlreadyExists = fs.existsSync(dir);
+        if (dirAlreadyExists && fs.readdirSync(dir).length === 0) {
+          fs.rmSync(dir, { recursive: true, force: true });
+          dirAlreadyExists = false;
+        }
+
+        // LLM solutionCode is always discarded (anti-cheat rule) — the
+        // scaffold templates build a stub from the signature instead. Wrapped
+        // separately so a post-LLM-success I/O failure (disk full, permission
+        // denied, a last-instant dir collision) never loses the already-persisted
+        // result_json — the outer catch below patches status 'error' without
+        // touching the `result` field, so it stays intact for a scaffold-only retry.
+        if (!dirAlreadyExists) {
+          try {
+            ({ dir } = scaffoldQuestionAt(
+              workspaceRoot,
+              {
+                title,
+                slug,
+                category,
+                difficulty,
+                description: parsed.description || '',
+                signature: parsed.signature ?? undefined,
+                testCode: parsed.testCode ?? undefined,
+                interviewerPacket: parsed.interviewerPacket ?? undefined,
+                referenceSolutionMd: parsed.referenceSolution
+                  ? formatReferenceSolutionMd(parsed.referenceSolution)
+                  : undefined,
+              },
+              { writeScorecard: false },
+            ));
+          } catch (scaffoldErr) {
+            const reason = scaffoldErr instanceof Error ? scaffoldErr.message : String(scaffoldErr);
+            throw new Error(
+              `question files could not be written (${reason}) — result is saved, retry to resume`,
+            );
+          }
+        }
+
+        const upserted = db.upsertQuestion({
+          category,
+          slug,
+          title,
+          difficulty,
+          suggestedMinutes: getSuggestedTime(category, difficulty),
+          dirPath: dir,
+          source: 'generated',
+        });
+        // Re-assert provenance: covers the crash window where boot-time
+        // reconcile already inserted this scorecard-less dir as source
+        // 'manual', which upsertQuestion's insert-only source semantics can
+        // never correct on its own. `upserted.source` itself may still read
+        // stale ('manual') here — the ON CONFLICT branch never touches
+        // `source` — so the corrected value is applied locally too, rather
+        // than emitting/persisting-on-the-job a snapshot that's already wrong.
+        db.setQuestionSource(upserted.id, 'generated');
+        question = { ...upserted, source: 'generated' as const };
+      } catch (err) {
+        scaffoldStep.fail(err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+      scaffoldStep.done(`questions/${category}/${slug}`);
 
       db.patchGenerationJob(jobId, { status: 'done', questionId: question.id });
+      run.done();
       bus.emit('generation-done', { jobId, question });
     } catch (err) {
       if (!disposed) {
@@ -346,6 +387,9 @@ Question type: ${config.type}`;
           } catch {
             // job row may already be in a terminal state — nothing more to do
           }
+          // Fixed phrase, never err.message: it embeds the failure report's
+          // first line, which must not become ai_runs/ai_steps text.
+          run.fail(`verification exhausted after ${MAX_VERIFY_ATTEMPTS} attempts`);
           bus.emit('generation-error', { jobId, message });
           return;
         }
@@ -369,6 +413,9 @@ Question type: ${config.type}`;
         } catch {
           // job row may already be in a terminal state — nothing more to do
         }
+        // The recorder masks + secret-scrubs the message; `rawText` (the
+        // unparsed answer key on NoObjectGeneratedError) is never given to it.
+        run.fail(message);
         bus.emit('generation-error', { jobId, message });
       }
     } finally {

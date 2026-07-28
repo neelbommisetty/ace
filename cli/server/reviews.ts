@@ -10,6 +10,7 @@ import {
 import { chatObject, chatStream, getModelId, type LLMMessage } from '../lib/llm.js';
 import { buildQuestionSection, buildSystemPrompt } from '../lib/prompt-builder.js';
 import { getStubContent } from '../lib/scaffold.js';
+import type { AiLog } from './ai-log.js';
 import { saveBlob } from './blobs.js';
 import { sha1, toWorkspaceRelPath } from './files.js';
 import { uuidv7 } from './ids.js';
@@ -260,6 +261,12 @@ export function createReviewEngine(opts: {
   db: AceDb;
   bus: Bus;
   workspaceRoot: string;
+  /**
+   * AI activity recorder (NEE-268) — accepted for uniform session wiring;
+   * this engine's runs are not recorded yet (generation is instrumented
+   * first).
+   */
+  aiLog?: AiLog;
 }): ReviewEngine {
   const { db, bus, workspaceRoot } = opts;
   const inFlight = new Map<string, ReviewJob>();

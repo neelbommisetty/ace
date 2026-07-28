@@ -230,6 +230,45 @@ export interface BrainstormSessionRow {
   updatedAt: string;
 }
 
+export type AiRunKind = 'generation' | 'review' | 'dispute' | 'brainstorm';
+export type AiRunStatus = 'running' | 'done' | 'error';
+export type AiStepKind = 'llm' | 'sandbox' | 'static-check' | 'scaffold';
+export type AiStepStatus = 'running' | 'done' | 'error' | 'skipped';
+
+export interface AiRunRow {
+  id: string; // minted per run — NOT the engine's jobId (retry re-uses that)
+  kind: AiRunKind;
+  refId: string | null;
+  questionId: string | null;
+  label: string;
+  status: AiRunStatus;
+  errorMessage: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface AiStepRow {
+  id: string;
+  runId: string;
+  seq: number; // 1-based, per run
+  kind: AiStepKind;
+  slug: string; // 'generate' | 'edge-audit' | 'verify' | 'repair' | 'scaffold' | …
+  label: string;
+  status: AiStepStatus;
+  attempt: number;
+  promptText: string | null; // already masked server-side; null when withheld
+  promptWithheld: boolean;
+  responseText: string | null; // already masked server-side
+  withheldKeys: string[] | null; // e.g. ['referenceSolution', 'interviewerPacket']
+  detail: string | null; // one-line collapsed outcome, e.g. '12/12 passed'
+  errorMessage: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+/** `AiStepRow` minus the multi-KB prompt/response bodies — the list/SSE shape. */
+export type AiStepSummary = Omit<AiStepRow, 'promptText' | 'responseText'>;
+
 export interface ProviderSettings {
   configured: boolean;
   masked: string | null;
@@ -293,6 +332,33 @@ export interface SseEventMap {
   };
   'generation-done': { jobId: string; question: QuestionRow };
   'generation-error': { jobId: string; message: string };
+  /**
+   * AI activity log (NEE-268). Step responses stream as coalesced per-key
+   * text ops; prompts never ride SSE — clients fetch the full step on demand.
+   * `withheldKeys` arrives on ai-step-started so the `█ withheld █` lines can
+   * render while the stream is still filling.
+   */
+  'ai-run-started': { run: AiRunRow };
+  'ai-step-started': { runId: string; step: AiStepSummary };
+  'ai-step-chunk': {
+    runId: string;
+    stepId: string;
+    ops: Array<{ key: string; op: 'append' | 'set'; text: string }>;
+  };
+  'ai-step-done': {
+    runId: string;
+    stepId: string;
+    status: 'done' | 'error' | 'skipped';
+    detail: string | null;
+    errorMessage: string | null;
+    finishedAt: string;
+  };
+  'ai-run-done': {
+    runId: string;
+    status: 'done' | 'error';
+    errorMessage: string | null;
+    finishedAt: string;
+  };
   /**
    * `requestId` echoes back the initiating POST's own id (see
    * `resetWorkspace` in `api.ts`) so the initiating tab can recognize its

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { createAiLog } from './ai-log.js';
 import { createBrainstormEngine, type BrainstormEngine } from './brainstorm.js';
 import { openDb } from './db.js';
 import { createDisputeEngine, type DisputeEngine } from './disputes.js';
@@ -113,14 +114,20 @@ export function createWorkspaceSession(opts: CreateWorkspaceSessionOptions): Wor
   // than hanging forever as "in progress" with no engine left to resume it.
   db.sweepInterruptedGenerationState();
 
+  // One AI-activity recorder shared by all four AI engines (NEE-268): every
+  // run they log lands in the same ai_runs/ai_steps tables and streams over
+  // the same bus. Engines default to NULL_AI_LOG when built without one, so
+  // tests supplying fakes are untouched.
+  const aiLog = createAiLog({ db, bus });
+
   const session: WorkspaceSession = {
     epoch: resolveEpoch(db),
     db,
     runner: engines.createRunner({ db, bus, workspaceRoot }),
-    reviews: engines.createReviewEngine({ db, bus, workspaceRoot }),
-    disputes: engines.createDisputeEngine({ db, bus, workspaceRoot }),
-    generation: engines.createGenerationEngine({ db, bus, workspaceRoot }),
-    brainstorm: engines.createBrainstormEngine({ db, bus, workspaceRoot }),
+    reviews: engines.createReviewEngine({ db, bus, workspaceRoot, aiLog }),
+    disputes: engines.createDisputeEngine({ db, bus, workspaceRoot, aiLog }),
+    generation: engines.createGenerationEngine({ db, bus, workspaceRoot, aiLog }),
+    brainstorm: engines.createBrainstormEngine({ db, bus, workspaceRoot, aiLog }),
     watcher: null,
     skippedDirs: [],
     reconcile(): void {

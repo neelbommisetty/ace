@@ -6,6 +6,7 @@ import { CATEGORIES, type CategoryConfig } from '../lib/categories.js';
 import { getImportMetaDirname } from '../lib/import-meta.js';
 import { chatObject, type LLMMessage } from '../lib/llm.js';
 import { buildQuestionSection } from '../lib/prompt-builder.js';
+import type { AiLog } from './ai-log.js';
 import { saveBlob } from './blobs.js';
 import { readWorkspaceFile, toWorkspaceRelPath, writeWorkspaceFile } from './files.js';
 import { uuidv7 } from './ids.js';
@@ -102,6 +103,12 @@ export function createDisputeEngine(opts: {
   db: AceDb;
   bus: Bus;
   workspaceRoot: string;
+  /**
+   * AI activity recorder (NEE-268) — accepted for uniform session wiring;
+   * this engine's runs are not recorded yet (generation is instrumented
+   * first).
+   */
+  aiLog?: AiLog;
 }): DisputeEngine {
   const { db, bus, workspaceRoot } = opts;
   const inFlight = new Map<string, string>(); // questionId → disputeJobId
