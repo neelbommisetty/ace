@@ -23,7 +23,7 @@ describe('generateVerifiedQuestion in mock mode', () => {
       referenceSolution: null,
       interviewerPacket: null,
     };
-    const chatObject = vi.fn(async () => stage1);
+    const chatObjectStream = vi.fn(async () => stage1);
     const verify = vi.fn();
 
     const result = await generateVerifiedQuestion(
@@ -34,12 +34,12 @@ describe('generateVerifiedQuestion in mock mode', () => {
         userMessage: 'topic',
         workspaceRoot: '/nonexistent-not-touched',
       },
-      { llm: { chatObject: chatObject as never }, verify: verify as never },
+      { llm: { chatObjectStream: chatObjectStream as never }, verify: verify as never },
     );
 
     expect(result.question.title).toBe('Two Sum');
     expect(result.edgeCases).toBeNull();
-    expect(chatObject).toHaveBeenCalledTimes(1);
+    expect(chatObjectStream).toHaveBeenCalledTimes(1);
     expect(verify).not.toHaveBeenCalled();
   });
 });

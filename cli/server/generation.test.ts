@@ -61,31 +61,40 @@ const VALID_GENERATED_PAYLOAD = {
   interviewerPacket: null,
 };
 
+/** The opts shape the pipeline's streaming call passes through to the fake. */
+interface FakeLlmOpts {
+  abortSignal?: AbortSignal;
+  maxOutputTokens?: number;
+  purpose?: string;
+  onPartial?: (partial: Record<string, unknown>) => void;
+}
+
 /**
- * Queue-based fake `chatObject`: each invocation pops the next handler.
- * Handlers return a raw payload — validated against the CALLER's own schema,
- * mirroring what `generateObject` really does — or throw directly.
+ * Queue-based fake `chatObjectStream` (the pipeline's sole entry point since
+ * NEE-264): each invocation pops the next handler. Handlers return a raw
+ * payload — validated against the CALLER's own schema, mirroring what the
+ * real call does — or throw directly.
  */
 function makeFakeLlm(
   handlers: Array<
     (
       provider: LLMProvider,
       messages: LLMMessage[],
-      opts?: { abortSignal?: AbortSignal; maxOutputTokens?: number },
+      opts?: FakeLlmOpts,
     ) => unknown | Promise<unknown>
   >,
 ) {
   const calls: Array<{
     provider: LLMProvider;
     messages: LLMMessage[];
-    opts?: { abortSignal?: AbortSignal; maxOutputTokens?: number };
+    opts?: FakeLlmOpts;
   }> = [];
   let i = 0;
-  const chatObject = async (
+  const chatObjectStream = async (
     provider: LLMProvider,
     messages: LLMMessage[],
     schema: any,
-    opts?: { abortSignal?: AbortSignal; maxOutputTokens?: number; purpose?: string },
+    opts?: FakeLlmOpts,
   ) => {
     // The pipeline's stage-2 edge-audit call is answered generically (no
     // changed artifacts) so handler queues — and the generate-call log —
@@ -106,7 +115,7 @@ function makeFakeLlm(
     return schema.parse(payload);
   };
   return {
-    llm: { chatObject } as unknown as Parameters<typeof createGenerationEngine>[0]['llm'],
+    llm: { chatObjectStream } as unknown as Parameters<typeof createGenerationEngine>[0]['llm'],
     calls,
   };
 }
@@ -266,13 +275,19 @@ describe('createGenerationEngine', () => {
     expect(fs.readFileSync(testPath, 'utf8').trim()).toBe(VALID_GENERATED_PAYLOAD.testCode.trim());
   });
 
-  it('lands on status error with a message when the llm call is aborted (simulating the 180s timeout)', async () => {
+  it('lands on status error with a message when the llm call is aborted mid-stream (simulating the stall timeout)', async () => {
     const { llm, calls } = makeFakeLlm([
       (provider, messages, opts) => {
-        // Real behavior: AbortSignal.timeout(180_000) is passed through as
-        // opts.abortSignal; simulate it firing without waiting 180s.
+        // Real behavior: the pipeline passes its stall/ceiling controller's
+        // signal as opts.abortSignal; simulate the stall abort landing
+        // mid-stream — after partials already flowed — without waiting 300s.
         expect(opts?.abortSignal).toBeInstanceOf(AbortSignal);
-        throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+        opts?.onPartial?.({ title: 'Two' });
+        opts?.onPartial?.({ title: 'Two Sum Variant' });
+        throw new DOMException(
+          'no output from the model for 300s — generation looks stalled',
+          'TimeoutError',
+        );
       },
     ]);
 
@@ -300,6 +315,10 @@ describe('createGenerationEngine', () => {
     expect(job.status).toBe('error');
     expect(job.errorMessage).toBe(message);
     expect(job.questionId).toBeNull();
+    // Persist-before-ack still holds with the abort landing mid-stream:
+    // un-parsed partials are never persisted (onStageResult only fires on
+    // complete stage outputs), so no unverified junk lands in `result`.
+    expect(job.result).toBeNull();
     expect(calls).toHaveLength(1);
     expect(engine.isAnyRunning()).toBe(false);
   });
@@ -980,7 +999,7 @@ describe('verified pipeline wiring', () => {
     let generateCalls = 0;
     let auditCalls = 0;
     const llm = {
-      chatObject: (async (_p: unknown, _m: unknown, schema: any, opts?: { purpose?: string }) => {
+      chatObjectStream: (async (_p: unknown, _m: unknown, schema: any, opts?: { purpose?: string }) => {
         if (opts?.purpose === 'edge-audit') {
           auditCalls++;
           if (auditCalls === 1) throw new Error('provider 500 during audit');

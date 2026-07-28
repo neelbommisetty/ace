@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { VerifyResult } from './gen-verify.js';
 import {
   findDisallowedImports,
@@ -48,15 +48,16 @@ interface CapturedCall {
 }
 
 /**
- * chatObject fake dispatching on opts.purpose: 'generate' calls pop from
- * `generates` (initial call first, then repairs); 'edge-audit' pops from
- * `audits`. Captures every call for message assertions.
+ * chatObjectStream fake dispatching on opts.purpose: 'generate' calls pop
+ * from `generates` (initial call first, then repairs); 'edge-audit' pops
+ * from `audits`. Captures every call for message assertions. The pipeline is
+ * streaming-only now (NEE-264), so the fake exposes only chatObjectStream.
  */
 function makeLlm(generates: GeneratedQuestion[], audits: EdgeAuditResult[]) {
   const calls: CapturedCall[] = [];
   const genQueue = [...generates];
   const auditQueue = [...audits];
-  const chatObject = vi.fn(async (_provider, messages, _schema, opts) => {
+  const chatObjectStream = vi.fn(async (_provider, messages, _schema, opts) => {
     calls.push({
       purpose: opts?.purpose,
       system: messages[0]?.content ?? '',
@@ -65,7 +66,7 @@ function makeLlm(generates: GeneratedQuestion[], audits: EdgeAuditResult[]) {
     if (opts?.purpose === 'edge-audit') return auditQueue.shift();
     return genQueue.shift();
   });
-  return { llm: { chatObject: chatObject as never }, calls };
+  return { llm: { chatObjectStream: chatObjectStream as never }, calls };
 }
 
 function makeVerify(results: VerifyResult[]) {
@@ -241,6 +242,116 @@ describe('generateVerifiedQuestion', () => {
     expect(calls).toHaveLength(2);
     // Design audits get the critique framing, not code artifacts.
     expect(calls[1].user).not.toContain('## Test File');
+  });
+});
+
+describe('generateVerifiedQuestion no-output-progress timeout', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  interface StreamOpts {
+    purpose?: string;
+    abortSignal?: AbortSignal;
+    maxOutputTokens?: number;
+    onPartial?: (partial: Record<string, unknown>) => void;
+  }
+
+  /** Rejects with the pipeline's abort reason the moment its signal fires. */
+  function rejectOnAbort(opts: StreamOpts | undefined): Promise<never> {
+    return new Promise((_resolve, reject) => {
+      opts?.abortSignal?.addEventListener('abort', () => reject(opts.abortSignal!.reason));
+    });
+  }
+
+  it('aborts a stream that stays silent for the whole stall window', async () => {
+    vi.useFakeTimers();
+    const chatObjectStream = vi.fn((_p: unknown, _m: unknown, _s: unknown, opts?: StreamOpts) =>
+      rejectOnAbort(opts),
+    );
+    let settled = false;
+    const outcome = generateVerifiedQuestion(PARAMS, {
+      llm: { chatObjectStream: chatObjectStream as never },
+      verify: makeVerify([]),
+    }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    void outcome.then(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(299_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    const err = (await outcome) as Error;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('TimeoutError');
+    expect(err.message).toContain('stalled');
+  });
+
+  it('keeps a slow-but-flowing stream alive past the old 300s wall clock — partials re-arm the stall clock', async () => {
+    vi.useFakeTimers();
+    const partialReturns: unknown[] = [];
+    const chatObjectStream = vi.fn((_p: unknown, _m: unknown, _s: unknown, opts?: StreamOpts) => {
+      // Audit resolves instantly so the fake-timer choreography only drives
+      // the stage-1 generate call.
+      if (opts?.purpose === 'edge-audit') return Promise.resolve(AUDIT_NOOP);
+      return new Promise((resolve, reject) => {
+        opts?.abortSignal?.addEventListener('abort', () => reject(opts.abortSignal!.reason));
+        let fired = 0;
+        const tick = setInterval(() => {
+          fired += 1;
+          partialReturns.push(opts?.onPartial?.({ title: 'partial' }));
+          if (fired === 3) {
+            clearInterval(tick);
+            resolve(STAGE1);
+          }
+        }, 250_000);
+      });
+    });
+
+    const outcome = generateVerifiedQuestion(PARAMS, {
+      llm: { chatObjectStream: chatObjectStream as never },
+      verify: makeVerify([GREEN]),
+    });
+    // Partials at 250s/500s/750s: every gap fits inside the 300s stall
+    // window, but the call as a whole outlives the old 300s wall clock.
+    await vi.advanceTimersByTimeAsync(750_000);
+
+    const result = await outcome;
+    expect(result.question.title).toBe(STAGE1.title);
+    // The stall-reset callback must be synchronous (NEE-267): an async
+    // callback's rejection would bypass chatObjectStream's throw-swallowing
+    // guard — a returned Promise here would be the regression.
+    expect(partialReturns.every((r) => r === undefined)).toBe(true);
+  });
+
+  it('aborts at the absolute ceiling even while partials keep flowing', async () => {
+    vi.useFakeTimers();
+    const chatObjectStream = vi.fn(
+      (_p: unknown, _m: unknown, _s: unknown, opts?: StreamOpts) =>
+        new Promise((_resolve, reject) => {
+          opts?.abortSignal?.addEventListener('abort', () => reject(opts.abortSignal!.reason));
+          // Never resolves — partials keep the stall clock re-armed forever.
+          setInterval(() => opts?.onPartial?.({ title: 'still going' }), 200_000);
+        }),
+    );
+
+    const outcome = generateVerifiedQuestion(PARAMS, {
+      llm: { chatObjectStream: chatObjectStream as never },
+      verify: makeVerify([]),
+    }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    await vi.advanceTimersByTimeAsync(900_000);
+
+    const err = (await outcome) as Error;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('TimeoutError');
+    expect(err.message).toContain('ceiling');
   });
 });
 

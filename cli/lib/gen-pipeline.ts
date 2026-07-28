@@ -1,7 +1,13 @@
 import { z } from 'zod';
 import { getCategoryConfig, isDesignCategory, type CategorySlug, type Difficulty } from './categories.js';
 import { verifyGeneratedQuestion, type VerifyFn } from './gen-verify.js';
-import { chatObject, isMockLlm, type LLMMessage, type LLMProvider } from './llm.js';
+import {
+  chatObjectStream,
+  isMockLlm,
+  type LLMMessage,
+  type LLMProvider,
+  type LLMPurpose,
+} from './llm.js';
 import { buildSystemPrompt } from './prompt-builder.js';
 import { renderSolutionStub } from './scaffold.js';
 
@@ -49,7 +55,15 @@ export type EdgeAuditResult = z.infer<typeof EdgeAuditSchema>;
 
 export type GenerationPhase = 'generating' | 'auditing' | 'verifying' | 'repairing';
 
-const GENERATE_TIMEOUT_MS = 300_000;
+// Per-call timeout budget (NEE-264): the old 300s wall clock was smaller
+// than a full MAX_OUTPUT_TOKENS answer at the ~60 tok/s measured through the
+// proxy, so healthy-but-large generations died at exactly the deadline. Now
+// a call is cut only when the stream goes SILENT for the stall window (each
+// streamed partial resets the clock — a slow run stays visible instead of
+// fatal), with a generous absolute ceiling bounding even a steadily-flowing
+// call.
+const GENERATE_STALL_TIMEOUT_MS = 300_000;
+const GENERATE_MAX_TIMEOUT_MS = 900_000;
 const MAX_OUTPUT_TOKENS = 16_000;
 /** 1 initial verify + 2 repair-and-reverify rounds. */
 const MAX_VERIFY_ATTEMPTS = 3;
@@ -125,7 +139,7 @@ export interface GenerateParams {
 
 export interface GeneratePipelineOpts {
   /** Injectable seams so unit tests never need an API key or a vitest binary. */
-  llm?: { chatObject: typeof chatObject };
+  llm?: { chatObjectStream: typeof chatObjectStream };
   verify?: VerifyFn;
   onProgress?: (phase: GenerationPhase, attempt: number) => void;
   /** Called with each paid, parsed stage output so callers can persist it. */
@@ -207,25 +221,66 @@ export async function generateVerifiedQuestion(
   params: GenerateParams,
   opts: GeneratePipelineOpts = {},
 ): Promise<GeneratedVerifiedQuestion> {
-  const llm = opts.llm ?? { chatObject };
+  const llm = opts.llm ?? { chatObjectStream };
   const verify = opts.verify ?? verifyGeneratedQuestion;
   const onProgress = opts.onProgress ?? (() => {});
   const onStageResult = opts.onStageResult ?? (() => {});
   const design = isDesignCategory(params.category);
   const config = getCategoryConfig(params.category);
 
-  const generateSystemPrompt = buildSystemPrompt('generate', params.category);
-  const callGenerate = async (userContent: string): Promise<GeneratedQuestion> => {
-    const messages: LLMMessage[] = [
-      { role: 'system', content: generateSystemPrompt },
-      { role: 'user', content: userContent },
-    ];
-    return llm.chatObject(params.provider, messages, GeneratedQuestionSchema, {
-      purpose: 'generate',
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
-      abortSignal: AbortSignal.timeout(GENERATE_TIMEOUT_MS),
-    });
+  // One streaming LLM call under the no-output-progress budget: a stream
+  // that stays silent for GENERATE_STALL_TIMEOUT_MS is aborted, each partial
+  // re-arms the stall clock, and GENERATE_MAX_TIMEOUT_MS is the absolute
+  // ceiling even while output keeps flowing.
+  const callStream = async <T>(
+    messages: LLMMessage[],
+    schema: z.ZodType<T>,
+    purpose: LLMPurpose,
+  ): Promise<T> => {
+    const controller = new AbortController();
+    const abortWith = (message: string) =>
+      controller.abort(new DOMException(message, 'TimeoutError'));
+    const armStall = () =>
+      setTimeout(
+        () =>
+          abortWith(
+            `no output from the model for ${GENERATE_STALL_TIMEOUT_MS / 1000}s — generation looks stalled`,
+          ),
+        GENERATE_STALL_TIMEOUT_MS,
+      );
+    let stallTimer = armStall();
+    const ceilingTimer = setTimeout(
+      () => abortWith(`generation exceeded the ${GENERATE_MAX_TIMEOUT_MS / 1000}s ceiling`),
+      GENERATE_MAX_TIMEOUT_MS,
+    );
+    try {
+      return await llm.chatObjectStream(params.provider, messages, schema, {
+        purpose,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+        abortSignal: controller.signal,
+        // MUST stay synchronous (NEE-267): an async callback's rejection
+        // would bypass chatObjectStream's throw-swallowing guard.
+        onPartial: () => {
+          clearTimeout(stallTimer);
+          stallTimer = armStall();
+        },
+      });
+    } finally {
+      clearTimeout(stallTimer);
+      clearTimeout(ceilingTimer);
+    }
   };
+
+  const generateSystemPrompt = buildSystemPrompt('generate', params.category);
+  const callGenerate = (userContent: string): Promise<GeneratedQuestion> =>
+    callStream(
+      [
+        { role: 'system', content: generateSystemPrompt },
+        { role: 'user', content: userContent },
+      ],
+      GeneratedQuestionSchema,
+      'generate',
+    );
 
   // Stage 1 — generate.
   onProgress('generating', 1);
@@ -244,11 +299,7 @@ export async function generateVerifiedQuestion(
     { role: 'system', content: buildSystemPrompt('edge-audit', params.category) },
     { role: 'user', content: buildAuditUserMessage(params, question, design) },
   ];
-  const audit = await llm.chatObject(params.provider, auditMessages, EdgeAuditSchema, {
-    purpose: 'edge-audit',
-    maxOutputTokens: MAX_OUTPUT_TOKENS,
-    abortSignal: AbortSignal.timeout(GENERATE_TIMEOUT_MS),
-  });
+  const audit = await callStream(auditMessages, EdgeAuditSchema, 'edge-audit');
   question = mergeAudit(question, audit);
   onStageResult(question);
 

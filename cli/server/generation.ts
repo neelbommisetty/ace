@@ -14,7 +14,7 @@ import {
   type GeneratedQuestion,
 } from '../lib/gen-pipeline.js';
 import type { VerifyFn } from '../lib/gen-verify.js';
-import { chatObject, type LLMProvider } from '../lib/llm.js';
+import { chatObjectStream, type LLMProvider } from '../lib/llm.js';
 import { formatReferenceSolutionMd, scaffoldQuestionAt } from '../lib/scaffold.js';
 import { resolveProvider as resolveProviderFromSettings } from './settings.js';
 import type { Bus } from './sse.js';
@@ -63,7 +63,7 @@ function resolveSlug(
 
 /** Injectable seam so unit tests never need a real API key. */
 export interface GenerationLlm {
-  chatObject: typeof chatObject;
+  chatObjectStream: typeof chatObjectStream;
 }
 
 /**
@@ -133,7 +133,7 @@ export function createGenerationEngine(opts: {
   verify?: VerifyFn;
 }): GenerationEngine {
   const { db, bus, workspaceRoot } = opts;
-  const llm = opts.llm ?? { chatObject };
+  const llm = opts.llm ?? { chatObjectStream };
   const resolveProvider = opts.resolveProvider ?? resolveProviderFromSettings;
   const inFlight = new Set<string>();
   let disposed = false;
@@ -177,7 +177,9 @@ Question type: ${config.type}`;
         // Full verified pipeline: generate → edge-audit → sandbox verify with
         // repair loop (design categories: critique pass, no sandbox). Each
         // stage's paid output is persisted immediately via onStageResult; the
-        // per-call timeouts inside the pipeline bound a stalled provider.
+        // pipeline's per-call no-output-progress timeout (plus its absolute
+        // ceiling) bounds a stalled provider without cutting a slow-but-
+        // streaming call (NEE-264).
         const outcome = await generateVerifiedQuestion(
           { provider, category, difficulty, userMessage, workspaceRoot },
           {
