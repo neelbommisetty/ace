@@ -75,12 +75,10 @@ export function setWorkspaceAnchor(root: string | null): void {
   workspaceAnchor = root;
 }
 
-function fileWriteBody(relPath: string, content: string): string {
-  return JSON.stringify(
-    workspaceAnchor == null
-      ? { path: relPath, content }
-      : { path: relPath, content, expectedRoot: workspaceAnchor },
-  );
+function fileWriteBody(relPath: string, content: string): Record<string, unknown> {
+  return workspaceAnchor == null
+    ? { path: relPath, content }
+    : { path: relPath, content, expectedRoot: workspaceAnchor };
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -108,6 +106,37 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+const q = (s: string) => encodeURIComponent(s);
+
+/** `/api/questions/<category>/<slug>` + optional suffix. */
+function questionPath(category: string, slug: string, suffix = ''): string {
+  return `/api/questions/${q(category)}/${q(slug)}${suffix}`;
+}
+
+/**
+ * Fire-and-forget request for pagehide/unmount. sendBeacon cannot set the
+ * Authorization header, so these use keepalive fetch with the query token.
+ */
+function keepalive(path: string, method: 'PATCH' | 'PUT', body: unknown): void {
+  const sep = path.includes('?') ? '&' : '?';
+  void fetch(`${path}${sep}t=${q(token ?? '')}`, {
+    method,
+    keepalive: true,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }).catch(() => {});
+}
+
+/** Appends the defined params (insertion order) as a query string; `?` only when non-empty. */
+function withQuery(path: string, params: Record<string, string | number | undefined>): string {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) qs.set(key, String(value));
+  }
+  const s = qs.toString();
+  return s ? `${path}?${s}` : path;
+}
+
 export function getWorkspace(): Promise<WorkspaceInfo> {
   return request('/api/workspace');
 }
@@ -117,7 +146,7 @@ export function getQuestions(): Promise<QuestionWithStats[]> {
 }
 
 export function getQuestionDetail(category: string, slug: string): Promise<QuestionDetail> {
-  return request(`/api/questions/${encodeURIComponent(category)}/${encodeURIComponent(slug)}`);
+  return request(questionPath(category, slug));
 }
 
 /**
@@ -130,10 +159,7 @@ export function createOrResumeAttempt(
   category: string,
   slug: string,
 ): Promise<{ attempt: AttemptRow | null; readonly?: boolean; latestAttempt?: AttemptRow | null }> {
-  return request(
-    `/api/questions/${encodeURIComponent(category)}/${encodeURIComponent(slug)}/attempts`,
-    { method: 'POST' },
-  );
+  return request(questionPath(category, slug, '/attempts'), { method: 'POST' });
 }
 
 export function getAttempt(
@@ -152,37 +178,18 @@ export function patchAttempt(
   });
 }
 
-/**
- * Fire-and-forget active-seconds flush for pagehide/unmount. sendBeacon cannot
- * set the Authorization header, so use keepalive fetch with the query token.
- */
+/** Fire-and-forget active-seconds flush for pagehide/unmount. */
 export function flushActiveSeconds(attemptId: string, delta: number): void {
-  void fetch(
-    `/api/attempts/${encodeURIComponent(attemptId)}?t=${encodeURIComponent(token ?? '')}`,
-    {
-      method: 'PATCH',
-      keepalive: true,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ activeSecondsDelta: delta }),
-    },
-  ).catch(() => {});
+  keepalive(`/api/attempts/${q(attemptId)}`, 'PATCH', { activeSecondsDelta: delta });
 }
 
 /**
- * Fire-and-forget attempt-end flush for pagehide — same keepalive rationale
- * as flushActiveSeconds. The server re-verifies 'solved' from `test_runs`
- * before honoring it, so a stale or forged claim here is harmless.
+ * Fire-and-forget attempt-end flush for pagehide. `reason` stays narrowed to
+ * 'solved' — the only end reason the client may claim — and the server
+ * re-verifies it from `test_runs`, so a stale or forged claim is harmless.
  */
 export function flushAttemptEnd(attemptId: string, reason: 'solved'): void {
-  void fetch(
-    `/api/attempts/${encodeURIComponent(attemptId)}?t=${encodeURIComponent(token ?? '')}`,
-    {
-      method: 'PATCH',
-      keepalive: true,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ end: { reason } }),
-    },
-  ).catch(() => {});
+  keepalive(`/api/attempts/${q(attemptId)}`, 'PATCH', { end: { reason } });
 }
 
 export function postAttemptEvent(
@@ -206,20 +213,15 @@ export function getFile(relPath: string): Promise<{ path: string; content: strin
   return request(`/api/file?path=${encodeURIComponent(relPath)}`);
 }
 
-/** Fire-and-forget file save for pagehide — same keepalive rationale as flushActiveSeconds. */
+/** Fire-and-forget file save for pagehide. */
 export function flushFileSave(relPath: string, content: string): void {
-  void fetch(`/api/file?t=${encodeURIComponent(token ?? '')}`, {
-    method: 'PUT',
-    keepalive: true,
-    headers: { 'content-type': 'application/json' },
-    body: fileWriteBody(relPath, content),
-  }).catch(() => {});
+  keepalive('/api/file', 'PUT', fileWriteBody(relPath, content));
 }
 
 export function putFile(relPath: string, content: string): Promise<{ hash: string }> {
   return request('/api/file', {
     method: 'PUT',
-    body: fileWriteBody(relPath, content),
+    body: JSON.stringify(fileWriteBody(relPath, content)),
   });
 }
 
@@ -234,9 +236,7 @@ export function startTestRun(
 }
 
 export function getTestRuns(questionId: string, limit?: number): Promise<TestRunRow[]> {
-  const qs = new URLSearchParams({ questionId });
-  if (limit != null) qs.set('limit', String(limit));
-  return request(`/api/test-runs?${qs.toString()}`);
+  return request(withQuery('/api/test-runs', { questionId, limit }));
 }
 
 export function getImportPreview(): Promise<{ items: ImportPreviewItem[] }> {
@@ -250,16 +250,14 @@ export function runImport(): Promise<ImportResult> {
 // ---- M2: reviews / disputes / history / settings ---------------------------
 
 export function startReview(category: string, slug: string): Promise<{ jobId: string }> {
-  return request(
-    `/api/questions/${encodeURIComponent(category)}/${encodeURIComponent(slug)}/reviews`,
-    { method: 'POST', body: JSON.stringify({}) },
-  );
+  return request(questionPath(category, slug, '/reviews'), {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
 }
 
 export function getReviews(category: string, slug: string): Promise<ReviewRow[]> {
-  return request(
-    `/api/questions/${encodeURIComponent(category)}/${encodeURIComponent(slug)}/reviews`,
-  );
+  return request(questionPath(category, slug, '/reviews'));
 }
 
 /** snapshotContent is present when the reviewed-code blob still exists on disk. */
@@ -278,9 +276,7 @@ export function startDispute(
 }
 
 export function getDisputes(category: string, slug: string): Promise<DisputeRow[]> {
-  return request(
-    `/api/questions/${encodeURIComponent(category)}/${encodeURIComponent(slug)}/disputes`,
-  );
+  return request(questionPath(category, slug, '/disputes'));
 }
 
 export function applyDispute(id: string): Promise<{ dispute: DisputeRow }> {
@@ -305,14 +301,15 @@ export function getHistory(opts: {
   question?: string;
   limit?: number;
 }): Promise<{ items: HistoryItem[] }> {
-  const qs = new URLSearchParams();
-  if (opts.q) qs.set('q', opts.q);
-  if (opts.category) qs.set('category', opts.category);
-  if (opts.type) qs.set('type', opts.type);
-  if (opts.question) qs.set('question', opts.question);
-  if (opts.limit != null) qs.set('limit', String(opts.limit));
-  const s = qs.toString();
-  return request(`/api/history${s ? `?${s}` : ''}`);
+  return request(
+    withQuery('/api/history', {
+      q: opts.q || undefined,
+      category: opts.category || undefined,
+      type: opts.type,
+      question: opts.question || undefined,
+      limit: opts.limit,
+    }),
+  );
 }
 
 export function getSettings(): Promise<SettingsInfo> {
@@ -372,14 +369,11 @@ export interface DebriefResponse {
 
 /** 404s (ApiError) until the question has at least one review. */
 export function getDebrief(category: string, slug: string): Promise<DebriefResponse> {
-  return request(
-    `/api/questions/${encodeURIComponent(category)}/${encodeURIComponent(slug)}/debrief`,
-  );
+  return request(questionPath(category, slug, '/debrief'));
 }
 
 export function getGenerationJobs(limit?: number): Promise<{ jobs: GenerationJobRow[] }> {
-  const qs = limit != null ? `?limit=${limit}` : '';
-  return request(`/api/generation/jobs${qs}`);
+  return request(withQuery('/api/generation/jobs', { limit }));
 }
 
 export function getGenerationJob(id: string): Promise<{ job: GenerationJobRow }> {
@@ -414,8 +408,7 @@ export interface BrainstormSessionSummary {
 export function getBrainstormSessions(
   limit?: number,
 ): Promise<{ sessions: BrainstormSessionSummary[] }> {
-  const qs = limit != null ? `?limit=${limit}` : '';
-  return request(`/api/brainstorm/sessions${qs}`);
+  return request(withQuery('/api/brainstorm/sessions', { limit }));
 }
 
 // ---- AI activity ------------------------------------------------------------
@@ -423,12 +416,13 @@ export function getBrainstormSessions(
 export function getAiRuns(
   opts: { limit?: number; kind?: AiRunKind; refId?: string } = {},
 ): Promise<{ runs: Array<AiRunRow & { steps: AiStepSummary[] }> }> {
-  const qs = new URLSearchParams();
-  if (opts.limit != null) qs.set('limit', String(opts.limit));
-  if (opts.kind) qs.set('kind', opts.kind);
-  if (opts.refId) qs.set('refId', opts.refId);
-  const s = qs.toString();
-  return request(`/api/ai/runs${s ? `?${s}` : ''}`);
+  return request(
+    withQuery('/api/ai/runs', {
+      limit: opts.limit,
+      kind: opts.kind,
+      refId: opts.refId || undefined,
+    }),
+  );
 }
 
 export function getAiRun(id: string): Promise<{ run: AiRunRow; steps: AiStepSummary[] }> {
