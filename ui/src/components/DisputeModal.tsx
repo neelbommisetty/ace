@@ -3,6 +3,7 @@ import { DiffEditor } from '@monaco-editor/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { applyDispute, getFile, startDispute } from '../api';
+import { EDITOR_APPEARANCE, EDITOR_THEME } from '../editor-options';
 import { DISPUTE_VERDICT_LABELS } from '../lib/review';
 import { useSseEvent } from '../sse';
 import type { DisputeRow } from '../types';
@@ -224,13 +225,13 @@ export function DisputeResult({
                 original={originalCode}
                 modified={dispute.fixedTestCode}
                 language={languageFor(dispute.testRelPath)}
-                theme="ace-dark"
+                theme={EDITOR_THEME}
                 height="100%"
                 options={{
+                  ...EDITOR_APPEARANCE,
                   readOnly: true,
                   renderSideBySide: true,
                   minimap: { enabled: false },
-                  fontSize: 12,
                   scrollBeyondLastLine: false,
                   automaticLayout: true,
                 }}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import Editor, { type OnMount } from '@monaco-editor/react';
+import { EDITOR_APPEARANCE, EDITOR_THEME } from '../editor-options';
 import { agoShort } from '../lib/format';
 import type { QuestionFileInfo } from '../types';
 import { ConflictBanner } from './ConflictBanner';
@@ -18,8 +19,7 @@ export interface FileState {
 }
 
 const EDITOR_OPTIONS = {
-  fontSize: 13,
-  fontFamily: "ui-monospace, 'SF Mono', Menlo, monospace",
+  ...EDITOR_APPEARANCE,
   minimap: { enabled: false },
   scrollBeyondLastLine: false,
   automaticLayout: true,
@@ -94,7 +94,7 @@ export function EditorPane({
           <Editor
             path={`file:///${activeFile.info.relPath}`}
             value={activeFile.buffer}
-            theme="ace-dark"
+            theme={EDITOR_THEME}
             onMount={onMount}
             onChange={(value) => {
               if (value != null) onChange(active, value);

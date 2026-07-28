@@ -7,6 +7,7 @@ import * as monaco from 'monaco-editor';
 import { loader } from '@monaco-editor/react';
 import editorWorker from 'monaco-editor/editor/editor.worker.js?worker';
 import tsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker';
+import { EDITOR_THEME } from './editor-options';
 
 self.MonacoEnvironment = {
   getWorker(_workerId: string, label: string): Worker {
@@ -34,31 +35,47 @@ monaco.typescript.typescriptDefaults.setCompilerOptions({
   allowNonTsExtensions: true,
 });
 
-monaco.editor.defineTheme('ace-dark', {
+// Catppuccin Macchiato (official palette hexes) for every Monaco surface.
+monaco.editor.defineTheme(EDITOR_THEME, {
   base: 'vs-dark',
   inherit: true,
-  rules: [],
+  rules: [
+    { token: 'comment', foreground: '939ab7', fontStyle: 'italic' },
+    { token: 'keyword', foreground: 'c6a0f6' },
+    { token: 'string', foreground: 'a6da95' },
+    { token: 'number', foreground: 'f5a97f' },
+    { token: 'type', foreground: 'eed49f' },
+    { token: 'class', foreground: 'eed49f' },
+    { token: 'function', foreground: '8aadf4' },
+    { token: 'variable', foreground: 'cad3f5' },
+    { token: 'constant', foreground: 'f5a97f' },
+    { token: 'operator', foreground: '91d7e3' },
+    { token: 'delimiter', foreground: '939ab7' },
+    { token: 'tag', foreground: '8aadf4' },
+    { token: 'attribute.name', foreground: 'eed49f' },
+    { token: 'regexp', foreground: 'f5bde6' },
+  ],
   colors: {
-    'editor.background': '#0f141b',
-    'editor.foreground': '#dce4ed',
-    'editor.lineHighlightBackground': '#161c24',
-    'editorLineNumber.foreground': '#5c6875',
-    'editorLineNumber.activeForeground': '#8b97a6',
-    'editorGutter.background': '#0f141b',
-    'editorIndentGuide.background1': '#2a3340',
-    'editorIndentGuide.activeBackground1': '#3a4552',
-    'editorWidget.background': '#1b222c',
-    'editorWidget.border': '#2a3340',
-    'editorSuggestWidget.background': '#1b222c',
-    'editorSuggestWidget.border': '#2a3340',
-    'editorSuggestWidget.selectedBackground': '#212a35',
-    'editorHoverWidget.background': '#1b222c',
-    'editorHoverWidget.border': '#2a3340',
-    'editorCursor.foreground': '#ffb224',
-    'editor.selectionBackground': '#2a334099',
-    'scrollbarSlider.background': '#2a334066',
-    'scrollbarSlider.hoverBackground': '#2a3340aa',
-    'scrollbarSlider.activeBackground': '#2a3340dd',
+    'editor.background': '#24273a',
+    'editor.foreground': '#cad3f5',
+    'editor.lineHighlightBackground': '#363a4f66',
+    'editorLineNumber.foreground': '#6e738d',
+    'editorLineNumber.activeForeground': '#a5adcb',
+    'editorGutter.background': '#24273a',
+    'editorIndentGuide.background1': '#363a4f',
+    'editorIndentGuide.activeBackground1': '#494d64',
+    'editorWidget.background': '#1e2030',
+    'editorWidget.border': '#363a4f',
+    'editorSuggestWidget.background': '#1e2030',
+    'editorSuggestWidget.border': '#363a4f',
+    'editorSuggestWidget.selectedBackground': '#363a4f',
+    'editorHoverWidget.background': '#1e2030',
+    'editorHoverWidget.border': '#363a4f',
+    'editorCursor.foreground': '#f4dbd6',
+    'editor.selectionBackground': '#5b607899',
+    'scrollbarSlider.background': '#5b607866',
+    'scrollbarSlider.hoverBackground': '#5b6078aa',
+    'scrollbarSlider.activeBackground': '#5b6078dd',
   },
 });
 
