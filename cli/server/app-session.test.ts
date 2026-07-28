@@ -5,120 +5,50 @@
 // happy-dom's fetch/Headers polyfill enforces the browser fetch spec's
 // forbidden-header list — which silently drops `Host` — so this file opts
 // into Node's real fetch implementation instead.
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp } from './app.js';
-import { runImport, previewImport } from './importer.js';
-import { createWorkspaceSession, type EngineFactories, type WorkspaceSession } from './session.js';
-import { createBus } from './sse.js';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { makeApp, makeWorkspace, type WorkspaceHandle } from './test-support.js';
 
-const TOKEN = 'test-token';
-
-let tempRoot = '';
-let session: WorkspaceSession;
-
-/** Fake engine factories — never touch the LLM or spawn vitest. */
-function fakeEngines(): EngineFactories {
-  return {
-    createRunner: (() => ({
-      start: vi.fn(),
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createRunner'],
-    createReviewEngine: (() => ({
-      start: vi.fn(),
-      isRunning: vi.fn(() => false),
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createReviewEngine'],
-    createDisputeEngine: (() => ({
-      start: vi.fn(),
-      isRunning: vi.fn(() => false),
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createDisputeEngine'],
-    createGenerationEngine: (() => ({
-      start: vi.fn(),
-      retry: vi.fn(),
-      runningCount: vi.fn(() => 0),
-      isAnyRunning: vi.fn(() => false),
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createGenerationEngine'],
-    createBrainstormEngine: (() => ({
-      startTurn: vi.fn(),
-      isThinking: vi.fn(() => false),
-      isAnyRunning: vi.fn(() => false),
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createBrainstormEngine'],
-  };
-}
+let ws: WorkspaceHandle;
 
 beforeEach(() => {
-  tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ace-app-session-'));
-  fs.mkdirSync(path.join(tempRoot, 'questions'), { recursive: true });
-  const bus = createBus();
-  session = createWorkspaceSession({
-    workspaceRoot: tempRoot,
-    bus,
-    watch: false,
-    engines: fakeEngines(),
-  });
+  ws = makeWorkspace('app-session');
 });
 
-afterEach(async () => {
-  session.db.close();
-  fs.rmSync(tempRoot, { recursive: true, force: true });
+afterEach(() => {
+  ws.cleanup();
 });
 
-function buildApp(isSwapping: () => boolean = () => false) {
-  const bus = createBus();
-  return createApp({
-    bus,
-    getWorkspaceRoot: () => tempRoot,
-    token: TOKEN,
-    uiDir: null,
-    version: '0.0.0-test',
-    importer: { previewImport, runImport },
-    getSession: () => session,
-    isSwapping,
-  });
-}
-
-/**
- * app.request() builds a Request in-process (no real network transport), so
- * — unlike a real HTTP client — nothing populates the `Host` header from the
- * URL automatically. The app's DNS-rebinding guard requires it, so every
- * request here sets it explicitly.
- */
-function request(app: ReturnType<typeof buildApp>, url: string, init: RequestInit = {}) {
-  return app.request(url, {
-    ...init,
-    headers: { host: 'localhost', ...(init.headers as Record<string, string> | undefined) },
-  });
+function buildApp(isSwapping?: () => boolean) {
+  return makeApp({
+    getWorkspaceRoot: () => ws.root,
+    getSession: () => ws.session,
+    ...(isSwapping ? { isSwapping } : {}),
+  }).fetch;
 }
 
 describe('createApp with a session accessor', () => {
   it('GET /api/workspace 200s with the right token', async () => {
-    const app = buildApp();
-    const res = await request(app, `http://localhost/api/workspace?t=${TOKEN}`);
+    const fetch = buildApp();
+    const res = await fetch('/api/workspace');
     expect(res.status).toBe(200);
     const body = (await res.json()) as { root: string };
-    expect(body.root).toBe(tempRoot);
+    expect(body.root).toBe(ws.root);
   });
 
   it('gates /api/* at 503 while resetting, except /api/health and POST /api/workspace/reset', async () => {
-    const app = buildApp(() => true);
+    const fetch = buildApp(() => true);
 
-    const questions = await request(app, `http://localhost/api/questions?t=${TOKEN}`);
+    const questions = await fetch('/api/questions');
     expect(questions.status).toBe(503);
 
-    const health = await request(app, `http://localhost/api/health?t=${TOKEN}`);
+    const health = await fetch('/api/health');
     expect(health.status).toBe(200);
 
     // The reset route itself must run its own guard logic rather than being
     // swallowed by the 503 gate — an empty body fails mode validation (400),
     // proving the route was reached at all (not gated to 503 or falling
     // through to the JSON 404 handler).
-    const reset = await request(app, `http://localhost/api/workspace/reset?t=${TOKEN}`, {
+    const reset = await fetch('/api/workspace/reset', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
@@ -127,8 +57,8 @@ describe('createApp with a session accessor', () => {
   });
 
   it('the SSE hello event carries the session epoch', async () => {
-    const app = buildApp();
-    const res = await request(app, `http://localhost/api/events?t=${TOKEN}`);
+    const fetch = buildApp();
+    const res = await fetch('/api/events');
     expect(res.status).toBe(200);
     expect(res.body).not.toBeNull();
 
@@ -153,7 +83,7 @@ describe('createApp with a session accessor', () => {
       epoch: string;
       workspaceRoot: string;
     };
-    expect(payload.epoch).toBe(session.epoch);
-    expect(payload.workspaceRoot).toBe(tempRoot);
+    expect(payload.epoch).toBe(ws.session.epoch);
+    expect(payload.workspaceRoot).toBe(ws.root);
   });
 });

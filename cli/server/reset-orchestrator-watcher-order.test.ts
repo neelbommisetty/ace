@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBus } from './sse.js';
-import type { EngineFactories, WorkspaceSession } from './session.js';
+import type { WorkspaceSession } from './session.js';
+import { fakeEngines } from './test-support.js';
 
 /**
  * Isolated from reset-orchestrator.test.ts because it mocks './session.js'
@@ -38,37 +39,6 @@ vi.mock('./workspace-reset.js', async (importOriginal) => {
 });
 
 let tempRoot = '';
-
-function fakeEngines(): EngineFactories {
-  return {
-    createRunner: (() => ({ start: vi.fn(), isBusy: () => false, dispose: vi.fn() })) as unknown as EngineFactories['createRunner'],
-    createReviewEngine: (() => ({
-      start: vi.fn(),
-      isRunning: () => false,
-      isAnyRunning: () => false,
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createReviewEngine'],
-    createDisputeEngine: (() => ({
-      start: vi.fn(),
-      isRunning: () => false,
-      isAnyRunning: () => false,
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createDisputeEngine'],
-    createGenerationEngine: (() => ({
-      start: vi.fn(),
-      retry: vi.fn(),
-      runningCount: () => 0,
-      isAnyRunning: () => false,
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createGenerationEngine'],
-    createBrainstormEngine: (() => ({
-      startTurn: vi.fn(),
-      isThinking: () => false,
-      isAnyRunning: () => false,
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createBrainstormEngine'],
-  };
-}
 
 beforeEach(() => {
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ace-reset-order-'));

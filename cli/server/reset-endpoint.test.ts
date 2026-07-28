@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getStubContent } from '../lib/scaffold.js';
 import { createApp } from './app.js';
 import { readBlob } from './blobs.js';
@@ -21,9 +21,8 @@ import {
   type WorkspaceSession,
 } from './session.js';
 import { createBus, type Bus } from './sse.js';
+import { fakeEngines, TOKEN } from './test-support.js';
 import type { AceDb } from './types.js';
-
-const TOKEN = 'test-token';
 
 let tempRoot = '';
 
@@ -63,39 +62,14 @@ interface BusyFlags {
 /** Fake engine factories, never touching the LLM or spawning vitest. Busy
  * state is read from a shared, mutable `flags` object so a test can flip a
  * flag after the session/app are already built. */
-function fakeEngines(flags: BusyFlags): EngineFactories {
-  return {
-    createRunner: (() => ({
-      start: vi.fn(),
-      isBusy: () => flags.runner,
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createRunner'],
-    createReviewEngine: (() => ({
-      start: vi.fn(),
-      isRunning: () => false,
-      isAnyRunning: () => flags.reviews,
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createReviewEngine'],
-    createDisputeEngine: (() => ({
-      start: vi.fn(),
-      isRunning: () => false,
-      isAnyRunning: () => flags.disputes,
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createDisputeEngine'],
-    createGenerationEngine: (() => ({
-      start: vi.fn(),
-      retry: vi.fn(),
-      runningCount: () => 0,
-      isAnyRunning: () => flags.generation,
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createGenerationEngine'],
-    createBrainstormEngine: (() => ({
-      startTurn: vi.fn(),
-      isThinking: () => false,
-      isAnyRunning: () => flags.brainstorm,
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createBrainstormEngine'],
-  };
+function busyEngines(flags: BusyFlags): EngineFactories {
+  return fakeEngines({
+    runner: { isBusy: () => flags.runner },
+    reviews: { isAnyRunning: () => flags.reviews },
+    disputes: { isAnyRunning: () => flags.disputes },
+    generation: { isAnyRunning: () => flags.generation },
+    brainstorm: { isAnyRunning: () => flags.brainstorm },
+  });
 }
 
 /** Mimics the mutable getWorkspaceRoot/getSession/swapWorkspace/isSwapping
@@ -177,7 +151,7 @@ describe('POST /api/workspace/reset — happy path', () => {
     writeCodingQuestion('js-ts', 'debounce', { solution: 'export const x = 1;\n' });
     const bus = createBus();
     const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
-    const engines = fakeEngines(flags);
+    const engines = busyEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const oldEpoch = session.epoch;
 
@@ -244,7 +218,7 @@ describe('POST /api/workspace/reset — happy path', () => {
   it('echoes a client-supplied requestId back verbatim in the workspace-reset broadcast', async () => {
     const bus = createBus();
     const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
-    const engines = fakeEngines(flags);
+    const engines = busyEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const harness = makeHarness(session);
     const app = buildApp(bus, harness, engines);
@@ -275,7 +249,7 @@ describe('POST /api/workspace/reset — happy path', () => {
     });
     const bus = createBus();
     const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
-    const engines = fakeEngines(flags);
+    const engines = busyEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
 
     const question = session.db.getQuestion('js-ts', 'restore-me')!;
@@ -329,7 +303,7 @@ describe('POST /api/workspace/reset — happy path', () => {
     const dir = writeCodingQuestion('js-ts', 'no-scaffold', { solution: 'export const edited = 1;\n' });
     const bus = createBus();
     const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
-    const engines = fakeEngines(flags);
+    const engines = busyEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const harness = makeHarness(session);
     const app = buildApp(bus, harness, engines);
@@ -349,7 +323,7 @@ describe('POST /api/workspace/reset — guard matrix', () => {
     writeCodingQuestion('js-ts', 'guarded');
     const bus = createBus();
     const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
-    const engines = fakeEngines(flags);
+    const engines = busyEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const harness = makeHarness(session);
     const app = buildApp(bus, harness, engines);
@@ -451,7 +425,7 @@ describe('POST /api/workspace/reset — concurrency', () => {
     writeCodingQuestion('js-ts', 'slow-close');
     const bus = createBus();
     const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
-    const engines = fakeEngines(flags);
+    const engines = busyEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
 
     // Give the OLD session a fake watcher whose close() blocks on a promise
@@ -493,7 +467,7 @@ describe('POST /api/workspace/reset — concurrency', () => {
     const dir = writeCodingQuestion('js-ts', 'straddle', { solution: 'export const before = 1;\n' });
     const bus = createBus();
     const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
-    const engines = fakeEngines(flags);
+    const engines = busyEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const harness = makeHarness(session);
     const app = buildApp(bus, harness, engines);
@@ -556,7 +530,7 @@ describe('POST /api/workspace/reset — concurrency', () => {
     writeCodingQuestion('js-ts', 'gate-check');
     const bus = createBus();
     const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
-    const engines = fakeEngines(flags);
+    const engines = busyEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const harness = makeHarness(session);
     const app = buildApp(bus, harness, engines);
@@ -584,7 +558,7 @@ describe('POST /api/workspace/reset — archive-failure recovery', () => {
     writeCodingQuestion('js-ts', 'archive-fail');
     const bus = createBus();
     const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
-    const engines = fakeEngines(flags);
+    const engines = busyEngines(flags);
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const harness = makeHarness(session);
     const app = buildApp(bus, harness, engines);

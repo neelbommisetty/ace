@@ -1,14 +1,15 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getStubContent } from '../lib/scaffold.js';
 import { readBlob } from './blobs.js';
 import { openDb } from './db.js';
 import { toWorkspaceRelPath } from './files.js';
 import { performWorkspaceReset } from './reset-orchestrator.js';
-import { closeWorkspaceSession, createWorkspaceSession, type EngineFactories, type WorkspaceSession } from './session.js';
+import { closeWorkspaceSession, createWorkspaceSession, type WorkspaceSession } from './session.js';
 import { createBus } from './sse.js';
+import { fakeEngines } from './test-support.js';
 import type { AceDb } from './types.js';
 
 let tempRoot = '';
@@ -28,38 +29,6 @@ function writeCodingQuestion(
   fs.writeFileSync(path.join(dir, 'solution.ts'), opts.solution ?? 'export function solve() {}\n', 'utf-8');
   fs.writeFileSync(path.join(dir, 'solution.test.ts'), opts.test ?? "it('todo', () => {});\n", 'utf-8');
   return dir;
-}
-
-/** Fake engine factories that never touch the LLM or spawn vitest. */
-function fakeEngines(): EngineFactories {
-  return {
-    createRunner: (() => ({ start: vi.fn(), isBusy: () => false, dispose: vi.fn() })) as unknown as EngineFactories['createRunner'],
-    createReviewEngine: (() => ({
-      start: vi.fn(),
-      isRunning: () => false,
-      isAnyRunning: () => false,
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createReviewEngine'],
-    createDisputeEngine: (() => ({
-      start: vi.fn(),
-      isRunning: () => false,
-      isAnyRunning: () => false,
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createDisputeEngine'],
-    createGenerationEngine: (() => ({
-      start: vi.fn(),
-      retry: vi.fn(),
-      runningCount: () => 0,
-      isAnyRunning: () => false,
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createGenerationEngine'],
-    createBrainstormEngine: (() => ({
-      startTurn: vi.fn(),
-      isThinking: () => false,
-      isAnyRunning: () => false,
-      dispose: vi.fn(),
-    })) as unknown as EngineFactories['createBrainstormEngine'],
-  };
 }
 
 /** Minimal in-test harness mimicking index.ts's getSession/swapSession/isSwapping refs. */

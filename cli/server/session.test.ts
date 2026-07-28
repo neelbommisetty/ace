@@ -3,9 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openDb } from './db.js';
-import type { DisputeEngine } from './disputes.js';
-import type { ReviewEngine } from './reviews.js';
-import type { Runner } from './runner.js';
 import {
   closeWorkspaceSession,
   closeWorkspaceSessionSafe,
@@ -14,6 +11,7 @@ import {
   type EngineFactories,
 } from './session.js';
 import { createBus } from './sse.js';
+import { fakeEngines } from './test-support.js';
 
 let tempRoot = '';
 
@@ -25,53 +23,6 @@ function writeQuestion(category: string, slug: string): void {
   const dir = questionDir(category, slug);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'README.md'), `# ${slug}\n`, 'utf-8');
-}
-
-/** Fake engine factories that never touch the LLM or spawn vitest. */
-function fakeEngines(): EngineFactories & {
-  disposals: { runner: number; reviews: number; disputes: number; generation: number; brainstorm: number };
-} {
-  const disposals = { runner: 0, reviews: 0, disputes: 0, generation: 0, brainstorm: 0 };
-  return {
-    disposals,
-    createRunner: (() => ({
-      start: vi.fn(),
-      dispose: vi.fn(() => {
-        disposals.runner += 1;
-      }),
-    })) as unknown as EngineFactories['createRunner'],
-    createReviewEngine: (() => ({
-      start: vi.fn(),
-      isRunning: vi.fn(() => false),
-      dispose: vi.fn(() => {
-        disposals.reviews += 1;
-      }),
-    })) as unknown as EngineFactories['createReviewEngine'],
-    createDisputeEngine: (() => ({
-      start: vi.fn(),
-      isRunning: vi.fn(() => false),
-      dispose: vi.fn(() => {
-        disposals.disputes += 1;
-      }),
-    })) as unknown as EngineFactories['createDisputeEngine'],
-    createGenerationEngine: (() => ({
-      start: vi.fn(),
-      retry: vi.fn(),
-      runningCount: vi.fn(() => 0),
-      isAnyRunning: vi.fn(() => false),
-      dispose: vi.fn(() => {
-        disposals.generation += 1;
-      }),
-    })) as unknown as EngineFactories['createGenerationEngine'],
-    createBrainstormEngine: (() => ({
-      startTurn: vi.fn(),
-      isThinking: vi.fn(() => false),
-      isAnyRunning: vi.fn(() => false),
-      dispose: vi.fn(() => {
-        disposals.brainstorm += 1;
-      }),
-    })) as unknown as EngineFactories['createBrainstormEngine'],
-  };
 }
 
 beforeEach(() => {
@@ -229,16 +180,23 @@ describe('createWorkspaceSession — generation/brainstorm engines', () => {
 describe('closeWorkspaceSession', () => {
   it('calls each fake engine dispose() exactly once and closes the db', async () => {
     const bus = createBus();
-    const engines = fakeEngines();
+    const disposals = { runner: 0, reviews: 0, disputes: 0, generation: 0, brainstorm: 0 };
+    const engines = fakeEngines({
+      runner: { dispose: vi.fn(() => void disposals.runner++) },
+      reviews: { dispose: vi.fn(() => void disposals.reviews++) },
+      disputes: { dispose: vi.fn(() => void disposals.disputes++) },
+      generation: { dispose: vi.fn(() => void disposals.generation++) },
+      brainstorm: { dispose: vi.fn(() => void disposals.brainstorm++) },
+    });
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
 
     await closeWorkspaceSession(session);
 
-    expect(engines.disposals.runner).toBe(1);
-    expect(engines.disposals.reviews).toBe(1);
-    expect(engines.disposals.disputes).toBe(1);
-    expect(engines.disposals.generation).toBe(1);
-    expect(engines.disposals.brainstorm).toBe(1);
+    expect(disposals.runner).toBe(1);
+    expect(disposals.reviews).toBe(1);
+    expect(disposals.disputes).toBe(1);
+    expect(disposals.generation).toBe(1);
+    expect(disposals.brainstorm).toBe(1);
     expect(() => session.db.listQuestions()).toThrow();
   });
 
@@ -254,35 +212,13 @@ describe('closeWorkspaceSession', () => {
   it('disposes generation and brainstorm AFTER disputes.dispose() and BEFORE db.close()', async () => {
     const bus = createBus();
     const callOrder: string[] = [];
-    const engines: EngineFactories = {
-      createRunner: (() => ({
-        start: vi.fn(),
-        dispose: vi.fn(() => callOrder.push('runner')),
-      })) as unknown as EngineFactories['createRunner'],
-      createReviewEngine: (() => ({
-        start: vi.fn(),
-        isRunning: vi.fn(() => false),
-        dispose: vi.fn(() => callOrder.push('reviews')),
-      })) as unknown as EngineFactories['createReviewEngine'],
-      createDisputeEngine: (() => ({
-        start: vi.fn(),
-        isRunning: vi.fn(() => false),
-        dispose: vi.fn(() => callOrder.push('disputes')),
-      })) as unknown as EngineFactories['createDisputeEngine'],
-      createGenerationEngine: (() => ({
-        start: vi.fn(),
-        retry: vi.fn(),
-        runningCount: vi.fn(() => 0),
-        isAnyRunning: vi.fn(() => false),
-        dispose: vi.fn(() => callOrder.push('generation')),
-      })) as unknown as EngineFactories['createGenerationEngine'],
-      createBrainstormEngine: (() => ({
-        startTurn: vi.fn(),
-        isThinking: vi.fn(() => false),
-        isAnyRunning: vi.fn(() => false),
-        dispose: vi.fn(() => callOrder.push('brainstorm')),
-      })) as unknown as EngineFactories['createBrainstormEngine'],
-    };
+    const engines: EngineFactories = fakeEngines({
+      runner: { dispose: vi.fn(() => callOrder.push('runner')) },
+      reviews: { dispose: vi.fn(() => callOrder.push('reviews')) },
+      disputes: { dispose: vi.fn(() => callOrder.push('disputes')) },
+      generation: { dispose: vi.fn(() => callOrder.push('generation')) },
+      brainstorm: { dispose: vi.fn(() => callOrder.push('brainstorm')) },
+    });
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
     const closeSpy = vi.spyOn(session.db, 'close').mockImplementation(() => {
       callOrder.push('db.close');
@@ -309,46 +245,18 @@ describe('closeWorkspaceSessionSafe', () => {
   it('a throwing engine.dispose() does not prevent the rest of teardown (including db.close()) from completing', async () => {
     const bus = createBus();
     const disposals = { runner: 0, reviews: 0, disputes: 0, brainstorm: 0 };
-    const engines: EngineFactories = {
-      createRunner: (() => ({
-        start: vi.fn(),
+    const engines: EngineFactories = fakeEngines({
+      runner: { dispose: vi.fn(() => void disposals.runner++) },
+      reviews: { dispose: vi.fn(() => void disposals.reviews++) },
+      disputes: { dispose: vi.fn(() => void disposals.disputes++) },
+      generation: {
+        // Simulates a broken generation engine's teardown.
         dispose: vi.fn(() => {
-          disposals.runner += 1;
-        }),
-      })) as unknown as EngineFactories['createRunner'],
-      createReviewEngine: (() => ({
-        start: vi.fn(),
-        isRunning: vi.fn(() => false),
-        dispose: vi.fn(() => {
-          disposals.reviews += 1;
-        }),
-      })) as unknown as EngineFactories['createReviewEngine'],
-      createDisputeEngine: (() => ({
-        start: vi.fn(),
-        isRunning: vi.fn(() => false),
-        dispose: vi.fn(() => {
-          disposals.disputes += 1;
-        }),
-      })) as unknown as EngineFactories['createDisputeEngine'],
-      createGenerationEngine: (() => ({
-        start: vi.fn(),
-        retry: vi.fn(),
-        runningCount: vi.fn(() => 0),
-        isAnyRunning: vi.fn(() => false),
-        dispose: vi.fn(() => {
-          // Simulates a broken generation engine's teardown.
           throw new Error('generation dispose blew up');
         }),
-      })) as unknown as EngineFactories['createGenerationEngine'],
-      createBrainstormEngine: (() => ({
-        startTurn: vi.fn(),
-        isThinking: vi.fn(() => false),
-        isAnyRunning: vi.fn(() => false),
-        dispose: vi.fn(() => {
-          disposals.brainstorm += 1;
-        }),
-      })) as unknown as EngineFactories['createBrainstormEngine'],
-    };
+      },
+      brainstorm: { dispose: vi.fn(() => void disposals.brainstorm++) },
+    });
     const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines });
 
     await expect(closeWorkspaceSessionSafe(session)).resolves.toBeUndefined();

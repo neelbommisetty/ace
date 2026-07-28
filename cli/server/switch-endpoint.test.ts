@@ -17,9 +17,8 @@ import {
   type WorkspaceSession,
 } from './session.js';
 import { createBus, type Bus } from './sse.js';
+import { fakeEngines, TOKEN } from './test-support.js';
 import type { RecentWorkspace } from './workspace-registry.js';
-
-const TOKEN = 'test-token';
 
 let tempHome = '';
 let rootA = '';
@@ -50,44 +49,35 @@ function idleFlags(): BusyFlags {
 /**
  * Fake engine factories that record every dispose() as `"<kind>:<root>"`
  * into `disposed` — the leak check asserts the OLD session's five engines
- * were all torn down (and the new session's were not).
+ * were all torn down (and the new session's were not). Each override is a
+ * function of the real factory's opts so it can tag the disposal with the
+ * `workspaceRoot` that particular engine instance was built for (the SAME
+ * EngineFactories object is reused across the old and new sessions around a
+ * switch, so a plain per-engine singleton couldn't tell them apart).
  */
-function fakeEngines(flags: BusyFlags, disposed: string[] = []): EngineFactories {
-  const disposeFn = (kind: string, root: string) => () => {
-    disposed.push(`${kind}:${root}`);
-  };
-  return {
-    createRunner: ((opts: { workspaceRoot: string }) => ({
-      start: vi.fn(),
+function busyEngines(flags: BusyFlags, disposed: string[] = []): EngineFactories {
+  return fakeEngines({
+    runner: (opts) => ({
       isBusy: () => flags.runner,
-      dispose: disposeFn('runner', opts.workspaceRoot),
-    })) as unknown as EngineFactories['createRunner'],
-    createReviewEngine: ((opts: { workspaceRoot: string }) => ({
-      start: vi.fn(),
-      isRunning: () => false,
+      dispose: () => disposed.push(`runner:${opts.workspaceRoot}`),
+    }),
+    reviews: (opts) => ({
       isAnyRunning: () => flags.reviews,
-      dispose: disposeFn('reviews', opts.workspaceRoot),
-    })) as unknown as EngineFactories['createReviewEngine'],
-    createDisputeEngine: ((opts: { workspaceRoot: string }) => ({
-      start: vi.fn(),
-      isRunning: () => false,
+      dispose: () => disposed.push(`reviews:${opts.workspaceRoot}`),
+    }),
+    disputes: (opts) => ({
       isAnyRunning: () => flags.disputes,
-      dispose: disposeFn('disputes', opts.workspaceRoot),
-    })) as unknown as EngineFactories['createDisputeEngine'],
-    createGenerationEngine: ((opts: { workspaceRoot: string }) => ({
-      start: vi.fn(),
-      retry: vi.fn(),
-      runningCount: () => 0,
+      dispose: () => disposed.push(`disputes:${opts.workspaceRoot}`),
+    }),
+    generation: (opts) => ({
       isAnyRunning: () => flags.generation,
-      dispose: disposeFn('generation', opts.workspaceRoot),
-    })) as unknown as EngineFactories['createGenerationEngine'],
-    createBrainstormEngine: ((opts: { workspaceRoot: string }) => ({
-      startTurn: vi.fn(),
-      isThinking: () => false,
+      dispose: () => disposed.push(`generation:${opts.workspaceRoot}`),
+    }),
+    brainstorm: (opts) => ({
       isAnyRunning: () => flags.brainstorm,
-      dispose: disposeFn('brainstorm', opts.workspaceRoot),
-    })) as unknown as EngineFactories['createBrainstormEngine'],
-  };
+      dispose: () => disposed.push(`brainstorm:${opts.workspaceRoot}`),
+    }),
+  });
 }
 
 /** Same mutable-refs harness as reset-endpoint.test.ts, but the root swaps too. */
@@ -207,7 +197,7 @@ describe('POST /api/workspace/switch — happy path', () => {
     const bus = createBus();
     const flags = idleFlags();
     const disposed: string[] = [];
-    const engines = fakeEngines(flags, disposed);
+    const engines = busyEngines(flags, disposed);
     const oldSession = createWorkspaceSession({ workspaceRoot: rootA, bus, watch: false, engines });
     const oldEpoch = oldSession.epoch;
     const watcherClose = vi.fn(async () => {});
@@ -277,7 +267,7 @@ describe('POST /api/workspace/switch — happy path', () => {
 
   it('post-switch writes land under the NEW root: PUT /api/file writes the file, blob, and snapshot there', async () => {
     const bus = createBus();
-    const engines = fakeEngines(idleFlags());
+    const engines = busyEngines(idleFlags());
     const oldSession = createWorkspaceSession({ workspaceRoot: rootA, bus, watch: false, engines });
     const harness = makeHarness(rootA, oldSession);
     const app = buildApp(bus, harness, engines);
@@ -307,7 +297,7 @@ describe('POST /api/workspace/switch — happy path', () => {
 
   it('rejects a post-switch save still anchored to the OLD root (the pagehide-flush race) and accepts current-root/unanchored ones', async () => {
     const bus = createBus();
-    const engines = fakeEngines(idleFlags());
+    const engines = busyEngines(idleFlags());
     const oldSession = createWorkspaceSession({ workspaceRoot: rootA, bus, watch: false, engines });
     const harness = makeHarness(rootA, oldSession);
     const app = buildApp(bus, harness, engines);
@@ -354,7 +344,7 @@ describe('POST /api/workspace/switch — happy path', () => {
 
   it('mints a server requestId for the broadcast when the client sends none', async () => {
     const bus = createBus();
-    const engines = fakeEngines(idleFlags());
+    const engines = busyEngines(idleFlags());
     const oldSession = createWorkspaceSession({ workspaceRoot: rootA, bus, watch: false, engines });
     const harness = makeHarness(rootA, oldSession);
     const app = buildApp(bus, harness, engines);
@@ -371,7 +361,7 @@ describe('POST /api/workspace/switch — happy path', () => {
   it('same-root switch is a 200 no-op: same session object, same epoch, no teardown, no broadcast', async () => {
     const bus = createBus();
     const disposed: string[] = [];
-    const engines = fakeEngines(idleFlags(), disposed);
+    const engines = busyEngines(idleFlags(), disposed);
     const session = createWorkspaceSession({ workspaceRoot: rootA, bus, watch: false, engines });
     const harness = makeHarness(rootA, session);
     const app = buildApp(bus, harness, engines);
@@ -393,7 +383,7 @@ describe('POST /api/workspace/switch — happy path', () => {
 describe('POST /api/workspace/switch — guards', () => {
   async function buildMounted(flags: BusyFlags, disposed: string[] = []) {
     const bus = createBus();
-    const engines = fakeEngines(flags, disposed);
+    const engines = busyEngines(flags, disposed);
     const session = createWorkspaceSession({ workspaceRoot: rootA, bus, watch: false, engines });
     const harness = makeHarness(rootA, session);
     const app = buildApp(bus, harness, engines);
@@ -495,7 +485,7 @@ describe('POST /api/workspace/switch — guards', () => {
 describe('picker mode (booted unmounted)', () => {
   function buildUnmounted() {
     const bus = createBus();
-    const engines = fakeEngines(idleFlags());
+    const engines = busyEngines(idleFlags());
     const harness = makeHarness(null, null);
     const app = buildApp(bus, harness, engines);
     return { app, harness, bus };
@@ -552,21 +542,19 @@ describe('POST /api/workspace/switch — failure recovery', () => {
   function throwingEngines(base: EngineFactories, throwForRoots: Set<string>): EngineFactories {
     return {
       ...base,
-      createBrainstormEngine: ((opts: { workspaceRoot: string }) => {
+      createBrainstormEngine: (opts) => {
         if (throwForRoots.has(opts.workspaceRoot)) {
           throw new Error('brainstorm engine exploded');
         }
-        return base.createBrainstormEngine(
-          opts as Parameters<EngineFactories['createBrainstormEngine']>[0],
-        );
-      }) as unknown as EngineFactories['createBrainstormEngine'],
+        return base.createBrainstormEngine(opts);
+      },
     };
   }
 
   it('remounts the old root when the new one fails to mount: 500 names the failure, old workspace serves, flag cleared, epoch unchanged', async () => {
     const bus = createBus();
     const disposed: string[] = [];
-    const engines = throwingEngines(fakeEngines(idleFlags(), disposed), new Set([rootB]));
+    const engines = throwingEngines(busyEngines(idleFlags(), disposed), new Set([rootB]));
     const oldSession = createWorkspaceSession({ workspaceRoot: rootA, bus, watch: false, engines });
     const oldEpoch = oldSession.epoch;
     const watcherClose = vi.fn(async () => {});
@@ -604,14 +592,14 @@ describe('POST /api/workspace/switch — failure recovery', () => {
 
   it('falls back to unmounted (picker keeps serving) when the remount also fails', async () => {
     const bus = createBus();
-    const engines = throwingEngines(fakeEngines(idleFlags()), new Set([rootA, rootB]));
+    const engines = throwingEngines(busyEngines(idleFlags()), new Set([rootA, rootB]));
     // Build the initial session with non-throwing engines — only the
     // mid-switch rebuilds go through the throwing set.
     const oldSession = createWorkspaceSession({
       workspaceRoot: rootA,
       bus,
       watch: false,
-      engines: fakeEngines(idleFlags()),
+      engines: busyEngines(idleFlags()),
     });
     const harness = makeHarness(rootA, oldSession);
     const app = buildApp(bus, harness, engines);
