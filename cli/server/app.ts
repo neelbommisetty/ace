@@ -579,6 +579,20 @@ export function createApp(opts: CreateAppOptions): Hono {
     if (typeof rel !== 'string' || typeof content !== 'string') {
       return c.json({ error: 'path and content must be strings' }, 400);
     }
+    // Save-anchor check (NEE-164): a save queued in a tab anchored to one
+    // workspace can arrive after a switch mounted another — most acutely the
+    // pagehide keepalive flush fired by the very reload the switch triggers,
+    // which lands only AFTER the swap. Landing it under the new root would
+    // write one workspace's content into an unrelated workspace's tree, so a
+    // stale anchor rejects instead of silently applying. Same-root writes
+    // (including after a reset, which keeps the root) are unaffected.
+    const expectedRoot = body.expectedRoot;
+    if (typeof expectedRoot === 'string' && expectedRoot !== workspaceRoot) {
+      return c.json(
+        { error: `workspace changed: this save targeted ${expectedRoot}` },
+        409,
+      );
+    }
     const abs = resolveWorkspacePath(workspaceRoot, rel); // throws ScopeError → 400
     const hash = writeWorkspaceFile(workspaceRoot, rel, content);
     snapshotOnWrite(toWorkspaceRelPath(workspaceRoot, abs), content, hash);

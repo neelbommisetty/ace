@@ -305,6 +305,53 @@ describe('POST /api/workspace/switch — happy path', () => {
     await closeWorkspaceSession(newSession);
   });
 
+  it('rejects a post-switch save still anchored to the OLD root (the pagehide-flush race) and accepts current-root/unanchored ones', async () => {
+    const bus = createBus();
+    const engines = fakeEngines(idleFlags());
+    const oldSession = createWorkspaceSession({ workspaceRoot: rootA, bus, watch: false, engines });
+    const harness = makeHarness(rootA, oldSession);
+    const app = buildApp(bus, harness, engines);
+
+    expect((await postSwitch(app, { root: rootB })).status).toBe(200);
+
+    // The switch-triggered reload fires pagehide, whose keepalive flush
+    // arrives only after the swap; its old-root anchor must reject it — here
+    // aimed at a relPath that ALSO exists in the new workspace, the silent
+    // cross-workspace overwrite case.
+    const rel = 'questions/js-ts/beta-q/solution.ts';
+    const putFile = (body: Record<string, unknown>) =>
+      request(app, `http://localhost/api/file?t=${TOKEN}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    const staleRes = await putFile({
+      path: rel,
+      content: 'export const alpha = 1; // stale, from rootA\n',
+      expectedRoot: rootA,
+    });
+    expect(staleRes.status).toBe(409);
+    expect(((await staleRes.json()) as { error: string }).error).toBe(
+      `workspace changed: this save targeted ${rootA}`,
+    );
+    expect(fs.readFileSync(path.join(rootB, rel), 'utf-8')).toBe('export const beta = 1;\n');
+    expect(fs.existsSync(path.join(rootA, rel))).toBe(false);
+
+    // A save anchored to the CURRENT root applies, as does an unanchored one
+    // (callers that predate the anchor, or a tab that never saw a hello).
+    expect(
+      (await putFile({ path: rel, content: 'export const beta = 2;\n', expectedRoot: rootB }))
+        .status,
+    ).toBe(200);
+    expect(
+      (await putFile({ path: rel, content: 'export const beta = 3;\n' })).status,
+    ).toBe(200);
+    expect(fs.readFileSync(path.join(rootB, rel), 'utf-8')).toBe('export const beta = 3;\n');
+
+    await closeWorkspaceSession(harness.getSession()!);
+  });
+
   it('mints a server requestId for the broadcast when the client sends none', async () => {
     const bus = createBus();
     const engines = fakeEngines(idleFlags());
