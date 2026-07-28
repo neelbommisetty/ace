@@ -1,4 +1,8 @@
 import type {
+  AiRunKind,
+  AiRunRow,
+  AiStepRow,
+  AiStepSummary,
   AttemptEventRow,
   AttemptEventType,
   AttemptRow,
@@ -377,4 +381,26 @@ export function getBrainstormSessions(
 ): Promise<{ sessions: BrainstormSessionSummary[] }> {
   const qs = limit != null ? `?limit=${limit}` : '';
   return request(`/api/brainstorm/sessions${qs}`);
+}
+
+// ---- AI activity ------------------------------------------------------------
+
+export function getAiRuns(
+  opts: { limit?: number; kind?: AiRunKind; refId?: string } = {},
+): Promise<{ runs: Array<AiRunRow & { steps: AiStepSummary[] }> }> {
+  const qs = new URLSearchParams();
+  if (opts.limit != null) qs.set('limit', String(opts.limit));
+  if (opts.kind) qs.set('kind', opts.kind);
+  if (opts.refId) qs.set('refId', opts.refId);
+  const s = qs.toString();
+  return request(`/api/ai/runs${s ? `?${s}` : ''}`);
+}
+
+export function getAiRun(id: string): Promise<{ run: AiRunRow; steps: AiStepSummary[] }> {
+  return request(`/api/ai/runs/${encodeURIComponent(id)}`);
+}
+
+/** The ONLY route that returns promptText/responseText — fetched lazily on expand. */
+export function getAiStep(id: string): Promise<{ step: AiStepRow }> {
+  return request(`/api/ai/steps/${encodeURIComponent(id)}`);
 }

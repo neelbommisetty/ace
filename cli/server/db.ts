@@ -9,6 +9,7 @@ import type {
   AiStepKind,
   AiStepRow,
   AiStepStatus,
+  AiStepSummary,
   AttemptEndReason,
   AttemptEventRow,
   AttemptEventType,
@@ -229,6 +230,15 @@ function rowToAiStep(r: SqlRow): AiStepRow {
     startedAt: r.started_at as string,
     finishedAt: (r.finished_at as string | null) ?? null,
   };
+}
+
+/**
+ * For rows fetched WITHOUT the prompt_text/response_text columns —
+ * rowToAiStep maps their absence to null, and the destructure drops them.
+ */
+function rowToAiStepSummary(r: SqlRow): AiStepSummary {
+  const { promptText: _prompt, responseText: _response, ...summary } = rowToAiStep(r);
+  return summary;
 }
 
 /**
@@ -1177,6 +1187,19 @@ class SqliteAceDb implements AceDb {
       | SqlRow
       | undefined;
     return r ? rowToAiStep(r) : null;
+  }
+
+  listAiSteps(runId: string): AiStepSummary[] {
+    // Summary shape by construction: the multi-KB prompt/response columns
+    // are never even selected, which is what keeps a 30-run feed cheap.
+    const rows = this.db
+      .prepare(
+        `SELECT id, run_id, seq, kind, slug, label, status, attempt, prompt_withheld,
+                withheld_keys, detail, error_message, started_at, finished_at
+         FROM ai_steps WHERE run_id = ? ORDER BY seq`,
+      )
+      .all(runId) as SqlRow[];
+    return rows.map(rowToAiStepSummary);
   }
 
   pruneAiRuns(keep = 200): number {

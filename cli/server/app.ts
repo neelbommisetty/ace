@@ -36,6 +36,7 @@ import {
 import type { Bus } from './sse.js';
 import type {
   AceDb,
+  AiRunKind,
   AttemptEndReason,
   AttemptEventType,
   AttemptRow,
@@ -91,6 +92,12 @@ const END_REASONS: ReadonlySet<string> = new Set<AttemptEndReason>([
   'superseded',
 ]);
 const TRIGGERS: ReadonlySet<string> = new Set<TestRunTrigger>(['manual', 'save']);
+const AI_RUN_KINDS: ReadonlySet<string> = new Set<AiRunKind>([
+  'generation',
+  'review',
+  'dispute',
+  'brainstorm',
+]);
 
 /**
  * Question-level solved check: the latest *completed* run (by the same
@@ -846,6 +853,51 @@ export function createApp(opts: CreateAppOptions): Hono {
     const session = db.getBrainstormSession(c.req.param('id'));
     if (!session) return c.json({ error: 'brainstorm session not found' }, 404);
     return c.json({ session });
+  });
+
+  // -------------------------------------------------------------------------
+  // AI activity
+  // -------------------------------------------------------------------------
+
+  app.get('/api/ai/runs', (c) => {
+    const { db } = getSession();
+    const rawLimit = c.req.query('limit');
+    let limit = 30;
+    if (rawLimit !== undefined && rawLimit !== '') {
+      const parsed = Number.parseInt(rawLimit, 10);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return c.json({ error: 'limit must be a positive integer' }, 400);
+      }
+      limit = Math.min(parsed, 100);
+    }
+    const rawKind = c.req.query('kind');
+    if (rawKind !== undefined && rawKind !== '' && !AI_RUN_KINDS.has(rawKind)) {
+      return c.json({ error: `kind must be one of: ${[...AI_RUN_KINDS].join(', ')}` }, 400);
+    }
+    const kind = rawKind ? (rawKind as AiRunKind) : undefined;
+    const refId = c.req.query('refId') || undefined;
+    // Steps ride along in summary shape (no promptText/responseText) — the
+    // full text is only ever served by GET /api/ai/steps/:id below.
+    const runs = db
+      .listAiRuns({ limit, kind, refId })
+      .map((run) => ({ ...run, steps: db.listAiSteps(run.id) }));
+    return c.json({ runs });
+  });
+
+  app.get('/api/ai/runs/:id', (c) => {
+    const { db } = getSession();
+    const run = db.getAiRun(c.req.param('id'));
+    if (!run) return c.json({ error: 'ai run not found' }, 404);
+    return c.json({ run, steps: db.listAiSteps(run.id) });
+  });
+
+  // The ONLY endpoint that returns promptText/responseText (both already
+  // masked at write time — see ai-log.ts); clients fetch it lazily on expand.
+  app.get('/api/ai/steps/:id', (c) => {
+    const { db } = getSession();
+    const step = db.getAiStep(c.req.param('id'));
+    if (!step) return c.json({ error: 'ai step not found' }, 404);
+    return c.json({ step });
   });
 
   // -------------------------------------------------------------------------

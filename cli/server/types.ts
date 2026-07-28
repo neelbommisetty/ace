@@ -637,6 +637,8 @@ export interface AceDb {
   listAiRuns(opts?: { limit?: number; kind?: AiRunKind; refId?: string }): AiRunRow[];
   getAiRun(id: string): AiRunRow | null;
   getAiStep(id: string): AiStepRow | null;
+  /** A run's steps in `seq` order — summary shape (the text columns are never selected). */
+  listAiSteps(runId: string): AiStepSummary[];
   /**
    * Deletes runs outside the newest `keep` (default 200); ON DELETE CASCADE
    * drops their steps. Called after each run terminates — no timers. Returns
