@@ -154,6 +154,18 @@ export interface WorkspaceResetResult {
   workspace: WorkspaceInfo;
 }
 
+/** One entry of GET /api/workspace/recents (NEE-164), newest-first. */
+export interface RecentWorkspace {
+  root: string;
+  lastOpenedAt: string;
+}
+
+export interface WorkspaceSwitchResult {
+  workspaceRoot: string;
+  epoch: string;
+  workspace: WorkspaceInfo;
+}
+
 export interface ReviewRow {
   id: string;
   questionId: string;
@@ -291,7 +303,14 @@ export type HistoryItem =
   | { type: 'dispute'; at: string; question: QuestionRow; dispute: DisputeRow };
 
 export interface SseEventMap {
-  hello: { version: string; workspaceRoot: string; epoch: string };
+  /**
+   * Sent once per SSE connection. `workspaceRoot`/`epoch` are null while the
+   * server is unmounted (picker mode, NEE-164). App.tsx compares both
+   * against what it first saw: a different epoch means a workspace reset
+   * happened while this tab was disconnected; a different root means a
+   * workspace switch did.
+   */
+  hello: { version: string; workspaceRoot: string | null; epoch: string | null };
   'file-changed': { relPath: string; hash: string };
   'questions-changed': Record<string, never>;
   'run-started': {
@@ -375,6 +394,15 @@ export interface SseEventMap {
    * own broadcast and distinguish it from a reset some other tab triggered.
    */
   'workspace-reset': { mode: WorkspaceResetMode; archivedTo: string; requestId: string };
+  /**
+   * Emitted once after a workspace switch swaps the new session live
+   * (NEE-164), with the same `requestId` echo contract as `workspace-reset`.
+   * Every tab whose first-seen root differs — the initiator included —
+   * responds with a full page reload (see App.tsx): the hard reset is what
+   * guarantees no per-workspace cache (or Monaco model) survives into the
+   * new workspace.
+   */
+  'workspace-switched': { workspaceRoot: string; epoch: string; requestId: string };
 }
 
 export type SseEventName = keyof SseEventMap;

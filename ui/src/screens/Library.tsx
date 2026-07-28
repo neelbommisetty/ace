@@ -5,6 +5,7 @@ import { ImportBanner } from '../components/ImportBanner';
 import { QuestionTable } from '../components/QuestionTable';
 import { ResumeCard } from '../components/ResumeCard';
 import { CATEGORY_SLUGS, categoryShortName } from '../lib/categories';
+import { openWorkspaceSwitchDialog } from '../lib/switchSignal';
 import { useSseEvent } from '../sse';
 import type { QuestionStatus, QuestionWithStats, WorkspaceInfo } from '../types';
 
@@ -121,9 +122,13 @@ export function Library() {
             </span>
           )}
           {workspace != null && (
-            <span className="workspace-root mono" title="Workspace root">
-              {workspace.root}
-            </span>
+            <button
+              className="workspace-switch-btn mono"
+              title={`${workspace.root} — switch workspace (⌘K)`}
+              onClick={openWorkspaceSwitchDialog}
+            >
+              {workspace.confirmName}
+            </button>
           )}
         </div>
       </header>

@@ -16,6 +16,7 @@ import type {
   QuestionDetail,
   QuestionRow,
   QuestionWithStats,
+  RecentWorkspace,
   ReviewRow,
   SettingsInfo,
   TestRunRow,
@@ -23,6 +24,7 @@ import type {
   WorkspaceInfo,
   WorkspaceResetMode,
   WorkspaceResetResult,
+  WorkspaceSwitchResult,
 } from './types';
 
 // Token bootstrap (module init): ?t= → sessionStorage → strip from the URL.
@@ -316,6 +318,20 @@ export function resetWorkspace(
   return request('/api/workspace/reset', {
     method: 'POST',
     body: JSON.stringify({ mode, confirm, requestId }),
+  });
+}
+
+// ---- workspace switching (NEE-164) ------------------------------------------
+
+/** Reachable in picker mode too (exempt from the no-workspace 409 gate). */
+export function getWorkspaceRecents(): Promise<{ recents: RecentWorkspace[] }> {
+  return request('/api/workspace/recents');
+}
+
+export function switchWorkspace(root: string, requestId: string): Promise<WorkspaceSwitchResult> {
+  return request('/api/workspace/switch', {
+    method: 'POST',
+    body: JSON.stringify({ root, requestId }),
   });
 }
 

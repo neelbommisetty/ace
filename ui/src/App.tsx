@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router';
 import { getToken, setUnauthorizedHandler } from './api';
 import { Toast } from './components/Toast';
+import { WorkspacePicker, WorkspaceSwitchDialog } from './components/WorkspacePicker';
 import { consumeSuppressForReset, isSuppressArmed } from './lib/resetSuppress';
+import { registerWorkspaceSwitchOpener } from './lib/switchSignal';
 import { Activity } from './screens/Activity';
 import { History } from './screens/History';
 import { Library } from './screens/Library';
@@ -22,18 +24,66 @@ import { useSseEvent } from './sse';
 // and reports the same epoch, so it does NOT trip this fallback.
 let lastHelloEpoch: string | null = null;
 
+// Workspace root of the first `hello` (null when the server booted in picker
+// mode, NEE-164). A later `hello` or a `workspace-switched` broadcast
+// carrying a DIFFERENT root means the server is now serving another
+// workspace — this tab hard-reloads (see forceReloadForSwitch).
+let firstHelloRoot: string | null = null;
+let helloSeen = false;
+
 /** Sends this tab back to a fresh Library — used for every reset signal this tab did not itself initiate. */
 function forceReloadToLibrary(): void {
   location.replace('/');
 }
 
+/**
+ * Full page reload on a workspace switch — the pinned SPA hard reset: every
+ * per-workspace cache (room state, history, settings) and every Monaco model
+ * is disposed with the document, so nothing can leak across workspaces.
+ * Applies to the initiating tab too; its dialog also reloads on its own 200
+ * as a fallback for a dropped SSE connection.
+ */
+function forceReloadForSwitch(): void {
+  window.location.reload();
+}
+
+/** True when the keystroke's focus is somewhere typing belongs (inputs, textareas — Monaco's hidden textarea included — or contenteditable). */
+function isEditableTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    (target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.tagName === 'SELECT' ||
+      target.isContentEditable)
+  );
+}
+
 export function App() {
   const [authFailed, setAuthFailed] = useState(false);
+  const [pickerMode, setPickerMode] = useState(false);
+  const [currentRoot, setCurrentRoot] = useState<string | null>(null);
+  const [switchOpen, setSwitchOpen] = useState(false);
 
   useEffect(() => {
     setUnauthorizedHandler(() => setAuthFailed(true));
     return () => setUnauthorizedHandler(() => {});
   }, []);
+
+  useEffect(() => registerWorkspaceSwitchOpener(() => setSwitchOpen(true)), []);
+
+  // Global Cmd/Ctrl+K opens the switch dialog — registered once here, and
+  // not at all in picker mode (the picker IS the switch surface).
+  useEffect(() => {
+    if (pickerMode) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || (e.key !== 'k' && e.key !== 'K')) return;
+      if (isEditableTarget(e.target)) return;
+      e.preventDefault();
+      setSwitchOpen(true);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [pickerMode]);
 
   useSseEvent('workspace-reset', ({ requestId }) => {
     // The tab that initiated this exact reset armed a matching id (see
@@ -46,9 +96,27 @@ export function App() {
     forceReloadToLibrary();
   });
 
-  useSseEvent('hello', ({ epoch }) => {
-    if (lastHelloEpoch == null) {
+  useSseEvent('workspace-switched', ({ workspaceRoot }) => {
+    // Unconditional for every tab whose first-seen root differs — including
+    // the one that initiated the switch. The reload is the hard reset that
+    // makes cross-workspace state leaks impossible (types.ts).
+    if (workspaceRoot !== firstHelloRoot) forceReloadForSwitch();
+  });
+
+  useSseEvent('hello', ({ workspaceRoot, epoch }) => {
+    if (!helloSeen) {
+      helloSeen = true;
+      firstHelloRoot = workspaceRoot;
       lastHelloEpoch = epoch;
+      setCurrentRoot(workspaceRoot);
+      if (workspaceRoot == null) setPickerMode(true);
+      return;
+    }
+    if (workspaceRoot !== firstHelloRoot) {
+      // The server mounted a different workspace while this tab was
+      // disconnected (it missed the one-shot `workspace-switched`) — same
+      // hard reload as receiving the broadcast live.
+      forceReloadForSwitch();
       return;
     }
     if (epoch !== lastHelloEpoch) {
@@ -64,6 +132,10 @@ export function App() {
 
   if (getToken() == null || authFailed) {
     return <TokenNotice expired={authFailed} />;
+  }
+
+  if (pickerMode) {
+    return <WorkspacePicker />;
   }
 
   return (
@@ -83,6 +155,9 @@ export function App() {
         </div>
       </div>
       <Toast />
+      {switchOpen && (
+        <WorkspaceSwitchDialog currentRoot={currentRoot} onClose={() => setSwitchOpen(false)} />
+      )}
     </BrowserRouter>
   );
 }

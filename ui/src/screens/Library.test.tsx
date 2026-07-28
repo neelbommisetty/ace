@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useEffect, useRef } from 'react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { registerWorkspaceSwitchOpener } from '../lib/switchSignal';
 import { Library } from './Library';
 import type { GenerationJobRow, QuestionWithStats, SseEventMap, SseEventName, WorkspaceInfo } from '../types';
 
@@ -130,7 +131,15 @@ describe('Library', () => {
 
     await screen.findByText('Closures and Scope');
     expect(screen.queryByRole('link', { name: 'New question' })).toBeNull();
-    expect(screen.getByText(WORKSPACE_INFO.root)).toBeInTheDocument();
+    // The topbar workspace button shows the basename, keeps the full root
+    // in its tooltip, and opens the App-level switch dialog (NEE-164).
+    const workspaceButton = screen.getByRole('button', { name: WORKSPACE_INFO.confirmName });
+    expect(workspaceButton.getAttribute('title')).toContain(WORKSPACE_INFO.root);
+    const opened = vi.fn();
+    const unregister = registerWorkspaceSwitchOpener(opened);
+    fireEvent.click(workspaceButton);
+    expect(opened).toHaveBeenCalledTimes(1);
+    unregister();
   });
 
   it('shows the "Create your first question" empty-state CTA and drops the ace generate reference', async () => {

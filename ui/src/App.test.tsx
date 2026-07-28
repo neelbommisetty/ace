@@ -54,6 +54,7 @@ vi.mock('./api', async (importOriginal) => {
     getWorkspace: vi.fn().mockResolvedValue(WORKSPACE_INFO),
     getQuestions: vi.fn().mockResolvedValue([]),
     getGenerationJobs: vi.fn().mockResolvedValue({ jobs: [] }),
+    getWorkspaceRecents: vi.fn().mockResolvedValue({ recents: [] }),
   };
 });
 
@@ -81,6 +82,7 @@ let originalLocation: Location | undefined;
 function stubLocationReplace() {
   originalLocation = window.location;
   const replaceSpy = vi.fn();
+  const reloadSpy = vi.fn();
   // @ts-expect-error -- happy-dom allows redefining location for the test
   delete window.location;
   // @ts-expect-error -- stub with a proxy so BrowserRouter's other location
@@ -88,11 +90,12 @@ function stubLocationReplace() {
   window.location = new Proxy(originalLocation, {
     get(target, prop) {
       if (prop === 'replace') return replaceSpy;
+      if (prop === 'reload') return reloadSpy;
       const value = (target as unknown as Record<string, unknown>)[prop as string];
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
-  return { replaceSpy };
+  return { replaceSpy, reloadSpy };
 }
 
 afterEach(() => {
@@ -221,6 +224,72 @@ describe('App SSE reset handling', () => {
     });
 
     expect(replaceSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('App workspace switching (NEE-164)', () => {
+  it('hard-reloads on a workspace-switched broadcast carrying a different root', async () => {
+    await renderApp();
+    act(() => {
+      emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
+    });
+    const { replaceSpy, reloadSpy } = stubLocationReplace();
+
+    act(() => {
+      emitSse('workspace-switched', {
+        workspaceRoot: '/other',
+        epoch: 'epoch-b',
+        requestId: 'req-1',
+      });
+    });
+
+    expect(reloadSpy).toHaveBeenCalledTimes(1);
+    expect(replaceSpy).not.toHaveBeenCalled();
+  });
+
+  it('ignores a workspace-switched broadcast for the root this tab already shows', async () => {
+    await renderApp();
+    act(() => {
+      emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
+    });
+    const { reloadSpy } = stubLocationReplace();
+
+    act(() => {
+      emitSse('workspace-switched', {
+        workspaceRoot: '/w',
+        epoch: 'epoch-a',
+        requestId: 'req-1',
+      });
+    });
+
+    expect(reloadSpy).not.toHaveBeenCalled();
+  });
+
+  it('hard-reloads on a later hello carrying a different workspaceRoot (missed the one-shot event)', async () => {
+    await renderApp();
+    act(() => {
+      emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
+    });
+    const { replaceSpy, reloadSpy } = stubLocationReplace();
+
+    act(() => {
+      emitSse('hello', { version: '0.2.1', workspaceRoot: '/other', epoch: 'epoch-b' });
+    });
+
+    expect(reloadSpy).toHaveBeenCalledTimes(1);
+    // The root change wins over the epoch change — no Library replace.
+    expect(replaceSpy).not.toHaveBeenCalled();
+  });
+
+  it('renders the workspace picker instead of the routed app when hello carries a null root', async () => {
+    await renderApp();
+
+    act(() => {
+      emitSse('hello', { version: '0.2.1', workspaceRoot: null, epoch: null });
+    });
+
+    expect(await screen.findByText('Pick a workspace')).toBeInTheDocument();
+    expect(screen.queryByText('Library')).toBeNull();
   });
 });
 
