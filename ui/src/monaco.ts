@@ -5,8 +5,8 @@
  */
 import * as monaco from 'monaco-editor';
 import { loader } from '@monaco-editor/react';
-import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
-import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
+import editorWorker from 'monaco-editor/editor/editor.worker.js?worker';
+import tsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker';
 
 self.MonacoEnvironment = {
   getWorker(_workerId: string, label: string): Worker {

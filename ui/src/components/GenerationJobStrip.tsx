@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { ApiError, getGenerationJobs, retryGenerationJob } from '../api';
 import { AiRunDrawer } from './AiRunDrawer';
 import { categoryShortName } from '../lib/categories';

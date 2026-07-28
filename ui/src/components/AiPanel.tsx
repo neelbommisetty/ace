@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { getDebrief, type DebriefResponse } from '../api';
 import { relTime } from '../lib/format';
 import type { QuestionRow, ReviewRow } from '../types';

@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { relTime } from '../lib/format';
 import type { QuestionWithStats } from '../types';
 import { CategoryChip, DifficultyChip, StatusChip } from './Chip';

@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { formatClock, relTime } from '../lib/format';
 import type { AttemptRow, QuestionRow } from '../types';
 import { CategoryChip, DifficultyChip } from './Chip';

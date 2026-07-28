@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { getFile, getHistory, getReview, getReviews } from '../api';
 import { DisputeResult } from '../components/DisputeModal';
 import { CategoryChip } from '../components/Chip';
