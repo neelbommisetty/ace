@@ -4,6 +4,7 @@ import path from 'node:path';
 import { NoObjectGeneratedError } from 'ai';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { LLMMessage, LLMProvider } from '../lib/llm.js';
+import type { createAiLog as CreateAiLogFn } from './ai-log.js';
 import type { createBrainstormEngine as CreateBrainstormEngineFn } from './brainstorm.js';
 import { openDb } from './db.js';
 import { createBus, type Bus } from './sse.js';
@@ -13,11 +14,14 @@ import type { AceDb } from './types.js';
 // whose mock-vs-real behavior is a module-level const read at import time —
 // same reason cli/lib/llm.test.ts and workspace-reset.test.ts set the env var
 // in beforeAll before a dynamic import, rather than a static top-level one.
+// (ai-log.js reaches llm.js through gen-pipeline.js, so it rides along.)
 let createBrainstormEngine: typeof CreateBrainstormEngineFn;
+let createAiLog: typeof CreateAiLogFn;
 
 beforeAll(async () => {
   process.env.ACE_E2E_MOCK_LLM = '1';
   ({ createBrainstormEngine } = await import('./brainstorm.js'));
+  ({ createAiLog } = await import('./ai-log.js'));
 });
 
 let tempRoot = '';
@@ -48,11 +52,13 @@ const VALID_IDEA_PAYLOAD = {
 };
 
 /**
- * Queue-based fake `chatObject`: each invocation pops the next handler.
- * Handlers return a raw payload — validated against the CALLER's own schema,
- * mirroring what `generateObject` really does — or throw directly (used to
- * simulate `NoObjectGeneratedError` and generic failures without going
- * through schema validation at all).
+ * Queue-based fake `chatObjectStream`: each invocation pops the next handler.
+ * Handlers return a raw payload — surfaced once through `onPartial` (not
+ * schema-validated, mirroring the real partial stream) and then validated
+ * against the CALLER's own schema, mirroring what `streamText`'s output
+ * really does — or throw directly (used to simulate
+ * `NoObjectGeneratedError` and generic failures without going through
+ * schema validation at all).
  */
 function makeFakeLlm(
   handlers: Array<
@@ -61,15 +67,23 @@ function makeFakeLlm(
 ) {
   const calls: Array<{ provider: LLMProvider; messages: LLMMessage[] }> = [];
   let i = 0;
-  const chatObject = async (provider: LLMProvider, messages: LLMMessage[], schema: any) => {
+  const chatObjectStream = async (
+    provider: LLMProvider,
+    messages: LLMMessage[],
+    schema: any,
+    opts?: { onPartial?: (partial: Record<string, unknown>) => void },
+  ) => {
     calls.push({ provider, messages });
     const handler = handlers[i++];
     if (!handler) throw new Error('fake llm: no more handlers queued');
     const payload = await handler(provider, messages);
+    opts?.onPartial?.(payload as Record<string, unknown>);
     return schema.parse(payload);
   };
   return {
-    llm: { chatObject } as unknown as Parameters<typeof CreateBrainstormEngineFn>[0]['llm'],
+    llm: { chatObjectStream } as unknown as Parameters<
+      typeof CreateBrainstormEngineFn
+    >[0]['llm'],
     calls,
   };
 }
@@ -320,5 +334,96 @@ describe('createBrainstormEngine', () => {
     // The stale error from turn 1 must not linger once the session recovers.
     expect(recovered.errorMessage).toBeNull();
     expect(calls).toHaveLength(2);
+  });
+});
+
+describe('brainstorm activity log (NEE-271)', () => {
+  it('records one done run per turn with a single brainstorm step — prompt is the user message, streamed reply/ideas persist as the response', async () => {
+    const { llm } = makeFakeLlm([() => VALID_IDEA_PAYLOAD]);
+    const engine = createBrainstormEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      aiLog: createAiLog({ db, bus }),
+    });
+
+    const done = waitFor('brainstorm-done');
+    const { sessionId } = engine.startTurn(null, 'idea about arrays');
+    await done;
+
+    const runs = db.listAiRuns();
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      kind: 'brainstorm',
+      refId: sessionId,
+      questionId: null,
+      label: 'idea about arrays',
+      status: 'done',
+    });
+
+    const steps = db.listAiSteps(runs[0].id);
+    expect(steps.map((s) => [s.slug, s.status])).toEqual([['brainstorm', 'done']]);
+    expect(steps[0].detail).toBe('1 idea proposed');
+
+    const step = db.getAiStep(steps[0].id)!;
+    expect(step.promptText).toBe('idea about arrays');
+    // IdeaListSchema is entirely wire-safe — the streamed partial landed.
+    expect(step.responseText).toContain('Here are a few ideas.');
+    expect(step.responseText).toContain('Debounced Search');
+  });
+
+  it('a NoObjectGeneratedError turn lands run=done with an errored step — the turn completed for the user (raw reply preserved)', async () => {
+    const { llm } = makeFakeLlm([
+      () => {
+        throw new NoObjectGeneratedError({
+          message: 'could not parse a structured object',
+          text: 'raw salvage text from the model',
+        } as ConstructorParameters<typeof NoObjectGeneratedError>[0]);
+      },
+    ]);
+    const engine = createBrainstormEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      aiLog: createAiLog({ db, bus }),
+    });
+
+    const done = waitFor('brainstorm-done');
+    engine.startTurn(null, 'give me weird ideas');
+    await done;
+
+    const [run] = db.listAiRuns();
+    expect(run.status).toBe('done');
+    const steps = db.listAiSteps(run.id);
+    expect(steps.map((s) => [s.slug, s.status])).toEqual([['brainstorm', 'error']]);
+    expect(steps[0].errorMessage).toContain('could not parse');
+  });
+
+  it('a generic failure lands run=error carrying the message on both the step and the run', async () => {
+    const { llm } = makeFakeLlm([
+      () => {
+        throw new Error('the model API is down');
+      },
+    ]);
+    const engine = createBrainstormEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      aiLog: createAiLog({ db, bus }),
+    });
+
+    const errored = waitFor('brainstorm-error');
+    engine.startTurn(null, 'idea');
+    await errored;
+
+    const [run] = db.listAiRuns();
+    expect(run.status).toBe('error');
+    expect(run.errorMessage).toBe('the model API is down');
+    const steps = db.listAiSteps(run.id);
+    expect(steps.map((s) => [s.slug, s.status])).toEqual([['brainstorm', 'error']]);
+    expect(steps[0].errorMessage).toBe('the model API is down');
   });
 });

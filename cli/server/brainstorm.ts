@@ -1,9 +1,9 @@
 import { NoObjectGeneratedError } from 'ai';
 import { z } from 'zod';
 import { CATEGORY_SLUGS } from '../lib/categories.js';
-import { chatObject, type LLMMessage } from '../lib/llm.js';
+import { chatObjectStream, type LLMMessage } from '../lib/llm.js';
 import { buildBrainstormPrompt } from '../lib/prompt-builder.js';
-import type { AiLog } from './ai-log.js';
+import { NULL_AI_LOG, type AiLog } from './ai-log.js';
 import { resolveProvider } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, BrainstormTurn } from './types.js';
@@ -75,7 +75,7 @@ function serializeTurn(m: BrainstormTurn): string {
 
 /** Injectable seam so unit tests never need a real API key. */
 export interface BrainstormLlm {
-  chatObject: typeof chatObject;
+  chatObjectStream: typeof chatObjectStream;
 }
 
 export interface BrainstormEngine {
@@ -93,18 +93,29 @@ export function createBrainstormEngine(opts: {
   workspaceRoot: string;
   llm?: BrainstormLlm;
   /**
-   * AI activity recorder (NEE-268) — accepted for uniform session wiring;
-   * this engine's runs are not recorded yet (generation is instrumented
-   * first).
+   * AI activity recorder (NEE-268). Defaults to the zero-behaviour
+   * NULL_AI_LOG, so every pre-existing test runs unchanged; the server
+   * session passes the shared recorder.
    */
   aiLog?: AiLog;
 }): BrainstormEngine {
   const { db, bus } = opts;
-  const llm = opts.llm ?? { chatObject };
+  const llm = opts.llm ?? { chatObjectStream };
+  const aiLog = opts.aiLog ?? NULL_AI_LOG;
   const inFlight = new Set<string>();
   let disposed = false;
 
-  async function runTurn(sessionId: string): Promise<void> {
+  async function runTurn(sessionId: string, message: string): Promise<void> {
+    // One activity-log run per turn (NEE-271), labeled with the user's own
+    // message. Created before anything can fail, so even a missing API key
+    // leaves a (zero-step) errored run behind for Activity to render.
+    // Recording is best-effort throughout and never touches the session.
+    const run = aiLog.startRun({
+      kind: 'brainstorm',
+      refId: sessionId,
+      questionId: null,
+      label: message,
+    });
     try {
       // Rebuilt per turn: prompt files are small and reads are cheap.
       const systemPrompt = buildBrainstormPrompt() + '\n' + STRUCTURED_OUTPUT_ADDENDUM;
@@ -120,10 +131,30 @@ export function createBrainstormEngine(opts: {
       ];
 
       const abort = AbortSignal.timeout(120_000);
-      const result = await llm.chatObject(provider, messages, IdeaListSchema, {
-        abortSignal: abort,
-        purpose: 'brainstorm',
+      // IdeaListSchema is entirely wire-safe, so the partials stream through
+      // the recorder unfiltered (WIRE_SAFE_KEYS.brainstorm). The step's
+      // prompt is this turn's user message; the rest of the history already
+      // lives on the session itself.
+      const step = run.step({
+        slug: 'brainstorm',
+        label: 'Brainstorming ideas',
+        kind: 'llm',
+        prompt: message,
       });
+      let result: z.infer<typeof IdeaListSchema>;
+      try {
+        result = await llm.chatObjectStream(provider, messages, IdeaListSchema, {
+          abortSignal: abort,
+          purpose: 'brainstorm',
+          onPartial: (partial) => step.partial(partial),
+        });
+      } catch (err) {
+        step.fail(err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+      step.done(
+        `${result.ideas.length} idea${result.ideas.length === 1 ? '' : 's'} proposed`,
+      );
       // Mirrors the disputes/reviews engines' convention: a paid call that
       // resolves after dispose() must not write through a db the session
       // teardown may already be closing (or have closed).
@@ -135,6 +166,7 @@ export function createBrainstormEngine(opts: {
         'idle',
       );
       const turn = updated.messages[updated.messages.length - 1];
+      run.done();
       bus.emit('brainstorm-done', { sessionId, turn });
     } catch (err) {
       if (NoObjectGeneratedError.isInstance(err)) {
@@ -147,13 +179,17 @@ export function createBrainstormEngine(opts: {
           'idle',
         );
         const turn = updated.messages[updated.messages.length - 1];
+        // The step already failed with the parse error; the run itself
+        // completed for the user (raw reply preserved), so it lands 'done'.
+        run.done();
         bus.emit('brainstorm-done', { sessionId, turn });
         return;
       }
       if (disposed) return;
-      const message = err instanceof Error ? err.message : String(err);
-      db.setBrainstormStatus(sessionId, 'error', message);
-      bus.emit('brainstorm-error', { sessionId, message });
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      db.setBrainstormStatus(sessionId, 'error', errorMessage);
+      run.fail(errorMessage);
+      bus.emit('brainstorm-error', { sessionId, message: errorMessage });
     } finally {
       inFlight.delete(sessionId);
     }
@@ -176,7 +212,7 @@ export function createBrainstormEngine(opts: {
 
       inFlight.add(id);
       bus.emit('brainstorm-started', { sessionId: id });
-      void runTurn(id);
+      void runTurn(id, message);
       return { sessionId: id };
     },
 

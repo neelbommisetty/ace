@@ -10,7 +10,8 @@ import {
 import { chatObject, chatStream, getModelId, type LLMMessage } from '../lib/llm.js';
 import { buildQuestionSection, buildSystemPrompt } from '../lib/prompt-builder.js';
 import { getStubContent } from '../lib/scaffold.js';
-import type { AiLog } from './ai-log.js';
+import { WITHHELD_MARKER } from '../lib/spoilers.js';
+import { NULL_AI_LOG, type AiLog } from './ai-log.js';
 import { saveBlob } from './blobs.js';
 import { sha1, toWorkspaceRelPath } from './files.js';
 import { uuidv7 } from './ids.js';
@@ -184,7 +185,7 @@ function buildReviewMessages(
   question: QuestionRow,
   config: CategoryConfig,
   kind: 'code' | 'design',
-): LLMMessage[] {
+): { messages: LLMMessage[]; maskedPrompt: string } {
   const systemPrompt = buildSystemPrompt('review', question.category as CategorySlug);
   const readme = readFileOr(path.join(question.dirPath, 'README.md'), '');
 
@@ -227,16 +228,25 @@ ${testContent}`;
 
   // Generated questions carry a hidden interviewer packet (grading key:
   // capability tested, Staff-level bar, rubric) — inject it so the reviewer
-  // grades against it. Pre-overhaul/manual questions simply have none.
+  // grades against it. Pre-overhaul/manual questions simply have none. The
+  // masked twin for the activity log is CONSTRUCTED from the same parts
+  // (gen-pipeline's BuiltPrompt convention) — packets embed their own `## `
+  // headings, which would split maskPromptText's section scan if parsed.
   const packet = readFileOr(path.join(question.dirPath, '.interviewer.md'), '').trim();
+  const maskedPrompt = packet
+    ? `${userContent}\n\n## Interviewer Packet\n\n${WITHHELD_MARKER}`
+    : userContent;
   if (packet) {
     userContent += `\n\n## Interviewer Packet\n${packet}`;
   }
 
-  return [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: userContent },
-  ];
+  return {
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userContent },
+    ],
+    maskedPrompt,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -262,13 +272,14 @@ export function createReviewEngine(opts: {
   bus: Bus;
   workspaceRoot: string;
   /**
-   * AI activity recorder (NEE-268) — accepted for uniform session wiring;
-   * this engine's runs are not recorded yet (generation is instrumented
-   * first).
+   * AI activity recorder (NEE-268). Defaults to the zero-behaviour
+   * NULL_AI_LOG, so every pre-existing test runs unchanged; the server
+   * session passes the shared recorder.
    */
   aiLog?: AiLog;
 }): ReviewEngine {
   const { db, bus, workspaceRoot } = opts;
+  const aiLog = opts.aiLog ?? NULL_AI_LOG;
   const inFlight = new Map<string, ReviewJob>();
   let disposed = false;
 
@@ -280,6 +291,16 @@ export function createReviewEngine(opts: {
   ): Promise<void> {
     const { jobId } = job;
     let pending = '';
+    // One activity-log run per review job (NEE-271). Created before anything
+    // can fail, so even a missing API key leaves a (zero-step) errored run
+    // behind for Activity to render. Recording is best-effort throughout and
+    // never touches the review's own state.
+    const run = aiLog.startRun({
+      kind: 'review',
+      refId: jobId,
+      questionId: question.id,
+      label: question.title,
+    });
 
     const flushChunks = () => {
       if (job.flushTimer) {
@@ -308,7 +329,7 @@ export function createReviewEngine(opts: {
         trigger: 'review',
       });
 
-      const messages = buildReviewMessages(question, config, kindOf(question));
+      const { messages, maskedPrompt } = buildReviewMessages(question, config, kindOf(question));
 
       // A silently-stalled provider connection would otherwise hold the
       // per-question in-flight slot (and its 409) until server restart.
@@ -320,6 +341,17 @@ export function createReviewEngine(opts: {
         }
       }, 15_000);
 
+      // The prompt is shown — it's the user's own code/design plus the
+      // README; on generated questions the interviewer packet rides only the
+      // constructed masked twin (the recorder's maskPromptText remains the
+      // second line of defence).
+      const reviewStep = run.step({
+        slug: 'review',
+        label: 'Writing the review',
+        kind: 'llm',
+        prompt: maskedPrompt,
+      });
+
       let fullText = '';
       try {
         const stream = await chatStream(provider, messages, {
@@ -330,19 +362,34 @@ export function createReviewEngine(opts: {
           lastChunkAt = Date.now();
           fullText += chunk;
           pending += chunk;
+          // The body travels twice on purpose (review-chunk here plus the
+          // recorder's ai-step-chunk): SSE to localhost is free and zero
+          // special cases is worth more than the bytes.
+          reviewStep.append(chunk);
           // Coalesce token chunks: at most one SSE event per flush window.
           if (!job.flushTimer) job.flushTimer = setTimeout(flushChunks, CHUNK_FLUSH_MS);
         }
+      } catch (err) {
+        reviewStep.fail(err instanceof Error ? err.message : String(err));
+        throw err;
       } finally {
         clearInterval(watchdog);
       }
+      reviewStep.done();
       flushChunks();
       if (disposed) return;
 
       // Structured extraction of {score, verdict, dimensions} from the
       // finished prose. Any failure — timeout, parse error, out-of-range
       // score — falls back to the regex parsers per field; a paid review is
-      // never lost or delayed indefinitely over its metadata.
+      // never lost or delayed indefinitely over its metadata. The step's
+      // prompt is the review body itself — already user-visible text.
+      const extractStep = run.step({
+        slug: 'review-extract',
+        label: 'Extracting scores',
+        kind: 'llm',
+        prompt: fullText,
+      });
       let extracted: z.infer<typeof ReviewExtractionSchema> | null = null;
       try {
         extracted = await chatObject(
@@ -368,7 +415,16 @@ export function createReviewEngine(opts: {
           );
           extracted.dimensions = Object.keys(sane).length > 0 ? sane : null;
         }
-      } catch {
+        // Non-streaming call, so the (sanitized) result lands as one partial.
+        extractStep.partial(extracted as Record<string, unknown>);
+        const parts: string[] = [];
+        if (extracted.score !== null) parts.push(`score ${extracted.score}/5`);
+        if (extracted.verdict !== null) parts.push(extracted.verdict);
+        extractStep.done(parts.length > 0 ? parts.join(' · ') : 'no scores stated');
+      } catch (err) {
+        // An errored extraction step never degrades the run — the regex
+        // parsers below remain the fallback contract.
+        extractStep.fail(err instanceof Error ? err.message : String(err));
         extracted = null;
       }
       if (disposed) {
@@ -411,17 +467,16 @@ export function createReviewEngine(opts: {
           `review completed but could not be saved (${reason}); full text salvaged to ${salvagePath}`,
         );
       }
+      run.done();
       bus.emit('review-done', { jobId, questionId: question.id, review });
     } catch (err) {
       // Persist nothing on failure — the partial text already traveled via
       // chunks, so flush whatever is buffered before announcing the error.
       flushChunks();
       if (!disposed) {
-        bus.emit('review-error', {
-          jobId,
-          questionId: question.id,
-          message: err instanceof Error ? err.message : String(err),
-        });
+        const message = err instanceof Error ? err.message : String(err);
+        run.fail(message);
+        bus.emit('review-error', { jobId, questionId: question.id, message });
       }
     } finally {
       if (job.flushTimer) {

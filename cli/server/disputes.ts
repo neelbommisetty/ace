@@ -4,9 +4,9 @@ import { NoObjectGeneratedError } from 'ai';
 import { z } from 'zod';
 import { CATEGORIES, type CategoryConfig } from '../lib/categories.js';
 import { getImportMetaDirname } from '../lib/import-meta.js';
-import { chatObject, type LLMMessage } from '../lib/llm.js';
+import { chatObjectStream, type LLMMessage } from '../lib/llm.js';
 import { buildQuestionSection } from '../lib/prompt-builder.js';
-import type { AiLog } from './ai-log.js';
+import { NULL_AI_LOG, type AiLog } from './ai-log.js';
 import { saveBlob } from './blobs.js';
 import { readWorkspaceFile, toWorkspaceRelPath, writeWorkspaceFile } from './files.js';
 import { uuidv7 } from './ids.js';
@@ -104,13 +104,14 @@ export function createDisputeEngine(opts: {
   bus: Bus;
   workspaceRoot: string;
   /**
-   * AI activity recorder (NEE-268) — accepted for uniform session wiring;
-   * this engine's runs are not recorded yet (generation is instrumented
-   * first).
+   * AI activity recorder (NEE-268). Defaults to the zero-behaviour
+   * NULL_AI_LOG, so every pre-existing test runs unchanged; the server
+   * session passes the shared recorder.
    */
   aiLog?: AiLog;
 }): DisputeEngine {
   const { db, bus, workspaceRoot } = opts;
+  const aiLog = opts.aiLog ?? NULL_AI_LOG;
   const inFlight = new Map<string, string>(); // questionId → disputeJobId
   let disposed = false;
 
@@ -121,6 +122,16 @@ export function createDisputeEngine(opts: {
     argument: string | null,
     config: CategoryConfig,
   ): Promise<void> {
+    // One activity-log run per dispute job (NEE-271). Created before
+    // anything can fail, so even a missing API key leaves a (zero-step)
+    // errored run behind for Activity to render. Recording is best-effort
+    // throughout and never touches the dispute's own state.
+    const aiRun = aiLog.startRun({
+      kind: 'dispute',
+      refId: disputeJobId,
+      questionId: question.id,
+      label: question.title,
+    });
     try {
       const provider = resolveProvider();
       if (!provider) throw new Error('no LLM API key configured — add one in Settings');
@@ -175,10 +186,32 @@ ${buildFailureOutput(run)}
       // Bound the single-shot call so a stalled connection can't hold the
       // per-question in-flight slot (and its 409) until server restart.
       const abort = AbortSignal.timeout(180_000);
-      const result = await chatObject(provider, messages, DisputeResultSchema, {
-        abortSignal: abort,
-        purpose: 'dispute',
+      // DisputeResultSchema is entirely wire-safe (fixedTestCode already
+      // reaches the browser via the apply flow) and the prompt is the user's
+      // own failing tests and output — both recorded as-is. The recorder
+      // still masks unconditionally (its `## Solution Code` section is
+      // withheld structurally).
+      const step = aiRun.step({
+        slug: 'dispute',
+        label: 'Analyzing failing tests',
+        kind: 'llm',
+        prompt: messages
+          .filter((m) => m.role === 'user')
+          .map((m) => m.content)
+          .join('\n\n'),
       });
+      let result: DisputeResult;
+      try {
+        result = await chatObjectStream(provider, messages, DisputeResultSchema, {
+          abortSignal: abort,
+          purpose: 'dispute',
+          onPartial: (partial) => step.partial(partial),
+        });
+      } catch (err) {
+        step.fail(err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+      step.done(result.verdict);
       if (disposed) return;
 
       const dispute = db.createDispute({
@@ -193,6 +226,7 @@ ${buildFailureOutput(run)}
         testRelPath: toWorkspaceRelPath(workspaceRoot, testAbs),
         hint: result.hint ?? null,
       });
+      aiRun.done();
       bus.emit('dispute-done', { disputeJobId, questionId: question.id, dispute });
     } catch (err) {
       if (!disposed) {
@@ -201,6 +235,7 @@ ${buildFailureOutput(run)}
           : err instanceof Error
             ? err.message
             : String(err);
+        aiRun.fail(message);
         bus.emit('dispute-error', { disputeJobId, questionId: question.id, message });
       }
     } finally {

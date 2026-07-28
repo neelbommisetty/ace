@@ -41,6 +41,10 @@ export const WIRE_SAFE_KEYS: Record<string, ReadonlySet<string>> = {
   'edge-audit': new Set(['description', 'testCode']), // edgeCases withheld — the names are hints
   dispute: new Set(['verdict', 'summary', 'details', 'failingTests', 'fixedTestCode', 'hint']),
   brainstorm: new Set(['reply', 'ideas']),
+  // Extraction over the finished review prose — derived from text the user
+  // already sees, so every field is safe. (The `review` step itself streams
+  // plain chatStream text via append(), never partials.)
+  'review-extract': new Set(['score', 'verdict', 'dimensions']),
 };
 
 /**
