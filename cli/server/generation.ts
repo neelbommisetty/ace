@@ -20,6 +20,7 @@ import { formatReferenceSolutionMd, scaffoldQuestionAt } from '../lib/scaffold.j
 import { splitSpoilers } from '../lib/spoilers.js';
 import { NULL_AI_LOG, type AiLog } from './ai-log.js';
 import { nowIso } from './ids.js';
+import { createJobRegistry, toEngineErrorMessage } from './job-engine.js';
 import { resolveProvider as resolveProviderFromSettings } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, Difficulty, GenerationJobRow, QuestionRow } from './types.js';
@@ -142,8 +143,7 @@ export function createGenerationEngine(opts: {
   const llm = opts.llm ?? { chatObjectStream };
   const resolveProvider = opts.resolveProvider ?? resolveProviderFromSettings;
   const aiLog = opts.aiLog ?? NULL_AI_LOG;
-  const inFlight = new Set<string>();
-  let disposed = false;
+  const inFlight = createJobRegistry<string>({ name: 'generation' });
 
   // `resumeFromResult: true` is the retry-scaffold-only path: `job.result` is
   // already a persisted, paid-for LLM output, so the llm call is skipped
@@ -204,10 +204,10 @@ Question type: ${config.type}`;
             llm,
             verify: opts.verify,
             onProgress: (phase, attempt) => {
-              if (!disposed) bus.emit('generation-progress', { jobId, phase, attempt });
+              if (!inFlight.isDisposed()) bus.emit('generation-progress', { jobId, phase, attempt });
             },
             onStageResult: (stage) => {
-              if (disposed) return;
+              if (inFlight.isDisposed()) return;
               try {
                 db.patchGenerationJob(jobId, {
                   result: stage as unknown as Record<string, unknown>,
@@ -225,10 +225,9 @@ Question type: ${config.type}`;
         );
         parsed = outcome.question;
         pipelineDone = true;
-        // Mirrors the disputes/reviews/brainstorm engines' convention: a paid
-        // call that resolves after dispose() must not write through a db the
-        // session teardown may already be closing (or have closed).
-        if (disposed) return;
+        // A paid call that resolved after dispose() — see
+        // JobRegistry.isDisposed() for the write-through rationale.
+        if (inFlight.isDisposed()) return;
 
         title = parsed.title || job.topic;
 
@@ -371,7 +370,7 @@ Question type: ${config.type}`;
       run.done();
       bus.emit('generation-done', { jobId, question });
     } catch (err) {
-      if (!disposed) {
+      if (!inFlight.isDisposed()) {
         if (err instanceof GenerationVerifyError) {
           // Clear the persisted per-stage result so retry's resumeFromResult
           // check re-runs the FULL pipeline — never scaffold a question whose
@@ -394,11 +393,10 @@ Question type: ${config.type}`;
           bus.emit('generation-error', { jobId, message });
           return;
         }
-        const message = NoObjectGeneratedError.isInstance(err)
-          ? 'the model did not return a parseable question — try again'
-          : err instanceof Error
-            ? err.message
-            : String(err);
+        const message = toEngineErrorMessage(
+          err,
+          'the model did not return a parseable question — try again',
+        );
         const rawText = NoObjectGeneratedError.isInstance(err) ? (err.text ?? null) : null;
         try {
           // A failure BEFORE the pipeline finished leaves only unverified
@@ -420,13 +418,13 @@ Question type: ${config.type}`;
         bus.emit('generation-error', { jobId, message });
       }
     } finally {
-      inFlight.delete(jobId);
+      inFlight.release(jobId, jobId);
     }
   }
 
   return {
     start(params) {
-      if (disposed) throw new Error('generation engine is disposed');
+      inFlight.assertNotDisposed();
 
       const job = db.createGenerationJob({
         category: params.category,
@@ -434,14 +432,14 @@ Question type: ${config.type}`;
         topic: params.topic,
         brainstormSessionId: params.brainstormSessionId ?? null,
       });
-      inFlight.add(job.id);
+      inFlight.claim(job.id, job.id);
       bus.emit('generation-started', { job: redactGenerationJob(job) });
       void runJob(job);
       return { jobId: job.id };
     },
 
     retry(job) {
-      if (disposed) throw new Error('generation engine is disposed');
+      inFlight.assertNotDisposed();
       if (job.status !== 'error') {
         throw new Error(
           `generation job ${job.id} is not in an error state (status: ${job.status}) and cannot be retried`,
@@ -459,23 +457,22 @@ Question type: ${config.type}`;
         errorMessage: null,
         runStartedAt: nowIso(),
       });
-      inFlight.add(resumed.id);
+      inFlight.claim(resumed.id, resumed.id);
       bus.emit('generation-started', { job: redactGenerationJob(resumed) });
       void runJob(resumed, { resumeFromResult: resumed.result != null });
       return { jobId: resumed.id };
     },
 
     runningCount() {
-      return inFlight.size;
+      return inFlight.runningCount();
     },
 
     isAnyRunning() {
-      return inFlight.size > 0;
+      return inFlight.isAnyRunning();
     },
 
     dispose() {
-      disposed = true;
-      inFlight.clear();
+      inFlight.dispose();
     },
   };
 }

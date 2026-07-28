@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { NoObjectGeneratedError } from 'ai';
 import { z } from 'zod';
 import { CATEGORIES, type CategoryConfig } from '../lib/categories.js';
 import { getImportMetaDirname } from '../lib/import-meta.js';
@@ -10,6 +9,7 @@ import { NULL_AI_LOG, type AiLog } from './ai-log.js';
 import { saveBlob } from './blobs.js';
 import { readWorkspaceFile, toWorkspaceRelPath, writeWorkspaceFile } from './files.js';
 import { uuidv7 } from './ids.js';
+import { createJobRegistry, toEngineErrorMessage } from './job-engine.js';
 import { resolveProvider } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, DisputeRow, QuestionRow, TestRunRow } from './types.js';
@@ -111,8 +111,8 @@ export function createDisputeEngine(opts: {
 }): DisputeEngine {
   const { db, bus, workspaceRoot } = opts;
   const aiLog = opts.aiLog ?? NULL_AI_LOG;
-  const inFlight = new Map<string, string>(); // questionId → disputeJobId
-  let disposed = false;
+  // questionId → disputeJobId
+  const inFlight = createJobRegistry<string, string>({ name: 'dispute' });
 
   async function runJob(
     disputeJobId: string,
@@ -212,7 +212,9 @@ ${buildFailureOutput(run)}
         throw err;
       }
       step.done(result.verdict);
-      if (disposed) return;
+      // A paid call that resolved after dispose() — see
+      // JobRegistry.isDisposed() for the write-through rationale.
+      if (inFlight.isDisposed()) return;
 
       const dispute = db.createDispute({
         questionId: question.id,
@@ -229,17 +231,16 @@ ${buildFailureOutput(run)}
       aiRun.done();
       bus.emit('dispute-done', { disputeJobId, questionId: question.id, dispute });
     } catch (err) {
-      if (!disposed) {
-        const message = NoObjectGeneratedError.isInstance(err)
-          ? 'the model did not return a parseable dispute analysis — try again'
-          : err instanceof Error
-            ? err.message
-            : String(err);
+      if (!inFlight.isDisposed()) {
+        const message = toEngineErrorMessage(
+          err,
+          'the model did not return a parseable dispute analysis — try again',
+        );
         aiRun.fail(message);
         bus.emit('dispute-error', { disputeJobId, questionId: question.id, message });
       }
     } finally {
-      if (inFlight.get(question.id) === disputeJobId) inFlight.delete(question.id);
+      inFlight.release(question.id, disputeJobId);
     }
   }
 
@@ -253,18 +254,18 @@ ${buildFailureOutput(run)}
 
   return {
     start(question, run, argument) {
-      if (disposed) throw new Error('dispute engine is disposed');
-      if (inFlight.has(question.id)) {
-        // Routes check isRunning first; this is a programming-error backstop.
-        throw new Error('a dispute analysis is already running for this question');
-      }
+      inFlight.assertNotDisposed();
+      inFlight.assertNotRunning(
+        question.id,
+        'a dispute analysis is already running for this question',
+      );
       const config = (CATEGORIES as Record<string, CategoryConfig | undefined>)[
         question.category
       ];
       if (!config) throw new Error(`unknown category "${question.category}"`);
 
       const disputeJobId = uuidv7();
-      inFlight.set(question.id, disputeJobId);
+      inFlight.claim(question.id, disputeJobId);
       bus.emit('dispute-started', {
         disputeJobId,
         questionId: question.id,
@@ -275,16 +276,15 @@ ${buildFailureOutput(run)}
     },
 
     isRunning(questionId) {
-      return inFlight.has(questionId);
+      return inFlight.isRunning(questionId);
     },
 
     isAnyRunning() {
-      return inFlight.size > 0;
+      return inFlight.isAnyRunning();
     },
 
     dispose() {
-      disposed = true;
-      inFlight.clear();
+      inFlight.dispose();
     },
   };
 }

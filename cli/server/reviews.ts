@@ -15,6 +15,7 @@ import { NULL_AI_LOG, type AiLog } from './ai-log.js';
 import { saveBlob } from './blobs.js';
 import { sha1, toWorkspaceRelPath } from './files.js';
 import { uuidv7 } from './ids.js';
+import { createJobRegistry } from './job-engine.js';
 import { resolveProvider } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, QuestionRow } from './types.js';
@@ -280,8 +281,9 @@ export function createReviewEngine(opts: {
 }): ReviewEngine {
   const { db, bus, workspaceRoot } = opts;
   const aiLog = opts.aiLog ?? NULL_AI_LOG;
-  const inFlight = new Map<string, ReviewJob>();
-  let disposed = false;
+  // questionId → ReviewJob (the job object, not just an id, so dispose()
+  // below can reach the pending flush timers).
+  const inFlight = createJobRegistry<string, ReviewJob>({ name: 'review' });
 
   async function runJob(
     job: ReviewJob,
@@ -307,7 +309,7 @@ export function createReviewEngine(opts: {
         clearTimeout(job.flushTimer);
         job.flushTimer = null;
       }
-      if (pending.length > 0 && !disposed) {
+      if (pending.length > 0 && !inFlight.isDisposed()) {
         bus.emit('review-chunk', { jobId, chunk: pending });
         pending = '';
       }
@@ -377,7 +379,9 @@ export function createReviewEngine(opts: {
       }
       reviewStep.done();
       flushChunks();
-      if (disposed) return;
+      // A paid call that resolved after dispose() — see
+      // JobRegistry.isDisposed() for the write-through rationale.
+      if (inFlight.isDisposed()) return;
 
       // Structured extraction of {score, verdict, dimensions} from the
       // finished prose. Any failure — timeout, parse error, out-of-range
@@ -427,7 +431,7 @@ export function createReviewEngine(opts: {
         extractStep.fail(err instanceof Error ? err.message : String(err));
         extracted = null;
       }
-      if (disposed) {
+      if (inFlight.isDisposed()) {
         // The stream is paid for and fully buffered — never silently drop it
         // just because teardown landed during the extraction await. (.ace/tmp
         // is wiped at boot, so salvage lives directly under .ace/.)
@@ -473,7 +477,7 @@ export function createReviewEngine(opts: {
       // Persist nothing on failure — the partial text already traveled via
       // chunks, so flush whatever is buffered before announcing the error.
       flushChunks();
-      if (!disposed) {
+      if (!inFlight.isDisposed()) {
         const message = err instanceof Error ? err.message : String(err);
         run.fail(message);
         bus.emit('review-error', { jobId, questionId: question.id, message });
@@ -483,7 +487,7 @@ export function createReviewEngine(opts: {
         clearTimeout(job.flushTimer);
         job.flushTimer = null;
       }
-      if (inFlight.get(question.id) === job) inFlight.delete(question.id);
+      inFlight.release(question.id, job);
     }
   }
 
@@ -493,18 +497,15 @@ export function createReviewEngine(opts: {
 
   return {
     start(question, attemptId) {
-      if (disposed) throw new Error('review engine is disposed');
-      if (inFlight.has(question.id)) {
-        // Routes check isRunning first; this is a programming-error backstop.
-        throw new Error('a review is already running for this question');
-      }
+      inFlight.assertNotDisposed();
+      inFlight.assertNotRunning(question.id, 'a review is already running for this question');
       const config = (CATEGORIES as Record<string, CategoryConfig | undefined>)[
         question.category
       ];
       if (!config) throw new Error(`unknown category "${question.category}"`);
 
       const job: ReviewJob = { jobId: uuidv7(), flushTimer: null };
-      inFlight.set(question.id, job);
+      inFlight.claim(question.id, job);
       bus.emit('review-started', {
         jobId: job.jobId,
         questionId: question.id,
@@ -515,22 +516,23 @@ export function createReviewEngine(opts: {
     },
 
     isRunning(questionId) {
-      return inFlight.has(questionId);
+      return inFlight.isRunning(questionId);
     },
 
     isAnyRunning() {
-      return inFlight.size > 0;
+      return inFlight.isAnyRunning();
     },
 
     dispose() {
-      disposed = true;
-      for (const job of inFlight.values()) {
+      // Review-specific teardown the registry can't own: kill the pending
+      // chunk-flush timers before the in-flight collection is emptied.
+      for (const job of inFlight.jobs()) {
         if (job.flushTimer) {
           clearTimeout(job.flushTimer);
           job.flushTimer = null;
         }
       }
-      inFlight.clear();
+      inFlight.dispose();
     },
   };
 }

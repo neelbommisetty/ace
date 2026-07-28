@@ -161,9 +161,20 @@ export function startSessionWatcher(session: WorkspaceSession): void {
 }
 
 /**
+ * The one place the session's disposable engines are enumerated for
+ * teardown. The array's order IS the documented teardown contract (asserted
+ * by session.test.ts): watcher (skipped when null) → runner → reviews →
+ * disputes → generation → brainstorm → [beforeDbClose] → db.close — the
+ * watcher/beforeDbClose/db.close steps stay explicit in the two close
+ * functions below; every engine dispose between them runs in this order.
+ * Adding a sixth engine means adding its key here, so both
+ * closeWorkspaceSession and closeWorkspaceSessionSafe pick it up at once.
+ */
+const ENGINE_KEYS = ['runner', 'reviews', 'disputes', 'generation', 'brainstorm'] as const;
+
+/**
  * Tears down a session in the exact order the previous startAceServer's
- * close() used: watcher (skipped when null) → runner.dispose → reviews.dispose
- * → disputes.dispose → generation.dispose → brainstorm.dispose →
+ * close() used: watcher (skipped when null) → the ENGINE_KEYS dispose loop →
  * [beforeDbClose] → db.close.
  *
  * `beforeDbClose`, if given, runs after the engines are disposed and before
@@ -180,11 +191,9 @@ export async function closeWorkspaceSession(
   opts?: { beforeDbClose?: () => Promise<void> },
 ): Promise<void> {
   if (session.watcher) await session.watcher.close();
-  session.runner.dispose();
-  session.reviews.dispose();
-  session.disputes.dispose();
-  session.generation.dispose();
-  session.brainstorm.dispose();
+  for (const key of ENGINE_KEYS) {
+    session[key].dispose();
+  }
   await opts?.beforeDbClose?.();
   session.db.close();
 }
@@ -202,30 +211,12 @@ export async function closeWorkspaceSessionSafe(session: WorkspaceSession): Prom
   if (session.watcher) {
     await session.watcher.close().catch(() => {});
   }
-  try {
-    session.runner.dispose();
-  } catch {
-    // best effort
-  }
-  try {
-    session.reviews.dispose();
-  } catch {
-    // best effort
-  }
-  try {
-    session.disputes.dispose();
-  } catch {
-    // best effort
-  }
-  try {
-    session.generation.dispose();
-  } catch {
-    // best effort
-  }
-  try {
-    session.brainstorm.dispose();
-  } catch {
-    // best effort
+  for (const key of ENGINE_KEYS) {
+    try {
+      session[key].dispose();
+    } catch {
+      // best effort
+    }
   }
   try {
     session.db.close();

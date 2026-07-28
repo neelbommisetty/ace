@@ -4,6 +4,7 @@ import { CATEGORY_SLUGS } from '../lib/categories.js';
 import { chatObjectStream, type LLMMessage } from '../lib/llm.js';
 import { buildBrainstormPrompt } from '../lib/prompt-builder.js';
 import { NULL_AI_LOG, type AiLog } from './ai-log.js';
+import { createJobRegistry } from './job-engine.js';
 import { resolveProvider } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, BrainstormTurn } from './types.js';
@@ -102,8 +103,7 @@ export function createBrainstormEngine(opts: {
   const { db, bus } = opts;
   const llm = opts.llm ?? { chatObjectStream };
   const aiLog = opts.aiLog ?? NULL_AI_LOG;
-  const inFlight = new Set<string>();
-  let disposed = false;
+  const inFlight = createJobRegistry<string>({ name: 'brainstorm' });
 
   async function runTurn(sessionId: string, message: string): Promise<void> {
     // One activity-log run per turn (NEE-271), labeled with the user's own
@@ -155,10 +155,9 @@ export function createBrainstormEngine(opts: {
       step.done(
         `${result.ideas.length} idea${result.ideas.length === 1 ? '' : 's'} proposed`,
       );
-      // Mirrors the disputes/reviews engines' convention: a paid call that
-      // resolves after dispose() must not write through a db the session
-      // teardown may already be closing (or have closed).
-      if (disposed) return;
+      // A paid call that resolved after dispose() — see
+      // JobRegistry.isDisposed() for the write-through rationale.
+      if (inFlight.isDisposed()) return;
 
       const updated = db.appendBrainstormTurn(
         sessionId,
@@ -170,7 +169,7 @@ export function createBrainstormEngine(opts: {
       bus.emit('brainstorm-done', { sessionId, turn });
     } catch (err) {
       if (NoObjectGeneratedError.isInstance(err)) {
-        if (disposed) return;
+        if (inFlight.isDisposed()) return;
         // Raw paid output preserved AND user-visible, even though it didn't
         // parse as a valid idea list.
         const updated = db.appendBrainstormTurn(
@@ -185,22 +184,24 @@ export function createBrainstormEngine(opts: {
         bus.emit('brainstorm-done', { sessionId, turn });
         return;
       }
-      if (disposed) return;
+      if (inFlight.isDisposed()) return;
       const errorMessage = err instanceof Error ? err.message : String(err);
       db.setBrainstormStatus(sessionId, 'error', errorMessage);
       run.fail(errorMessage);
       bus.emit('brainstorm-error', { sessionId, message: errorMessage });
     } finally {
-      inFlight.delete(sessionId);
+      inFlight.release(sessionId, sessionId);
     }
   }
 
   return {
     startTurn(sessionId, message) {
-      if (disposed) throw new Error('brainstorm engine is disposed');
-      if (sessionId && inFlight.has(sessionId)) {
-        // Routes check isThinking first; this is a programming-error backstop.
-        throw new Error('a brainstorm turn is already running for this session');
+      inFlight.assertNotDisposed();
+      if (sessionId) {
+        inFlight.assertNotRunning(
+          sessionId,
+          'a brainstorm turn is already running for this session',
+        );
       }
 
       // Persist the user's message (and flip to 'thinking') BEFORE anything
@@ -210,23 +211,22 @@ export function createBrainstormEngine(opts: {
         ? db.appendBrainstormTurn(sessionId, { role: 'user', content: message }, 'thinking').id
         : db.createBrainstormSession(message).id;
 
-      inFlight.add(id);
+      inFlight.claim(id, id);
       bus.emit('brainstorm-started', { sessionId: id });
       void runTurn(id, message);
       return { sessionId: id };
     },
 
     isThinking(sessionId) {
-      return inFlight.has(sessionId);
+      return inFlight.isRunning(sessionId);
     },
 
     isAnyRunning() {
-      return inFlight.size > 0;
+      return inFlight.isAnyRunning();
     },
 
     dispose() {
-      disposed = true;
-      inFlight.clear();
+      inFlight.dispose();
     },
   };
 }
