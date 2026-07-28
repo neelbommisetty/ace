@@ -1,4 +1,4 @@
-import { generateObject, streamText, type LanguageModel } from 'ai';
+import { generateObject, streamText, Output, type LanguageModel } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import chalk from 'chalk';
@@ -327,6 +327,78 @@ export async function chatObject<T>(
     providerOptions: { openai: { strictJsonSchema: false } },
   });
   return result.object;
+}
+
+/**
+ * Streaming variant of chatObject: same validated-final-object contract, but
+ * surfaces each partial object as the JSON materialises so callers (e.g. the
+ * Activity Log) can render a response arriving live. Ships beside chatObject —
+ * review-extract and the CLI commands stay on the non-streaming call.
+ */
+export async function chatObjectStream<T>(
+  provider: LLMProvider,
+  messages: LLMMessage[],
+  schema: z.ZodType<T>,
+  opts?: {
+    abortSignal?: AbortSignal;
+    maxOutputTokens?: number;
+    purpose?: LLMPurpose;
+    /** Each partial as the JSON materialises. NOT schema-validated —
+     *  every field may be truncated mid-string. Throws are swallowed:
+     *  a logging bug must never kill a paid call. */
+    onPartial?: (partial: Record<string, unknown>) => void;
+  },
+): Promise<T> {
+  const firePartial = (partial: unknown): void => {
+    try {
+      opts?.onPartial?.(partial as Record<string, unknown>);
+    } catch {
+      // Swallowed by contract — a logging bug must never kill a paid call.
+    }
+  };
+
+  if (mockLlm) {
+    if (process.env.ACE_MOCK_LLM_MODE) {
+      // Explicit override: honored first, exactly like chatObject.
+      const parsed = schema.parse(JSON.parse(getMockResponse()));
+      firePartial(parsed);
+      return parsed;
+    }
+    // No mode var: same schema dispatch as chatObject, firing onPartial at
+    // least once so keyless e2e still renders a stream.
+    for (const candidate of MOCK_OBJECT_CANDIDATES) {
+      const result = schema.safeParse(candidate());
+      if (result.success) {
+        firePartial(result.data);
+        return result.data;
+      }
+    }
+    // No candidate matched this schema — fall through to today's
+    // parse-failure behavior.
+    return schema.parse('OK');
+  }
+
+  const result = streamText({
+    model: getModel(provider, opts?.purpose ?? 'generate'),
+    ...toCallInput(messages, opts?.maxOutputTokens),
+    output: Output.object({ schema }),
+    abortSignal: opts?.abortSignal,
+    // Same strict-mode opt-out as chatObject — see the comment there.
+    providerOptions: { openai: { strictJsonSchema: false } },
+  });
+
+  // The partial stream must be FULLY drained or `result.output` below never
+  // settles. Never read result.textStream here — that is the raw JSON
+  // including referenceSolution; only the partial-object stream may be
+  // surfaced, filtered downstream.
+  for await (const partial of result.partialOutputStream) {
+    firePartial(partial);
+  }
+
+  // The schema-validated final object. Parse/validation failure rejects with
+  // NoObjectGeneratedError carrying .text — the same contract chatObject's
+  // callers already match on.
+  return await result.output;
 }
 
 /**

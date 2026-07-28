@@ -1,7 +1,21 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { NoObjectGeneratedError } from 'ai';
 import { z } from 'zod';
 import { CATEGORY_SLUGS } from './categories.js';
-import type { chatObject as ChatObjectFn } from './llm.js';
+import type { chatObject as ChatObjectFn, chatObjectStream as ChatObjectStreamFn } from './llm.js';
+
+// Only streamText is replaced (the seam the chatObjectStream real-path tests
+// drive); everything else — Output, NoObjectGeneratedError — stays real so
+// error-identity assertions exercise the genuine classes. No model is ever
+// run: the mock-mode tests never reach streamText, and the real-path tests
+// always queue a canned return first.
+vi.mock('ai', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('ai')>();
+  return { ...actual, streamText: vi.fn() };
+});
 
 // `mockLlm` inside ./llm.js is a module-level const read once at import
 // time, so ACE_E2E_MOCK_LLM must be set BEFORE the module is first
@@ -9,10 +23,11 @@ import type { chatObject as ChatObjectFn } from './llm.js';
 // in this file, so we set the env var in beforeAll and import dynamically
 // (same pattern used by cli/server/workspace-reset.test.ts).
 let chatObject: typeof ChatObjectFn;
+let chatObjectStream: typeof ChatObjectStreamFn;
 
 beforeAll(async () => {
   process.env.ACE_E2E_MOCK_LLM = '1';
-  ({ chatObject } = await import('./llm.js'));
+  ({ chatObject, chatObjectStream } = await import('./llm.js'));
 });
 
 // Mirrors cli/lib/gen-pipeline.ts's GeneratedQuestionSchema (kept local: a
@@ -97,5 +112,153 @@ describe('chatObject mock schema-dispatch', () => {
 
   it('falls through to the existing parse-failure behavior when no candidate matches', async () => {
     await expect(chatObject('openai', [], UnmatchedSchema)).rejects.toThrow();
+  });
+});
+
+describe('chatObjectStream mock mode', () => {
+  it('matches chatObject on the schema-dispatch branch, no mode var set', async () => {
+    const streamed = await chatObjectStream('openai', [], GeneratedQuestionSchema);
+    const nonStreamed = await chatObject('openai', [], GeneratedQuestionSchema);
+    expect(streamed).toEqual(nonStreamed);
+    expect(streamed.title).toBe('Two Sum');
+  });
+
+  it('honors an explicit ACE_MOCK_LLM_MODE override, matching chatObject', async () => {
+    process.env.ACE_MOCK_LLM_MODE = 'dispute';
+    const result = (await chatObjectStream('openai', [], PermissiveSchema)) as Record<string, unknown>;
+    expect(result.verdict).toBe('test_incorrect');
+    expect(result.title).toBeUndefined();
+  });
+
+  it('rejects when no candidate matches, same as chatObject', async () => {
+    await expect(chatObjectStream('openai', [], UnmatchedSchema)).rejects.toThrow();
+  });
+
+  it('fires onPartial at least once with the payload', async () => {
+    const partials: Array<Record<string, unknown>> = [];
+    const result = await chatObjectStream('openai', [], GeneratedQuestionSchema, {
+      onPartial: (partial) => partials.push(partial),
+    });
+    expect(partials.length).toBeGreaterThanOrEqual(1);
+    expect(partials[0].title).toBe('Two Sum');
+    expect(result.slug).toBe('two-sum');
+  });
+
+  it('swallows onPartial throws — a logging bug never kills the call', async () => {
+    const result = await chatObjectStream('openai', [], GeneratedQuestionSchema, {
+      onPartial: () => {
+        throw new Error('logging bug');
+      },
+    });
+    expect(result.title).toBe('Two Sum');
+  });
+});
+
+describe('chatObjectStream real path (mocked ai seam)', () => {
+  // These need a NON-mock llm instance: fresh module graph with
+  // ACE_E2E_MOCK_LLM unset, plus a temp HOME so the module never reads the
+  // developer's real ~/.ace/config.json (same hygiene as llm.baseurl.test.ts).
+  let tempHome = '';
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const key of ['HOME', 'ACE_E2E_MOCK_LLM', 'OPENAI_API_KEY', 'OPENAI_BASE_URL']) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ace-llm-stream-'));
+    process.env.HOME = tempHome;
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  // resetModules() re-runs the vi.mock factory on re-import, so the fresh llm
+  // instance and the streamText mock reference must be picked up together.
+  async function loadRealLlm() {
+    vi.resetModules();
+    const llm = await import('./llm.js');
+    const { streamText } = await import('ai');
+    return { llm, streamText: vi.mocked(streamText) };
+  }
+
+  it('drains the partial stream, fires onPartial per partial, and resolves the final output', async () => {
+    const { llm, streamText } = await loadRealLlm();
+    const partials = [{ title: 'Two S' }, { title: 'Two Sum' }];
+    streamText.mockReturnValueOnce({
+      partialOutputStream: (async function* () {
+        yield* partials;
+      })(),
+      output: Promise.resolve({ title: 'Two Sum' }),
+    } as never);
+
+    const seen: Array<Record<string, unknown>> = [];
+    const result = await llm.chatObjectStream(
+      'openai',
+      [
+        { role: 'system', content: 'sys prompt' },
+        { role: 'user', content: 'hi' },
+      ],
+      z.object({ title: z.string() }),
+      { onPartial: (partial) => seen.push(partial), maxOutputTokens: 123 },
+    );
+
+    expect(result).toEqual({ title: 'Two Sum' });
+    expect(seen).toEqual(partials);
+
+    // Call-shape parity with chatObject: system prompt routed through
+    // `instructions`, strict-mode opt-out, and NO sampling params
+    // (claude-opus-4-8 400s on temperature/top_p/top_k).
+    const call = streamText.mock.calls[0][0] as unknown as Record<string, unknown>;
+    expect(call.instructions).toBe('sys prompt');
+    expect(call.messages).toEqual([{ role: 'user', content: 'hi' }]);
+    expect(call.maxOutputTokens).toBe(123);
+    expect(call.providerOptions).toEqual({ openai: { strictJsonSchema: false } });
+    expect(call.output).toBeDefined();
+    expect('temperature' in call).toBe(false);
+    expect('topP' in call).toBe(false);
+    expect('topK' in call).toBe(false);
+  });
+
+  it('propagates a parseCompleteOutput failure as NoObjectGeneratedError with .text intact', async () => {
+    const { llm, streamText } = await loadRealLlm();
+    const rawText = '{"title": "Two Su';
+    const rejection = new NoObjectGeneratedError({
+      message: 'No object generated: could not parse the response.',
+      text: rawText,
+      response: { id: 'resp-1', timestamp: new Date(0), modelId: 'gpt-5.6-sol' },
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        totalTokens: 2,
+        inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+        outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+      },
+      finishReason: 'stop',
+    });
+    const output = Promise.reject(rejection);
+    // Pre-attach a handler: the rejection must not trip vitest's
+    // unhandled-rejection detection before chatObjectStream awaits it.
+    output.catch(() => {});
+    streamText.mockReturnValueOnce({
+      partialOutputStream: (async function* () {
+        yield { title: 'Two Su' };
+      })(),
+      output,
+    } as never);
+
+    const err: unknown = await llm
+      .chatObjectStream('openai', [{ role: 'user', content: 'hi' }], z.object({ title: z.string() }))
+      .catch((e: unknown) => e);
+
+    // Exactly what generation.ts's error handler (and the CLI commands)
+    // match on: isInstance plus .text for the raw-response job column.
+    expect(NoObjectGeneratedError.isInstance(err)).toBe(true);
+    expect((err as NoObjectGeneratedError).text).toBe(rawText);
   });
 });
