@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import type {
   AceDb,
   AiRunKind,
@@ -323,11 +323,29 @@ class SqliteAceDb implements AceDb {
   readonly workspaceRoot: string;
   private db: DatabaseSync;
   private ftsAvailable: boolean;
+  private readonly stmtCache = new Map<string, StatementSync>();
 
   constructor(workspaceRoot: string, db: DatabaseSync, ftsAvailable: boolean) {
     this.workspaceRoot = workspaceRoot;
     this.db = db;
     this.ftsAvailable = ftsAvailable;
+  }
+
+  /**
+   * Memoizes DatabaseSync.prepare() — sqlite3_prepare_v2 does real parsing
+   * and query-planning work per call. Every call site passes a stable string
+   * (literals, or interpolations over a closed set of variants), so the SQL
+   * text is a safe cache key. close() clears the cache: a StatementSync must
+   * never outlive its DatabaseSync, and workspace reset closes and reopens
+   * the db.
+   */
+  private stmt(sql: string): StatementSync {
+    let s = this.stmtCache.get(sql);
+    if (!s) {
+      s = this.db.prepare(sql);
+      this.stmtCache.set(sql, s);
+    }
+    return s;
   }
 
   // -- questions ------------------------------------------------------------
@@ -336,20 +354,18 @@ class SqliteAceDb implements AceDb {
     const latestDone =
       "SELECT t.%COL% FROM test_runs t WHERE t.question_id = q.id AND t.status = 'done' " +
       'ORDER BY t.at DESC, t.id DESC LIMIT 1';
-    const rows = this.db
-      .prepare(
-        `SELECT q.*,
-          (SELECT COUNT(*) FROM attempts a WHERE a.question_id = q.id) AS attempt_count,
-          EXISTS (SELECT 1 FROM attempts a WHERE a.question_id = q.id AND a.imported = 1) AS has_imported,
-          (SELECT MAX(a.started_at) FROM attempts a WHERE a.question_id = q.id) AS last_attempt_at,
-          (${latestDone.replace('%COL%', 'passed')}) AS last_done_passed,
-          (${latestDone.replace('%COL%', 'total')}) AS last_done_total,
-          (${latestDone.replace('%COL%', 'at')}) AS last_done_at,
-          (SELECT MAX(t.at) FROM test_runs t WHERE t.question_id = q.id) AS last_run_at
-        FROM questions q
-        ORDER BY q.category, q.slug`,
-      )
-      .all() as SqlRow[];
+    const rows = this.stmt(
+      `SELECT q.*,
+        (SELECT COUNT(*) FROM attempts a WHERE a.question_id = q.id) AS attempt_count,
+        EXISTS (SELECT 1 FROM attempts a WHERE a.question_id = q.id AND a.imported = 1) AS has_imported,
+        (SELECT MAX(a.started_at) FROM attempts a WHERE a.question_id = q.id) AS last_attempt_at,
+        (${latestDone.replace('%COL%', 'passed')}) AS last_done_passed,
+        (${latestDone.replace('%COL%', 'total')}) AS last_done_total,
+        (${latestDone.replace('%COL%', 'at')}) AS last_done_at,
+        (SELECT MAX(t.at) FROM test_runs t WHERE t.question_id = q.id) AS last_run_at
+      FROM questions q
+      ORDER BY q.category, q.slug`,
+    ).all() as SqlRow[];
 
     return rows.map((r) => {
       const attemptCount = r.attempt_count as number;
@@ -385,16 +401,15 @@ class SqliteAceDb implements AceDb {
   }
 
   getQuestionById(id: string): QuestionRow | null {
-    const r = this.db.prepare('SELECT * FROM questions WHERE id = ?').get(id) as
-      | SqlRow
-      | undefined;
+    const r = this.stmt('SELECT * FROM questions WHERE id = ?').get(id) as SqlRow | undefined;
     return r ? rowToQuestion(r) : null;
   }
 
   getQuestion(category: string, slug: string): QuestionRow | null {
-    const r = this.db
-      .prepare('SELECT * FROM questions WHERE category = ? AND slug = ?')
-      .get(category, slug) as SqlRow | undefined;
+    const r = this.stmt('SELECT * FROM questions WHERE category = ? AND slug = ?').get(
+      category,
+      slug,
+    ) as SqlRow | undefined;
     return r ? rowToQuestion(r) : null;
   }
 
@@ -408,38 +423,36 @@ class SqliteAceDb implements AceDb {
     source: QuestionSource;
   }): QuestionRow {
     // source is set on insert only — provenance never flips on a rescan
-    this.db
-      .prepare(
-        `INSERT INTO questions
-          (id, category, slug, title, difficulty, suggested_minutes, dir_path, source, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (category, slug) DO UPDATE SET
-           title = excluded.title,
-           difficulty = excluded.difficulty,
-           suggested_minutes = excluded.suggested_minutes,
-           dir_path = excluded.dir_path`,
-      )
-      .run(
-        uuidv7(),
-        q.category,
-        q.slug,
-        q.title,
-        q.difficulty,
-        q.suggestedMinutes,
-        q.dirPath,
-        q.source,
-        nowIso(),
-      );
+    this.stmt(
+      `INSERT INTO questions
+        (id, category, slug, title, difficulty, suggested_minutes, dir_path, source, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (category, slug) DO UPDATE SET
+         title = excluded.title,
+         difficulty = excluded.difficulty,
+         suggested_minutes = excluded.suggested_minutes,
+         dir_path = excluded.dir_path`,
+    ).run(
+      uuidv7(),
+      q.category,
+      q.slug,
+      q.title,
+      q.difficulty,
+      q.suggestedMinutes,
+      q.dirPath,
+      q.source,
+      nowIso(),
+    );
     const row = this.getQuestion(q.category, q.slug);
     if (!row) throw new Error(`upsertQuestion failed for ${q.category}/${q.slug}`);
     return row;
   }
 
   setMissing(presentIds: string[], missingIds: string[]): void {
-    const clear = this.db.prepare(
+    const clear = this.stmt(
       'UPDATE questions SET missing_at = NULL WHERE id = ? AND missing_at IS NOT NULL',
     );
-    const mark = this.db.prepare(
+    const mark = this.stmt(
       'UPDATE questions SET missing_at = ? WHERE id = ? AND missing_at IS NULL',
     );
     this.db.exec('BEGIN');
@@ -457,22 +470,18 @@ class SqliteAceDb implements AceDb {
   // -- attempts -------------------------------------------------------------
 
   getActiveAttempt(questionId: string): AttemptRow | null {
-    const r = this.db
-      .prepare(
-        `SELECT * FROM attempts WHERE question_id = ? AND ended_at IS NULL
-         ORDER BY started_at DESC, id DESC LIMIT 1`,
-      )
-      .get(questionId) as SqlRow | undefined;
+    const r = this.stmt(
+      `SELECT * FROM attempts WHERE question_id = ? AND ended_at IS NULL
+       ORDER BY started_at DESC, id DESC LIMIT 1`,
+    ).get(questionId) as SqlRow | undefined;
     return r ? rowToAttempt(r) : null;
   }
 
   getLatestActiveAttempt(): { attempt: AttemptRow; question: QuestionRow } | null {
-    const r = this.db
-      .prepare(
-        `SELECT a.* FROM attempts a WHERE a.ended_at IS NULL
-         ORDER BY a.started_at DESC, a.id DESC LIMIT 1`,
-      )
-      .get() as SqlRow | undefined;
+    const r = this.stmt(
+      `SELECT a.* FROM attempts a WHERE a.ended_at IS NULL
+       ORDER BY a.started_at DESC, a.id DESC LIMIT 1`,
+    ).get() as SqlRow | undefined;
     if (!r) return null;
     const attempt = rowToAttempt(r);
     const question = this.getQuestionById(attempt.questionId);
@@ -481,12 +490,10 @@ class SqliteAceDb implements AceDb {
   }
 
   getLatestAttempt(questionId: string): AttemptRow | null {
-    const r = this.db
-      .prepare(
-        `SELECT * FROM attempts WHERE question_id = ?
-         ORDER BY started_at DESC, id DESC LIMIT 1`,
-      )
-      .get(questionId) as SqlRow | undefined;
+    const r = this.stmt(
+      `SELECT * FROM attempts WHERE question_id = ?
+       ORDER BY started_at DESC, id DESC LIMIT 1`,
+    ).get(questionId) as SqlRow | undefined;
     return r ? rowToAttempt(r) : null;
   }
 
@@ -505,27 +512,26 @@ class SqliteAceDb implements AceDb {
       }
     }
 
-    const countRow = this.db
-      .prepare('SELECT COUNT(*) AS n FROM attempts WHERE question_id = ?')
-      .get(questionId) as SqlRow;
+    const countRow = this.stmt('SELECT COUNT(*) AS n FROM attempts WHERE question_id = ?').get(
+      questionId,
+    ) as SqlRow;
     const number = (countRow.n as number) + 1;
 
-    const id = uuidv7();
-    this.db
-      .prepare(
-        `INSERT INTO attempts (id, question_id, number, started_at, imported)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(id, questionId, number, opts?.startedAt ?? nowIso(), opts?.imported ? 1 : 0);
-    const row = this.getAttempt(id);
-    if (!row) throw new Error(`createAttempt failed for question ${questionId}`);
-    return row;
+    const row = this.stmt(
+      `INSERT INTO attempts (id, question_id, number, started_at, imported)
+       VALUES (?, ?, ?, ?, ?) RETURNING *`,
+    ).get(
+      uuidv7(),
+      questionId,
+      number,
+      opts?.startedAt ?? nowIso(),
+      opts?.imported ? 1 : 0,
+    ) as SqlRow;
+    return rowToAttempt(row);
   }
 
   getAttempt(id: string): AttemptRow | null {
-    const r = this.db.prepare('SELECT * FROM attempts WHERE id = ?').get(id) as
-      | SqlRow
-      | undefined;
+    const r = this.stmt('SELECT * FROM attempts WHERE id = ?').get(id) as SqlRow | undefined;
     return r ? rowToAttempt(r) : null;
   }
 
@@ -535,19 +541,22 @@ class SqliteAceDb implements AceDb {
   ): AttemptRow {
     const existing = this.getAttempt(id);
     if (!existing) throw new Error(`unknown attempt: ${id}`);
+    let row = existing;
     if (patch.activeSecondsDelta) {
-      this.db
-        .prepare('UPDATE attempts SET active_seconds = active_seconds + ? WHERE id = ?')
-        .run(patch.activeSecondsDelta, id);
+      row = rowToAttempt(
+        this.stmt(
+          'UPDATE attempts SET active_seconds = active_seconds + ? WHERE id = ? RETURNING *',
+        ).get(patch.activeSecondsDelta, id) as SqlRow,
+      );
     }
     // ending is one-way: an already-ended attempt keeps its first end
     if (patch.end && existing.endedAt == null) {
-      this.db
-        .prepare('UPDATE attempts SET ended_at = ?, end_reason = ? WHERE id = ?')
-        .run(nowIso(), patch.end.reason, id);
+      row = rowToAttempt(
+        this.stmt(
+          'UPDATE attempts SET ended_at = ?, end_reason = ? WHERE id = ? RETURNING *',
+        ).get(nowIso(), patch.end.reason, id) as SqlRow,
+      );
     }
-    const row = this.getAttempt(id);
-    if (!row) throw new Error(`unknown attempt: ${id}`);
     return row;
   }
 
@@ -560,36 +569,37 @@ class SqliteAceDb implements AceDb {
     if (!attempt) throw new Error(`unknown attempt: ${attemptId}`);
 
     if (type === 'first_edit' || type === 'all_green') {
-      const existing = this.db
-        .prepare(
-          `SELECT * FROM attempt_events WHERE attempt_id = ? AND type = ?
-           ORDER BY at ASC, id ASC LIMIT 1`,
-        )
-        .get(attemptId, type) as SqlRow | undefined;
+      const existing = this.stmt(
+        `SELECT * FROM attempt_events WHERE attempt_id = ? AND type = ?
+         ORDER BY at ASC, id ASC LIMIT 1`,
+      ).get(attemptId, type) as SqlRow | undefined;
       if (existing) return rowToAttemptEvent(existing);
     }
 
-    const id = uuidv7();
-    this.db
-      .prepare(
-        'INSERT INTO attempt_events (id, attempt_id, at, type, payload_json) VALUES (?, ?, ?, ?, ?)',
-      )
-      .run(id, attemptId, nowIso(), type, payload ? JSON.stringify(payload) : null);
-    const r = this.db.prepare('SELECT * FROM attempt_events WHERE id = ?').get(id) as SqlRow;
+    const r = this.stmt(
+      `INSERT INTO attempt_events (id, attempt_id, at, type, payload_json)
+       VALUES (?, ?, ?, ?, ?) RETURNING *`,
+    ).get(
+      uuidv7(),
+      attemptId,
+      nowIso(),
+      type,
+      payload ? JSON.stringify(payload) : null,
+    ) as SqlRow;
     return rowToAttemptEvent(r);
   }
 
   hasAttemptEvent(attemptId: string, type: AttemptEventType): boolean {
-    const r = this.db
-      .prepare('SELECT 1 AS one FROM attempt_events WHERE attempt_id = ? AND type = ? LIMIT 1')
-      .get(attemptId, type);
+    const r = this.stmt(
+      'SELECT 1 AS one FROM attempt_events WHERE attempt_id = ? AND type = ? LIMIT 1',
+    ).get(attemptId, type);
     return r != null;
   }
 
   listAttemptEvents(attemptId: string): AttemptEventRow[] {
-    const rows = this.db
-      .prepare('SELECT * FROM attempt_events WHERE attempt_id = ? ORDER BY at ASC, id ASC')
-      .all(attemptId) as SqlRow[];
+    const rows = this.stmt(
+      'SELECT * FROM attempt_events WHERE attempt_id = ? ORDER BY at ASC, id ASC',
+    ).all(attemptId) as SqlRow[];
     return rows.map(rowToAttemptEvent);
   }
 
@@ -600,16 +610,11 @@ class SqliteAceDb implements AceDb {
     attemptId: string | null;
     trigger: TestRunTrigger;
   }): TestRunRow {
-    const id = uuidv7();
-    this.db
-      .prepare(
-        `INSERT INTO test_runs (id, attempt_id, question_id, at, "trigger", status)
-         VALUES (?, ?, ?, ?, ?, 'running')`,
-      )
-      .run(id, r.attemptId, r.questionId, nowIso(), r.trigger);
-    const row = this.getTestRun(id);
-    if (!row) throw new Error(`createTestRun failed for question ${r.questionId}`);
-    return row;
+    const row = this.stmt(
+      `INSERT INTO test_runs (id, attempt_id, question_id, at, "trigger", status)
+       VALUES (?, ?, ?, ?, ?, 'running') RETURNING *`,
+    ).get(uuidv7(), r.attemptId, r.questionId, nowIso(), r.trigger) as SqlRow;
+    return rowToTestRun(row);
   }
 
   finishTestRun(
@@ -623,48 +628,39 @@ class SqliteAceDb implements AceDb {
       errorMessage?: string;
     },
   ): TestRunRow {
-    const existing = this.getTestRun(id);
-    if (!existing) throw new Error(`unknown test run: ${id}`);
-    this.db
-      .prepare(
-        `UPDATE test_runs SET
-           status = ?,
-           total = ?, passed = ?, failed = ?, skipped = ?, duration_ms = ?,
-           results_json = ?, stdout_text = ?, stderr_text = ?, error_message = ?
-         WHERE id = ?`,
-      )
-      .run(
-        patch.status,
-        patch.summary?.total ?? null,
-        patch.summary?.passed ?? null,
-        patch.summary?.failed ?? null,
-        patch.summary?.skipped ?? null,
-        patch.summary?.durationMs ?? null,
-        patch.results ? JSON.stringify(patch.results) : null,
-        patch.stdout ?? null,
-        patch.stderr ?? null,
-        patch.errorMessage ?? null,
-        id,
-      );
-    const row = this.getTestRun(id);
+    const row = this.stmt(
+      `UPDATE test_runs SET
+         status = ?,
+         total = ?, passed = ?, failed = ?, skipped = ?, duration_ms = ?,
+         results_json = ?, stdout_text = ?, stderr_text = ?, error_message = ?
+       WHERE id = ? RETURNING *`,
+    ).get(
+      patch.status,
+      patch.summary?.total ?? null,
+      patch.summary?.passed ?? null,
+      patch.summary?.failed ?? null,
+      patch.summary?.skipped ?? null,
+      patch.summary?.durationMs ?? null,
+      patch.results ? JSON.stringify(patch.results) : null,
+      patch.stdout ?? null,
+      patch.stderr ?? null,
+      patch.errorMessage ?? null,
+      id,
+    ) as SqlRow | undefined;
     if (!row) throw new Error(`unknown test run: ${id}`);
-    return row;
+    return rowToTestRun(row);
   }
 
   getTestRun(id: string): TestRunRow | null {
-    const r = this.db.prepare('SELECT * FROM test_runs WHERE id = ?').get(id) as
-      | SqlRow
-      | undefined;
+    const r = this.stmt('SELECT * FROM test_runs WHERE id = ?').get(id) as SqlRow | undefined;
     return r ? rowToTestRun(r) : null;
   }
 
   listTestRuns(questionId: string, limit = 50): TestRunRow[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM test_runs WHERE question_id = ?
-         ORDER BY at DESC, id DESC LIMIT ?`,
-      )
-      .all(questionId, limit) as SqlRow[];
+    const rows = this.stmt(
+      `SELECT * FROM test_runs WHERE question_id = ?
+       ORDER BY at DESC, id DESC LIMIT ?`,
+    ).all(questionId, limit) as SqlRow[];
     return rows.map(rowToTestRun);
   }
 
@@ -674,12 +670,10 @@ class SqliteAceDb implements AceDb {
   }
 
   getLatestCompletedTestRun(questionId: string): TestRunRow | null {
-    const r = this.db
-      .prepare(
-        `SELECT * FROM test_runs WHERE question_id = ? AND status = 'done'
-         ORDER BY at DESC, id DESC LIMIT 1`,
-      )
-      .get(questionId) as SqlRow | undefined;
+    const r = this.stmt(
+      `SELECT * FROM test_runs WHERE question_id = ? AND status = 'done'
+       ORDER BY at DESC, id DESC LIMIT 1`,
+    ).get(questionId) as SqlRow | undefined;
     return r ? rowToTestRun(r) : null;
   }
 
@@ -697,54 +691,49 @@ class SqliteAceDb implements AceDb {
     source: 'user' | 'import';
     at?: string;
   }): ReviewRow {
-    const versionRow = this.db
-      .prepare('SELECT COALESCE(MAX(version), 0) AS v FROM reviews WHERE question_id = ?')
-      .get(r.questionId) as SqlRow;
+    const versionRow = this.stmt(
+      'SELECT COALESCE(MAX(version), 0) AS v FROM reviews WHERE question_id = ?',
+    ).get(r.questionId) as SqlRow;
     const version = (versionRow.v as number) + 1;
-    const id = uuidv7();
-    this.db
-      .prepare(
-        `INSERT INTO reviews
-          (id, question_id, attempt_id, version, at, model, verdict, score,
-           dimensions_json, body_md, snapshot_hash, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id,
-        r.questionId,
-        r.attemptId,
-        version,
-        r.at ?? nowIso(),
-        r.model ?? null,
-        r.verdict ?? null,
-        r.score ?? null,
-        r.dimensions ? JSON.stringify(r.dimensions) : null,
-        r.bodyMd,
-        r.snapshotHash ?? null,
-        r.source,
-      );
+    const row = this.stmt(
+      `INSERT INTO reviews
+        (id, question_id, attempt_id, version, at, model, verdict, score,
+         dimensions_json, body_md, snapshot_hash, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+    ).get(
+      uuidv7(),
+      r.questionId,
+      r.attemptId,
+      version,
+      r.at ?? nowIso(),
+      r.model ?? null,
+      r.verdict ?? null,
+      r.score ?? null,
+      r.dimensions ? JSON.stringify(r.dimensions) : null,
+      r.bodyMd,
+      r.snapshotHash ?? null,
+      r.source,
+    ) as SqlRow;
     if (this.ftsAvailable) {
       // Kept in sync on insert only (reviews are immutable); a boot-time count
       // check rebuilds the index if this ever drifts.
-      this.db
-        .prepare('INSERT INTO reviews_fts (review_id, body_md) VALUES (?, ?)')
-        .run(id, r.bodyMd);
+      this.stmt('INSERT INTO reviews_fts (review_id, body_md) VALUES (?, ?)').run(
+        row.id as string,
+        r.bodyMd,
+      );
     }
-    const row = this.db.prepare('SELECT * FROM reviews WHERE id = ?').get(id) as SqlRow;
     return rowToReview(row);
   }
 
   getReview(id: string): ReviewRow | null {
-    const r = this.db.prepare('SELECT * FROM reviews WHERE id = ?').get(id) as
-      | SqlRow
-      | undefined;
+    const r = this.stmt('SELECT * FROM reviews WHERE id = ?').get(id) as SqlRow | undefined;
     return r ? rowToReview(r) : null;
   }
 
   listReviews(questionId: string): ReviewRow[] {
-    const rows = this.db
-      .prepare('SELECT * FROM reviews WHERE question_id = ? ORDER BY version DESC')
-      .all(questionId) as SqlRow[];
+    const rows = this.stmt(
+      'SELECT * FROM reviews WHERE question_id = ? ORDER BY version DESC',
+    ).all(questionId) as SqlRow[];
     return rows.map(rowToReview);
   }
 
@@ -762,44 +751,37 @@ class SqliteAceDb implements AceDb {
     testRelPath: string;
     hint: string | null;
   }): DisputeRow {
-    const id = uuidv7();
-    this.db
-      .prepare(
-        `INSERT INTO disputes
-          (id, question_id, attempt_id, test_run_id, at, argument, verdict,
-           summary, details_md, fixed_test_code, test_rel_path, hint)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id,
-        d.questionId,
-        d.attemptId,
-        d.testRunId,
-        nowIso(),
-        d.argument,
-        d.verdict,
-        d.summary,
-        d.detailsMd,
-        d.fixedTestCode,
-        d.testRelPath,
-        d.hint,
-      );
-    const row = this.getDispute(id);
-    if (!row) throw new Error(`createDispute failed for question ${d.questionId}`);
-    return row;
+    const row = this.stmt(
+      `INSERT INTO disputes
+        (id, question_id, attempt_id, test_run_id, at, argument, verdict,
+         summary, details_md, fixed_test_code, test_rel_path, hint)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+    ).get(
+      uuidv7(),
+      d.questionId,
+      d.attemptId,
+      d.testRunId,
+      nowIso(),
+      d.argument,
+      d.verdict,
+      d.summary,
+      d.detailsMd,
+      d.fixedTestCode,
+      d.testRelPath,
+      d.hint,
+    ) as SqlRow;
+    return rowToDispute(row);
   }
 
   getDispute(id: string): DisputeRow | null {
-    const r = this.db.prepare('SELECT * FROM disputes WHERE id = ?').get(id) as
-      | SqlRow
-      | undefined;
+    const r = this.stmt('SELECT * FROM disputes WHERE id = ?').get(id) as SqlRow | undefined;
     return r ? rowToDispute(r) : null;
   }
 
   listDisputes(questionId: string): DisputeRow[] {
-    const rows = this.db
-      .prepare('SELECT * FROM disputes WHERE question_id = ? ORDER BY at DESC, id DESC')
-      .all(questionId) as SqlRow[];
+    const rows = this.stmt(
+      'SELECT * FROM disputes WHERE question_id = ? ORDER BY at DESC, id DESC',
+    ).all(questionId) as SqlRow[];
     return rows.map(rowToDispute);
   }
 
@@ -807,12 +789,12 @@ class SqliteAceDb implements AceDb {
     const existing = this.getDispute(id);
     if (!existing) throw new Error(`unknown dispute: ${id}`);
     // applying is one-way: the first applied_at sticks
-    if (existing.appliedAt == null) {
-      this.db.prepare('UPDATE disputes SET applied_at = ? WHERE id = ?').run(nowIso(), id);
-    }
-    const row = this.getDispute(id);
-    if (!row) throw new Error(`unknown dispute: ${id}`);
-    return row;
+    if (existing.appliedAt != null) return existing;
+    const row = this.stmt('UPDATE disputes SET applied_at = ? WHERE id = ? RETURNING *').get(
+      nowIso(),
+      id,
+    ) as SqlRow;
+    return rowToDispute(row);
   }
 
   // -- snapshots ------------------------------------------------------------
@@ -824,14 +806,10 @@ class SqliteAceDb implements AceDb {
     hash: string;
     trigger: SnapshotTrigger;
   }): SnapshotRow {
-    const id = uuidv7();
-    this.db
-      .prepare(
-        `INSERT INTO snapshots (id, question_id, attempt_id, rel_path, hash, at, "trigger")
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(id, s.questionId, s.attemptId, s.relPath, s.hash, nowIso(), s.trigger);
-    const r = this.db.prepare('SELECT * FROM snapshots WHERE id = ?').get(id) as SqlRow;
+    const r = this.stmt(
+      `INSERT INTO snapshots (id, question_id, attempt_id, rel_path, hash, at, "trigger")
+       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+    ).get(uuidv7(), s.questionId, s.attemptId, s.relPath, s.hash, nowIso(), s.trigger) as SqlRow;
     return rowToSnapshot(r);
   }
 
@@ -840,16 +818,7 @@ class SqliteAceDb implements AceDb {
     relPath: string,
     trigger?: SnapshotTrigger,
   ): SnapshotRow | null {
-    const r = this.db
-      .prepare(
-        `SELECT * FROM snapshots WHERE question_id = ? AND rel_path = ?
-         ${trigger ? 'AND "trigger" = ?' : ''}
-         ORDER BY at DESC, id DESC LIMIT 1`,
-      )
-      .get(...(trigger ? [questionId, relPath, trigger] : [questionId, relPath])) as
-      | SqlRow
-      | undefined;
-    return r ? rowToSnapshot(r) : null;
+    return this.getSnapshotAtExtreme('DESC', questionId, relPath, trigger);
   }
 
   getFirstSnapshot(
@@ -857,13 +826,25 @@ class SqliteAceDb implements AceDb {
     relPath: string,
     trigger?: SnapshotTrigger,
   ): SnapshotRow | null {
-    const r = this.db
-      .prepare(
-        `SELECT * FROM snapshots WHERE question_id = ? AND rel_path = ?
-         ${trigger ? 'AND "trigger" = ?' : ''}
-         ORDER BY at ASC, id ASC LIMIT 1`,
-      )
-      .get(...(trigger ? [questionId, relPath, trigger] : [questionId, relPath])) as
+    return this.getSnapshotAtExtreme('ASC', questionId, relPath, trigger);
+  }
+
+  /**
+   * DESC walks from the newest snapshot, ASC from the oldest. The
+   * interpolations yield four distinct SQL strings (direction × optional
+   * trigger filter), which the statement cache keys apart correctly.
+   */
+  private getSnapshotAtExtreme(
+    direction: 'ASC' | 'DESC',
+    questionId: string,
+    relPath: string,
+    trigger?: SnapshotTrigger,
+  ): SnapshotRow | null {
+    const r = this.stmt(
+      `SELECT * FROM snapshots WHERE question_id = ? AND rel_path = ?
+       ${trigger ? 'AND "trigger" = ?' : ''}
+       ORDER BY at ${direction}, id ${direction} LIMIT 1`,
+    ).get(...(trigger ? [questionId, relPath, trigger] : [questionId, relPath])) as
       | SqlRow
       | undefined;
     return r ? rowToSnapshot(r) : null;
@@ -877,18 +858,21 @@ class SqliteAceDb implements AceDb {
     topic: string;
     brainstormSessionId?: string | null;
   }): GenerationJobRow {
-    const id = uuidv7();
     const now = nowIso();
-    this.db
-      .prepare(
-        `INSERT INTO generation_jobs
-          (id, status, category, difficulty, topic, brainstorm_session_id, created_at, run_started_at)
-         VALUES (?, 'running', ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(id, j.category, j.difficulty, j.topic, j.brainstormSessionId ?? null, now, now);
-    const row = this.getGenerationJob(id);
-    if (!row) throw new Error(`createGenerationJob failed for ${j.category}`);
-    return row;
+    const row = this.stmt(
+      `INSERT INTO generation_jobs
+        (id, status, category, difficulty, topic, brainstorm_session_id, created_at, run_started_at)
+       VALUES (?, 'running', ?, ?, ?, ?, ?, ?) RETURNING *`,
+    ).get(
+      uuidv7(),
+      j.category,
+      j.difficulty,
+      j.topic,
+      j.brainstormSessionId ?? null,
+      now,
+      now,
+    ) as SqlRow;
+    return rowToGenerationJob(row);
   }
 
   patchGenerationJob(
@@ -927,77 +911,74 @@ class SqliteAceDb implements AceDb {
     // 'error' row back to 'running') leaves it null.
     const finishedAt = status === 'done' || status === 'error' ? nowIso() : null;
 
-    this.db
-      .prepare(
-        `UPDATE generation_jobs SET
-           status = ?, title = ?, slug = ?, result_json = ?, raw_text = ?,
-           error_message = ?, question_id = ?, run_started_at = ?, finished_at = ?
-         WHERE id = ?`,
-      )
-      .run(
-        status,
-        title,
-        slug,
-        result != null ? JSON.stringify(result) : null,
-        rawText,
-        errorMessage,
-        questionId,
-        runStartedAt,
-        finishedAt,
-        id,
-      );
-    const row = this.getGenerationJob(id);
-    if (!row) throw new Error(`unknown generation job: ${id}`);
-    return row;
+    const row = this.stmt(
+      `UPDATE generation_jobs SET
+         status = ?, title = ?, slug = ?, result_json = ?, raw_text = ?,
+         error_message = ?, question_id = ?, run_started_at = ?, finished_at = ?
+       WHERE id = ? RETURNING *`,
+    ).get(
+      status,
+      title,
+      slug,
+      result != null ? JSON.stringify(result) : null,
+      rawText,
+      errorMessage,
+      questionId,
+      runStartedAt,
+      finishedAt,
+      id,
+    ) as SqlRow;
+    return rowToGenerationJob(row);
   }
 
   getGenerationJob(id: string): GenerationJobRow | null {
-    const r = this.db.prepare('SELECT * FROM generation_jobs WHERE id = ?').get(id) as
+    const r = this.stmt('SELECT * FROM generation_jobs WHERE id = ?').get(id) as
       | SqlRow
       | undefined;
     return r ? rowToGenerationJob(r) : null;
   }
 
   listGenerationJobs(limit = 20): GenerationJobRow[] {
-    const rows = this.db
-      .prepare('SELECT * FROM generation_jobs ORDER BY created_at DESC, id DESC LIMIT ?')
-      .all(limit) as SqlRow[];
+    const rows = this.stmt(
+      'SELECT * FROM generation_jobs ORDER BY created_at DESC, id DESC LIMIT ?',
+    ).all(limit) as SqlRow[];
     return rows.map(rowToGenerationJob);
   }
 
   setQuestionSource(id: string, source: QuestionSource): void {
-    this.db.prepare('UPDATE questions SET source = ? WHERE id = ?').run(source, id);
+    this.stmt('UPDATE questions SET source = ? WHERE id = ?').run(source, id);
   }
 
   // -- brainstorm sessions ----------------------------------------------------
 
   createBrainstormSession(firstMessage: string): BrainstormSessionRow {
-    const id = uuidv7();
     const now = nowIso();
     const messages: BrainstormTurn[] = [{ role: 'user', content: firstMessage }];
-    this.db
-      .prepare(
-        `INSERT INTO brainstorm_sessions
-          (id, status, title, messages_json, created_at, updated_at)
-         VALUES (?, 'thinking', ?, ?, ?, ?)`,
-      )
-      .run(id, truncateBrainstormTitle(firstMessage), JSON.stringify(messages), now, now);
-    const row = this.getBrainstormSession(id);
-    if (!row) throw new Error(`createBrainstormSession failed`);
-    return row;
+    const row = this.stmt(
+      `INSERT INTO brainstorm_sessions
+        (id, status, title, messages_json, created_at, updated_at)
+       VALUES (?, 'thinking', ?, ?, ?, ?) RETURNING *`,
+    ).get(
+      uuidv7(),
+      truncateBrainstormTitle(firstMessage),
+      JSON.stringify(messages),
+      now,
+      now,
+    ) as SqlRow;
+    return rowToBrainstormSession(row);
   }
 
   getBrainstormSession(id: string): BrainstormSessionRow | null {
-    const r = this.db.prepare('SELECT * FROM brainstorm_sessions WHERE id = ?').get(id) as
+    const r = this.stmt('SELECT * FROM brainstorm_sessions WHERE id = ?').get(id) as
       | SqlRow
       | undefined;
     return r ? rowToBrainstormSession(r) : null;
   }
 
   listBrainstormSessions(limit = 20): BrainstormSessionRow[] {
-    const rows = this.db
-      .prepare('SELECT * FROM brainstorm_sessions ORDER BY updated_at DESC, id DESC LIMIT ?')
-      .all(limit) as SqlRow[];
+    const rows = this.stmt(
+      'SELECT * FROM brainstorm_sessions ORDER BY updated_at DESC, id DESC LIMIT ?',
+    ).all(limit) as SqlRow[];
     return rows.map(rowToBrainstormSession);
   }
 
@@ -1015,15 +996,11 @@ class SqliteAceDb implements AceDb {
       // clear any stale error_message left over from a previous failed turn
       // — otherwise a healthy 'idle' session can keep reporting a resolved
       // error forever.
-      this.db
-        .prepare(
-          `UPDATE brainstorm_sessions SET messages_json = ?, status = ?, error_message = NULL, updated_at = ?
-           WHERE id = ?`,
-        )
-        .run(JSON.stringify(messages), status, nowIso(), id);
-      const row = this.getBrainstormSession(id);
-      if (!row) throw new Error(`unknown brainstorm session: ${id}`);
-      return row;
+      const row = this.stmt(
+        `UPDATE brainstorm_sessions SET messages_json = ?, status = ?, error_message = NULL, updated_at = ?
+         WHERE id = ? RETURNING *`,
+      ).get(JSON.stringify(messages), status, nowIso(), id) as SqlRow;
+      return rowToBrainstormSession(row);
     });
   }
 
@@ -1032,14 +1009,12 @@ class SqliteAceDb implements AceDb {
     status: BrainstormSessionStatus,
     errorMessage: string | null = null,
   ): BrainstormSessionRow {
-    const existing = this.getBrainstormSession(id);
-    if (!existing) throw new Error(`unknown brainstorm session: ${id}`);
-    this.db
-      .prepare('UPDATE brainstorm_sessions SET status = ?, error_message = ?, updated_at = ? WHERE id = ?')
-      .run(status, errorMessage, nowIso(), id);
-    const row = this.getBrainstormSession(id);
+    const row = this.stmt(
+      `UPDATE brainstorm_sessions SET status = ?, error_message = ?, updated_at = ?
+       WHERE id = ? RETURNING *`,
+    ).get(status, errorMessage, nowIso(), id) as SqlRow | undefined;
     if (!row) throw new Error(`unknown brainstorm session: ${id}`);
-    return row;
+    return rowToBrainstormSession(row);
   }
 
   // -- ai activity log --------------------------------------------------------
@@ -1050,30 +1025,22 @@ class SqliteAceDb implements AceDb {
     questionId?: string | null;
     label: string;
   }): AiRunRow {
-    const id = uuidv7();
-    this.db
-      .prepare(
-        `INSERT INTO ai_runs (id, kind, ref_id, question_id, label, status, started_at)
-         VALUES (?, ?, ?, ?, ?, 'running', ?)`,
-      )
-      .run(id, r.kind, r.refId ?? null, r.questionId ?? null, r.label, nowIso());
-    const row = this.getAiRun(id);
-    if (!row) throw new Error(`createAiRun failed for ${r.kind}`);
-    return row;
+    const row = this.stmt(
+      `INSERT INTO ai_runs (id, kind, ref_id, question_id, label, status, started_at)
+       VALUES (?, ?, ?, ?, ?, 'running', ?) RETURNING *`,
+    ).get(uuidv7(), r.kind, r.refId ?? null, r.questionId ?? null, r.label, nowIso()) as SqlRow;
+    return rowToAiRun(row);
   }
 
   finishAiRun(
     id: string,
     patch: { status: 'done' | 'error'; errorMessage?: string | null },
   ): AiRunRow {
-    const existing = this.getAiRun(id);
-    if (!existing) throw new Error(`unknown ai run: ${id}`);
-    this.db
-      .prepare('UPDATE ai_runs SET status = ?, error_message = ?, finished_at = ? WHERE id = ?')
-      .run(patch.status, patch.errorMessage ?? null, nowIso(), id);
-    const row = this.getAiRun(id);
+    const row = this.stmt(
+      'UPDATE ai_runs SET status = ?, error_message = ?, finished_at = ? WHERE id = ? RETURNING *',
+    ).get(patch.status, patch.errorMessage ?? null, nowIso(), id) as SqlRow | undefined;
     if (!row) throw new Error(`unknown ai run: ${id}`);
-    return row;
+    return rowToAiRun(row);
   }
 
   createAiStep(s: {
@@ -1088,47 +1055,39 @@ class SqliteAceDb implements AceDb {
   }): AiStepRow {
     const run = this.getAiRun(s.runId);
     if (!run) throw new Error(`unknown ai run: ${s.runId}`);
-    const seqRow = this.db
-      .prepare('SELECT COALESCE(MAX(seq), 0) AS s FROM ai_steps WHERE run_id = ?')
-      .get(s.runId) as SqlRow;
+    const seqRow = this.stmt(
+      'SELECT COALESCE(MAX(seq), 0) AS s FROM ai_steps WHERE run_id = ?',
+    ).get(s.runId) as SqlRow;
     const seq = (seqRow.s as number) + 1;
-    const id = uuidv7();
-    this.db
-      .prepare(
-        `INSERT INTO ai_steps
-          (id, run_id, seq, kind, slug, label, status, attempt, prompt_text,
-           prompt_withheld, withheld_keys, started_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id,
-        s.runId,
-        seq,
-        s.kind,
-        s.slug,
-        s.label,
-        s.attempt ?? 1,
-        s.promptText != null ? capAiLogText(s.promptText) : null,
-        s.promptWithheld ? 1 : 0,
-        s.withheldKeys && s.withheldKeys.length > 0 ? JSON.stringify(s.withheldKeys) : null,
-        nowIso(),
-      );
-    const row = this.getAiStep(id);
-    if (!row) throw new Error(`createAiStep failed for run ${s.runId}`);
-    return row;
+    const row = this.stmt(
+      `INSERT INTO ai_steps
+        (id, run_id, seq, kind, slug, label, status, attempt, prompt_text,
+         prompt_withheld, withheld_keys, started_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?) RETURNING *`,
+    ).get(
+      uuidv7(),
+      s.runId,
+      seq,
+      s.kind,
+      s.slug,
+      s.label,
+      s.attempt ?? 1,
+      s.promptText != null ? capAiLogText(s.promptText) : null,
+      s.promptWithheld ? 1 : 0,
+      s.withheldKeys && s.withheldKeys.length > 0 ? JSON.stringify(s.withheldKeys) : null,
+      nowIso(),
+    ) as SqlRow;
+    return rowToAiStep(row);
   }
 
   appendAiStepResponse(id: string, responseText: string): AiStepRow {
-    const existing = this.getAiStep(id);
-    if (!existing) throw new Error(`unknown ai step: ${id}`);
     // Snapshot semantics: the full accumulated text replaces the previous
     // flush, so throttled re-flushes are idempotent (see AceDb contract).
-    this.db
-      .prepare('UPDATE ai_steps SET response_text = ? WHERE id = ?')
-      .run(capAiLogText(responseText), id);
-    const row = this.getAiStep(id);
+    const row = this.stmt(
+      'UPDATE ai_steps SET response_text = ? WHERE id = ? RETURNING *',
+    ).get(capAiLogText(responseText), id) as SqlRow | undefined;
     if (!row) throw new Error(`unknown ai step: ${id}`);
-    return row;
+    return rowToAiStep(row);
   }
 
   finishAiStep(
@@ -1153,16 +1112,12 @@ class SqliteAceDb implements AceDb {
           ? capAiLogText(patch.responseText)
           : null
         : existing.responseText;
-    this.db
-      .prepare(
-        `UPDATE ai_steps SET status = ?, detail = ?, error_message = ?, response_text = ?,
-           finished_at = ?
-         WHERE id = ?`,
-      )
-      .run(patch.status, detail, errorMessage, responseText, nowIso(), id);
-    const row = this.getAiStep(id);
-    if (!row) throw new Error(`unknown ai step: ${id}`);
-    return row;
+    const row = this.stmt(
+      `UPDATE ai_steps SET status = ?, detail = ?, error_message = ?, response_text = ?,
+         finished_at = ?
+       WHERE id = ? RETURNING *`,
+    ).get(patch.status, detail, errorMessage, responseText, nowIso(), id) as SqlRow;
+    return rowToAiStep(row);
   }
 
   listAiRuns(opts: { limit?: number; kind?: AiRunKind; refId?: string } = {}): AiRunRow[] {
@@ -1176,50 +1131,40 @@ class SqliteAceDb implements AceDb {
       where.push('ref_id = ?');
       params.push(opts.refId);
     }
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM ai_runs ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
-         ORDER BY started_at DESC, id DESC LIMIT ?`,
-      )
-      .all(...params, opts.limit ?? 50) as SqlRow[];
+    const rows = this.stmt(
+      `SELECT * FROM ai_runs ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY started_at DESC, id DESC LIMIT ?`,
+    ).all(...params, opts.limit ?? 50) as SqlRow[];
     return rows.map(rowToAiRun);
   }
 
   getAiRun(id: string): AiRunRow | null {
-    const r = this.db.prepare('SELECT * FROM ai_runs WHERE id = ?').get(id) as
-      | SqlRow
-      | undefined;
+    const r = this.stmt('SELECT * FROM ai_runs WHERE id = ?').get(id) as SqlRow | undefined;
     return r ? rowToAiRun(r) : null;
   }
 
   getAiStep(id: string): AiStepRow | null {
-    const r = this.db.prepare('SELECT * FROM ai_steps WHERE id = ?').get(id) as
-      | SqlRow
-      | undefined;
+    const r = this.stmt('SELECT * FROM ai_steps WHERE id = ?').get(id) as SqlRow | undefined;
     return r ? rowToAiStep(r) : null;
   }
 
   listAiSteps(runId: string): AiStepSummary[] {
     // Summary shape by construction: the multi-KB prompt/response columns
     // are never even selected, which is what keeps a 30-run feed cheap.
-    const rows = this.db
-      .prepare(
-        `SELECT id, run_id, seq, kind, slug, label, status, attempt, prompt_withheld,
-                withheld_keys, detail, error_message, started_at, finished_at
-         FROM ai_steps WHERE run_id = ? ORDER BY seq`,
-      )
-      .all(runId) as SqlRow[];
+    const rows = this.stmt(
+      `SELECT id, run_id, seq, kind, slug, label, status, attempt, prompt_withheld,
+              withheld_keys, detail, error_message, started_at, finished_at
+       FROM ai_steps WHERE run_id = ? ORDER BY seq`,
+    ).all(runId) as SqlRow[];
     return rows.map(rowToAiStepSummary);
   }
 
   pruneAiRuns(keep = 200): number {
-    const result = this.db
-      .prepare(
-        `DELETE FROM ai_runs WHERE id NOT IN (
-           SELECT id FROM ai_runs ORDER BY started_at DESC, id DESC LIMIT ?
-         )`,
-      )
-      .run(keep);
+    const result = this.stmt(
+      `DELETE FROM ai_runs WHERE id NOT IN (
+         SELECT id FROM ai_runs ORDER BY started_at DESC, id DESC LIMIT ?
+       )`,
+    ).run(keep);
     return Number(result.changes);
   }
 
@@ -1228,38 +1173,28 @@ class SqliteAceDb implements AceDb {
   sweepInterruptedGenerationState(): void {
     this.transaction(() => {
       const now = nowIso();
-      this.db
-        .prepare(
-          `UPDATE generation_jobs SET status = 'error', error_message = ?, finished_at = ?
-           WHERE status = 'running'`,
-        )
-        .run('interrupted by a server restart — retry', now);
-      this.db
-        .prepare(
-          `UPDATE generation_jobs SET status = 'error', error_message = ?, finished_at = ?
-           WHERE status = 'llm_done'`,
-        )
-        .run('interrupted by a server restart — retry (no new LLM call)', now);
-      this.db
-        .prepare(
-          `UPDATE brainstorm_sessions SET status = 'error', error_message = ?, updated_at = ?
-           WHERE status = 'thinking'`,
-        )
-        .run('interrupted by a server restart', now);
+      this.stmt(
+        `UPDATE generation_jobs SET status = 'error', error_message = ?, finished_at = ?
+         WHERE status = 'running'`,
+      ).run('interrupted by a server restart — retry', now);
+      this.stmt(
+        `UPDATE generation_jobs SET status = 'error', error_message = ?, finished_at = ?
+         WHERE status = 'llm_done'`,
+      ).run('interrupted by a server restart — retry (no new LLM call)', now);
+      this.stmt(
+        `UPDATE brainstorm_sessions SET status = 'error', error_message = ?, updated_at = ?
+         WHERE status = 'thinking'`,
+      ).run('interrupted by a server restart', now);
       // AI activity log rows: without this, Activity shows a run pulsing
       // forever with no engine behind it after a restart.
-      this.db
-        .prepare(
-          `UPDATE ai_steps SET status = 'error', error_message = ?, finished_at = ?
-           WHERE status = 'running'`,
-        )
-        .run('interrupted by a server restart', now);
-      this.db
-        .prepare(
-          `UPDATE ai_runs SET status = 'error', error_message = ?, finished_at = ?
-           WHERE status = 'running'`,
-        )
-        .run('interrupted by a server restart', now);
+      this.stmt(
+        `UPDATE ai_steps SET status = 'error', error_message = ?, finished_at = ?
+         WHERE status = 'running'`,
+      ).run('interrupted by a server restart', now);
+      this.stmt(
+        `UPDATE ai_runs SET status = 'error', error_message = ?, finished_at = ?
+         WHERE status = 'running'`,
+      ).run('interrupted by a server restart', now);
     });
   }
 
@@ -1317,52 +1252,44 @@ class SqliteAceDb implements AceDb {
 
   private searchReviews(q: string): ReviewRow[] {
     if (q === '') {
-      const rows = this.db
-        .prepare('SELECT * FROM reviews ORDER BY at DESC, id DESC')
-        .all() as SqlRow[];
+      const rows = this.stmt('SELECT * FROM reviews ORDER BY at DESC, id DESC').all() as SqlRow[];
       return rows.map(rowToReview);
     }
     if (this.ftsAvailable) {
       const match = toFtsMatchQuery(q);
       if (match !== '') {
         try {
-          const rows = this.db
-            .prepare(
-              `SELECT * FROM reviews
-               WHERE id IN (SELECT review_id FROM reviews_fts WHERE reviews_fts MATCH ?)
-               ORDER BY at DESC, id DESC`,
-            )
-            .all(match) as SqlRow[];
+          const rows = this.stmt(
+            `SELECT * FROM reviews
+             WHERE id IN (SELECT review_id FROM reviews_fts WHERE reviews_fts MATCH ?)
+             ORDER BY at DESC, id DESC`,
+          ).all(match) as SqlRow[];
           return rows.map(rowToReview);
         } catch {
           // hostile input the term-quoting couldn't neutralize — LIKE fallback
         }
       }
     }
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM reviews WHERE body_md LIKE ? COLLATE NOCASE
-         ORDER BY at DESC, id DESC`,
-      )
-      .all(`%${q}%`) as SqlRow[];
+    const rows = this.stmt(
+      `SELECT * FROM reviews WHERE body_md LIKE ? COLLATE NOCASE
+       ORDER BY at DESC, id DESC`,
+    ).all(`%${q}%`) as SqlRow[];
     return rows.map(rowToReview);
   }
 
   private searchDisputes(q: string): DisputeRow[] {
     if (q === '') {
-      const rows = this.db
-        .prepare('SELECT * FROM disputes ORDER BY at DESC, id DESC')
-        .all() as SqlRow[];
+      const rows = this.stmt(
+        'SELECT * FROM disputes ORDER BY at DESC, id DESC',
+      ).all() as SqlRow[];
       return rows.map(rowToDispute);
     }
     const pattern = `%${q}%`;
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM disputes
-         WHERE summary LIKE ? COLLATE NOCASE OR details_md LIKE ? COLLATE NOCASE
-         ORDER BY at DESC, id DESC`,
-      )
-      .all(pattern, pattern) as SqlRow[];
+    const rows = this.stmt(
+      `SELECT * FROM disputes
+       WHERE summary LIKE ? COLLATE NOCASE OR details_md LIKE ? COLLATE NOCASE
+       ORDER BY at DESC, id DESC`,
+    ).all(pattern, pattern) as SqlRow[];
     return rows.map(rowToDispute);
   }
 
@@ -1382,22 +1309,21 @@ class SqliteAceDb implements AceDb {
   }
 
   getMeta(key: string): string | null {
-    const r = this.db.prepare('SELECT value FROM meta WHERE key = ?').get(key) as
-      | SqlRow
-      | undefined;
+    const r = this.stmt('SELECT value FROM meta WHERE key = ?').get(key) as SqlRow | undefined;
     return r ? (r.value as string) : null;
   }
 
   setMeta(key: string, value: string): void {
-    this.db
-      .prepare(
-        'INSERT INTO meta (key, value) VALUES (?, ?) ' +
-          'ON CONFLICT (key) DO UPDATE SET value = excluded.value',
-      )
-      .run(key, value);
+    this.stmt(
+      'INSERT INTO meta (key, value) VALUES (?, ?) ' +
+        'ON CONFLICT (key) DO UPDATE SET value = excluded.value',
+    ).run(key, value);
   }
 
   close(): void {
+    // Cached statements must not outlive the DatabaseSync they were prepared
+    // on (workspace reset closes this db and opens a fresh one).
+    this.stmtCache.clear();
     this.db.close();
   }
 }
