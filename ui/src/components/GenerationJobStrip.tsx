@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError, getGenerationJobs, retryGenerationJob } from '../api';
+import { AiRunDrawer } from './AiRunDrawer';
 import { categoryShortName } from '../lib/categories';
 import { formatClock } from '../lib/format';
 import { useSseEvent } from '../sse';
@@ -183,6 +184,11 @@ export function GenerationJobStrip() {
 function GenerationJobCard({ job, jobPhase }: { job: GenerationJobRow; jobPhase?: JobPhase }) {
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  // Step-log drawer (NEE-272). `everOpened` keeps the drawer MOUNTED (just
+  // hidden) across collapses, so its one-time seed fetch isn't repeated and
+  // SSE keeps it current while collapsed.
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [everOpened, setEverOpened] = useState(false);
 
   async function onRetry() {
     setRetrying(true);
@@ -206,30 +212,61 @@ function GenerationJobCard({ job, jobPhase }: { job: GenerationJobRow; jobPhase?
 
   const label = job.title ?? job.topic;
 
+  // Caret toggling the inline step log — the same log /activity shows,
+  // brought to where the user already is when a generation starts.
+  const caret = (
+    <button
+      className="icon-btn job-card-caret"
+      aria-label={drawerOpen ? 'Hide step log' : 'Show step log'}
+      aria-expanded={drawerOpen}
+      title={drawerOpen ? 'Hide step log' : 'Show step log'}
+      onClick={() => {
+        setEverOpened(true);
+        setDrawerOpen((v) => !v);
+      }}
+    >
+      {drawerOpen ? '▾' : '▸'}
+    </button>
+  );
+  const drawer = everOpened ? (
+    <div className="job-card-drawer" hidden={!drawerOpen} data-testid={`job-drawer-${job.id}`}>
+      <AiRunDrawer refId={job.id} />
+    </div>
+  ) : null;
+
   if (isActive(job)) {
     return (
-      <div className="job-card job-card-running" data-testid={`job-card-${job.id}`}>
-        <span className="pulse-dot" aria-hidden="true" />
-        <div className="job-card-info">
-          <div className="job-card-title">{label}</div>
-          <div className="job-card-meta">
-            {categoryShortName(job.category)} · {phaseLabel(jobPhase)} {elapsedLabel(job.createdAt)}
+      <div className="job-card-block">
+        <div className="job-card job-card-running" data-testid={`job-card-${job.id}`}>
+          <span className="pulse-dot" aria-hidden="true" />
+          <div className="job-card-info">
+            <div className="job-card-title">{label}</div>
+            <div className="job-card-meta">
+              {categoryShortName(job.category)} · {phaseLabel(jobPhase)}{' '}
+              {elapsedLabel(job.createdAt)}
+            </div>
           </div>
+          {caret}
         </div>
+        {drawer}
       </div>
     );
   }
 
   if (job.status === 'done') {
     return (
-      <div className="job-card job-card-done" data-testid={`job-card-${job.id}`}>
-        <div className="job-card-info">
-          <div className="job-card-title">{label}</div>
-          <div className="job-card-meta">{categoryShortName(job.category)} · ready</div>
+      <div className="job-card-block">
+        <div className="job-card job-card-done" data-testid={`job-card-${job.id}`}>
+          <div className="job-card-info">
+            <div className="job-card-title">{label}</div>
+            <div className="job-card-meta">{categoryShortName(job.category)} · ready</div>
+          </div>
+          <Link className="btn btn-small" to={`/q/${job.category}/${job.slug}`}>
+            Open room →
+          </Link>
+          {caret}
         </div>
-        <Link className="btn btn-small" to={`/q/${job.category}/${job.slug}`}>
-          Open room →
-        </Link>
+        {drawer}
       </div>
     );
   }
@@ -239,15 +276,19 @@ function GenerationJobCard({ job, jobPhase }: { job: GenerationJobRow; jobPhase?
   // far needs a full re-run.
   const resumable = job.title != null;
   return (
-    <div className="job-card job-card-error" data-testid={`job-card-${job.id}`}>
-      <div className="job-card-info">
-        <div className="job-card-title">{label}</div>
-        <div className="job-card-meta error-note">{job.errorMessage ?? 'generation failed'}</div>
-        {retryError && <div className="job-card-meta error-note">{retryError}</div>}
+    <div className="job-card-block">
+      <div className="job-card job-card-error" data-testid={`job-card-${job.id}`}>
+        <div className="job-card-info">
+          <div className="job-card-title">{label}</div>
+          <div className="job-card-meta error-note">{job.errorMessage ?? 'generation failed'}</div>
+          {retryError && <div className="job-card-meta error-note">{retryError}</div>}
+        </div>
+        <button className="btn btn-small" onClick={onRetry} disabled={retrying}>
+          {resumable ? 'Retry (no new LLM call)' : 'Retry'}
+        </button>
+        {caret}
       </div>
-      <button className="btn btn-small" onClick={onRetry} disabled={retrying}>
-        {resumable ? 'Retry (no new LLM call)' : 'Retry'}
-      </button>
+      {drawer}
     </div>
   );
 }

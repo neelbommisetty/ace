@@ -1,5 +1,5 @@
 import { formatClock } from '../lib/format';
-import type { AiRunWithSteps } from '../screens/Activity';
+import type { AiRunWithSteps } from '../hooks/useAiRunFeed';
 import { AiStepList } from './AiStepList';
 
 function elapsedLabel(startedAt: string, finishedAt: string | null): string {

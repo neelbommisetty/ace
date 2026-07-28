@@ -2297,6 +2297,34 @@ code {
   font-size: 12px;
 }
 
+/* card + its inline step-log drawer (NEE-272) stack as one strip item */
+.job-card-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.job-card-caret {
+  flex: none;
+}
+
+.job-card-drawer {
+  margin-left: 10px;
+  padding-left: 12px;
+  border-left: 2px solid var(--line);
+}
+
+.ai-run-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-run-drawer .pane-empty {
+  padding: 4px 0;
+  font-size: 12.5px;
+}
+
 .generating-pill {
   display: inline-flex;
   align-items: center;

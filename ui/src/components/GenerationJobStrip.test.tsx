@@ -1,10 +1,17 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useEffect, useRef } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GenerationJobStrip } from './GenerationJobStrip';
 import { ApiError } from '../api';
-import type { GenerationJobRow, QuestionRow, SseEventMap, SseEventName } from '../types';
+import type {
+  AiRunRow,
+  AiStepSummary,
+  GenerationJobRow,
+  QuestionRow,
+  SseEventMap,
+  SseEventName,
+} from '../types';
 
 // Same seam as App.test.tsx: `useSseEvent` registers into a module-level
 // handler registry that `emitSse` can drive directly.
@@ -36,14 +43,15 @@ vi.mock('../sse', () => ({
   },
 }));
 
-const { getGenerationJobs, retryGenerationJob } = vi.hoisted(() => ({
+const { getGenerationJobs, retryGenerationJob, getAiRuns } = vi.hoisted(() => ({
   getGenerationJobs: vi.fn(),
   retryGenerationJob: vi.fn(),
+  getAiRuns: vi.fn(),
 }));
 
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>();
-  return { ...actual, getGenerationJobs, retryGenerationJob };
+  return { ...actual, getGenerationJobs, retryGenerationJob, getAiRuns };
 });
 
 function emit<K extends SseEventName>(name: K, payload: SseEventMap[K]) {
@@ -85,6 +93,41 @@ function question(overrides: Partial<QuestionRow> = {}): QuestionRow {
     createdAt: new Date().toISOString(),
     archivedAt: null,
     missingAt: null,
+    ...overrides,
+  };
+}
+
+function aiRun(overrides: Partial<AiRunRow> = {}): AiRunRow {
+  return {
+    id: 'r1',
+    kind: 'generation',
+    refId: 'job-1',
+    questionId: null,
+    label: 'closures and scope',
+    status: 'running',
+    errorMessage: null,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    ...overrides,
+  };
+}
+
+function aiStep(overrides: Partial<AiStepSummary> = {}): AiStepSummary {
+  return {
+    id: 's1',
+    runId: 'r1',
+    seq: 1,
+    kind: 'llm',
+    slug: 'generate',
+    label: 'write question',
+    status: 'running',
+    attempt: 1,
+    promptWithheld: false,
+    withheldKeys: null,
+    detail: null,
+    errorMessage: null,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
     ...overrides,
   };
 }
@@ -218,5 +261,74 @@ describe('GenerationJobStrip', () => {
 
     const btn = await screen.findByRole('button', { name: 'Retry' });
     expect(within(btn).queryByText(/no new LLM call/)).toBeNull();
+  });
+
+  describe('step-log drawer (NEE-272)', () => {
+    it('fetches the refId-filtered run list on first expand only', async () => {
+      getGenerationJobs.mockResolvedValue({ jobs: [job()] });
+      getAiRuns.mockResolvedValue({ runs: [{ ...aiRun(), steps: [aiStep()] }] });
+      renderStrip();
+      await screen.findByText('closures and scope');
+      expect(getAiRuns).not.toHaveBeenCalled(); // lazy: nothing until first open
+
+      fireEvent.click(screen.getByRole('button', { name: 'Show step log' }));
+      expect(await screen.findByText('write question')).toBeInTheDocument();
+      expect(getAiRuns).toHaveBeenCalledTimes(1);
+      expect(getAiRuns).toHaveBeenCalledWith({ refId: 'job-1', limit: 5 });
+
+      // Collapse hides the still-mounted drawer; re-expand must NOT refetch.
+      fireEvent.click(screen.getByRole('button', { name: 'Hide step log' }));
+      expect(screen.getByTestId('job-drawer-job-1')).not.toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: 'Show step log' }));
+
+      expect(screen.getByTestId('job-drawer-job-1')).toBeVisible();
+      expect(screen.getByText('write question')).toBeInTheDocument();
+      expect(getAiRuns).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays live on SSE while open: a retry run with the same refId lists newest first', async () => {
+      getGenerationJobs.mockResolvedValue({
+        jobs: [job({ status: 'error', errorMessage: 'boom' })],
+      });
+      getAiRuns.mockResolvedValue({
+        runs: [
+          {
+            ...aiRun({ status: 'error', errorMessage: 'boom', finishedAt: new Date().toISOString() }),
+            steps: [aiStep({ status: 'error', errorMessage: 'boom' })],
+          },
+        ],
+      });
+      renderStrip();
+      fireEvent.click(await screen.findByRole('button', { name: 'Show step log' }));
+      await screen.findByTestId('ai-run-card-r1');
+
+      // retry() mints a NEW ai_runs row with the same refId…
+      emit('ai-run-started', { run: aiRun({ id: 'r2' }) });
+      emit('ai-step-started', {
+        runId: 'r2',
+        step: aiStep({ id: 's2', runId: 'r2', kind: 'scaffold', slug: 'scaffold', label: 'scaffold files' }),
+      });
+      // …while runs for other jobs never enter this drawer.
+      emit('ai-run-started', { run: aiRun({ id: 'r9', refId: 'job-other' }) });
+
+      const cards = screen.getAllByTestId(/^ai-run-card-/);
+      expect(cards.map((c) => c.getAttribute('data-testid'))).toEqual([
+        'ai-run-card-r2',
+        'ai-run-card-r1',
+      ]);
+      expect(screen.getByText('scaffold files')).toBeInTheDocument();
+    });
+
+    it('shows the pre-activity-logging message for a job with no runs', async () => {
+      getGenerationJobs.mockResolvedValue({ jobs: [job({ status: 'done', title: 'Closures', slug: 'closures' })] });
+      getAiRuns.mockResolvedValue({ runs: [] });
+      renderStrip();
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Show step log' }));
+
+      expect(
+        await screen.findByText('No step log for this job (it ran before activity logging).'),
+      ).toBeInTheDocument();
+    });
   });
 });
