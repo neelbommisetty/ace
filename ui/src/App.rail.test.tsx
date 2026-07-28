@@ -54,34 +54,41 @@ describe('IconRail top-group order', () => {
 
     const historyLink = screen.getByTitle('History');
     expect(historyLink).toHaveAttribute('href', '/history');
+
+    const activityLink = screen.getByTitle('Activity');
+    expect(activityLink).toHaveAttribute('href', '/activity');
   });
 
-  it('orders Library, New question, History, then Settings and the Stats placeholder', async () => {
+  it('orders Library, New question, History, Activity, then Settings and the Stats placeholder', async () => {
     await renderApp();
 
     const libraryLink = screen.getByTitle('Library');
     const newQuestionLink = screen.getByTitle('New question');
     const historyLink = screen.getByTitle('History');
+    const activityLink = screen.getByTitle('Activity');
     const settingsLink = screen.getByTitle('Settings');
     const statsPlaceholder = screen.getByTitle('Stats — coming in M3');
 
     // DOCUMENT_POSITION_FOLLOWING (4) means the argument node comes after `this` node.
     expect(libraryLink.compareDocumentPosition(newQuestionLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(newQuestionLink.compareDocumentPosition(historyLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(historyLink.compareDocumentPosition(settingsLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(historyLink.compareDocumentPosition(statsPlaceholder) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(historyLink.compareDocumentPosition(activityLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(activityLink.compareDocumentPosition(settingsLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(activityLink.compareDocumentPosition(statsPlaceholder) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('places New question and History before the rail spacer (top group)', async () => {
+  it('places New question, History and Activity before the rail spacer (top group)', async () => {
     await renderApp();
 
     const newQuestionLink = screen.getByTitle('New question');
     const historyLink = screen.getByTitle('History');
+    const activityLink = screen.getByTitle('Activity');
     const spacer = document.querySelector('.rail-spacer');
     expect(spacer).not.toBeNull();
 
     expect(newQuestionLink.compareDocumentPosition(spacer!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(historyLink.compareDocumentPosition(spacer!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(activityLink.compareDocumentPosition(spacer!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('marks New question active (and Library inactive) when on /new', async () => {
