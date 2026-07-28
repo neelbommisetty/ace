@@ -1,0 +1,15 @@
+export { registerAiRoutes } from './ai.js';
+export { registerAttemptRoutes } from './attempts.js';
+export { registerBrainstormRoutes } from './brainstorm.js';
+export { createRouteContext, type RouteContext } from './context.js';
+export { registerDisputeRoutes } from './disputes.js';
+export { registerFileRoutes } from './files.js';
+export { registerGenerationRoutes } from './generation.js';
+export { registerHistoryRoutes } from './history.js';
+export { registerQuestionRoutes } from './questions.js';
+export { registerResetRoutes } from './reset.js';
+export { registerReviewRoutes } from './reviews.js';
+export { registerSettingsRoutes } from './settings.js';
+export { registerSseRoutes } from './sse.js';
+export { registerStaticRoutes } from './static.js';
+export { registerWorkspaceRoutes } from './workspace.js';
