@@ -64,6 +64,25 @@ export function setUnauthorizedHandler(fn: () => void): void {
   unauthorizedHandler = fn;
 }
 
+// Workspace root this tab is anchored to — App records the first SSE hello's
+// root here (NEE-164). File writes carry it as `expectedRoot` so a save
+// queued before/during a workspace switch (debounce timer, pagehide keepalive
+// flush fired by the switch's own reload) is rejected by the server instead
+// of silently landing in the newly mounted, unrelated workspace.
+let workspaceAnchor: string | null = null;
+
+export function setWorkspaceAnchor(root: string | null): void {
+  workspaceAnchor = root;
+}
+
+function fileWriteBody(relPath: string, content: string): string {
+  return JSON.stringify(
+    workspaceAnchor == null
+      ? { path: relPath, content }
+      : { path: relPath, content, expectedRoot: workspaceAnchor },
+  );
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -193,14 +212,14 @@ export function flushFileSave(relPath: string, content: string): void {
     method: 'PUT',
     keepalive: true,
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ path: relPath, content }),
+    body: fileWriteBody(relPath, content),
   }).catch(() => {});
 }
 
 export function putFile(relPath: string, content: string): Promise<{ hash: string }> {
   return request('/api/file', {
     method: 'PUT',
-    body: JSON.stringify({ path: relPath, content }),
+    body: fileWriteBody(relPath, content),
   });
 }
 

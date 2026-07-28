@@ -1,9 +1,36 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
+import { useEffect, useRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceInfo } from './types';
 
+// Same registry seam as App.test.tsx: the routed app only renders after the
+// first SSE hello (NEE-164), so the mock must let renderApp emit one.
+const { sseHandlers, emitSse } = vi.hoisted(() => {
+  const sseHandlers = new Map<string, Set<(payload: unknown) => void>>();
+  const emitSse = (name: string, payload: unknown) => {
+    const set = sseHandlers.get(name);
+    if (set) for (const fn of [...set]) fn(payload);
+  };
+  return { sseHandlers, emitSse };
+});
+
 vi.mock('./sse', () => ({
-  useSseEvent: () => {},
+  useSseEvent: (name: string, handler: (payload: unknown) => void) => {
+    const ref = useRef(handler);
+    ref.current = handler;
+    useEffect(() => {
+      let set = sseHandlers.get(name);
+      if (!set) {
+        set = new Set();
+        sseHandlers.set(name, set);
+      }
+      const fn = (payload: unknown) => ref.current(payload);
+      set.add(fn);
+      return () => {
+        set!.delete(fn);
+      };
+    }, [name]);
+  },
   useSseConnected: () => true,
 }));
 
@@ -35,6 +62,7 @@ vi.mock('./screens/NewQuestion', () => ({
 afterEach(() => {
   vi.clearAllMocks();
   sessionStorage.clear();
+  sseHandlers.clear();
   window.history.pushState({}, '', '/');
 });
 
@@ -42,6 +70,9 @@ async function renderApp(expectMainText = 'Library') {
   sessionStorage.setItem('ace-token', 'test-token');
   const { App } = await import('./App');
   render(<App />);
+  act(() => {
+    emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
+  });
   await screen.findByText(expectMainText);
 }
 

@@ -64,8 +64,17 @@ vi.mock('./api', async (importOriginal) => {
  * variable — both need a fresh module instance per test. `vi.resetModules`
  * plus a dynamic re-import (after `vi.mock` registrations, which persist
  * across resets) gives each test an isolated App + resetSuppress instance.
+ *
+ * The routed app only renders once the first hello has been seen (NEE-164),
+ * so the helper emits one by default; pass `null` to keep the app in its
+ * pre-hello connecting state and drive the hello from the test itself.
  */
-async function renderApp() {
+async function renderApp(
+  firstHello: { workspaceRoot: string | null; epoch: string | null } | null = {
+    workspaceRoot: '/w',
+    epoch: 'epoch-a',
+  },
+) {
   sessionStorage.setItem('ace-token', 'test-token');
   vi.resetModules();
   const [{ App }, resetSuppress] = await Promise.all([
@@ -73,7 +82,12 @@ async function renderApp() {
     import('./lib/resetSuppress'),
   ]);
   render(<App />);
-  await screen.findByText('Library');
+  if (firstHello != null) {
+    act(() => {
+      emitSse('hello', { version: '0.2.1', ...firstHello });
+    });
+    if (firstHello.workspaceRoot != null) await screen.findByText('Library');
+  }
   return resetSuppress;
 }
 
@@ -172,22 +186,21 @@ describe('App SSE reset handling', () => {
     expect(replaceSpy).toHaveBeenCalledWith('/');
   });
 
-  it('takes no action on the first hello (records the epoch only)', async () => {
-    await renderApp();
-    const { replaceSpy } = stubLocationReplace();
+  it('takes no action on the first hello beyond mounting the routed app', async () => {
+    await renderApp(null);
+    const { replaceSpy, reloadSpy } = stubLocationReplace();
 
     act(() => {
       emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
     });
 
+    expect(await screen.findByText('Library')).toBeInTheDocument();
     expect(replaceSpy).not.toHaveBeenCalled();
+    expect(reloadSpy).not.toHaveBeenCalled();
   });
 
   it('takes no action on a later hello carrying the same epoch', async () => {
     await renderApp();
-    act(() => {
-      emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
-    });
     const { replaceSpy } = stubLocationReplace();
 
     act(() => {
@@ -199,9 +212,6 @@ describe('App SSE reset handling', () => {
 
   it('reloads on a later hello carrying a different epoch (missed the one-shot event)', async () => {
     await renderApp();
-    act(() => {
-      emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
-    });
     const { replaceSpy } = stubLocationReplace();
 
     act(() => {
@@ -213,9 +223,6 @@ describe('App SSE reset handling', () => {
 
   it('honors an armed suppression on an epoch-mismatch hello too', async () => {
     const { armSuppressNextReset } = await renderApp();
-    act(() => {
-      emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
-    });
     const { replaceSpy } = stubLocationReplace();
 
     armSuppressNextReset('req-1');
@@ -230,9 +237,6 @@ describe('App SSE reset handling', () => {
 describe('App workspace switching (NEE-164)', () => {
   it('hard-reloads on a workspace-switched broadcast carrying a different root', async () => {
     await renderApp();
-    act(() => {
-      emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
-    });
     const { replaceSpy, reloadSpy } = stubLocationReplace();
 
     act(() => {
@@ -249,9 +253,6 @@ describe('App workspace switching (NEE-164)', () => {
 
   it('ignores a workspace-switched broadcast for the root this tab already shows', async () => {
     await renderApp();
-    act(() => {
-      emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
-    });
     const { reloadSpy } = stubLocationReplace();
 
     act(() => {
@@ -267,9 +268,6 @@ describe('App workspace switching (NEE-164)', () => {
 
   it('hard-reloads on a later hello carrying a different workspaceRoot (missed the one-shot event)', async () => {
     await renderApp();
-    act(() => {
-      emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
-    });
     const { replaceSpy, reloadSpy } = stubLocationReplace();
 
     act(() => {
@@ -281,8 +279,23 @@ describe('App workspace switching (NEE-164)', () => {
     expect(replaceSpy).not.toHaveBeenCalled();
   });
 
+  it('shows the connecting placeholder — never the routed app — until the first hello arrives', async () => {
+    await renderApp(null);
+
+    // Pre-hello: neither Library (whose fetches would 409 on a picker boot)
+    // nor the picker — an honest neutral state.
+    expect(screen.getByText('Connecting…')).toBeInTheDocument();
+    expect(screen.queryByText('Library')).toBeNull();
+    expect(screen.queryByText('Pick a workspace')).toBeNull();
+
+    act(() => {
+      emitSse('hello', { version: '0.2.1', workspaceRoot: '/w', epoch: 'epoch-a' });
+    });
+    expect(await screen.findByText('Library')).toBeInTheDocument();
+  });
+
   it('renders the workspace picker instead of the routed app when hello carries a null root', async () => {
-    await renderApp();
+    await renderApp(null);
 
     act(() => {
       emitSse('hello', { version: '0.2.1', workspaceRoot: null, epoch: null });
