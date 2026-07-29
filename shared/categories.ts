@@ -169,10 +169,6 @@ export function getSuggestedTime(slug: CategorySlug, difficulty: Difficulty): nu
   return CATEGORIES[slug].suggestedTimes[difficulty];
 }
 
-export function isDesignCategory(slug: CategorySlug): boolean {
-  return CATEGORIES[slug].type === 'design';
-}
-
 /** True when this category has a sandbox-verifiable test suite. */
 export function hasTests(config: CategoryConfig): boolean {
   return config.testFiles.length > 0;
