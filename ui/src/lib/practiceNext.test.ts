@@ -137,4 +137,92 @@ describe('pickPracticeNext', () => {
     const result = pickPracticeNext(questions);
     expect(result?.question.id).toBe('no-tests');
   });
+
+  // NEE-353: a prose (design/behavioral) question can never have a lastRun,
+  // so it can never satisfy the "failed last attempt" tier's `lastRun != null`
+  // check — that tier is inherently test-run-shaped and has no meaningful
+  // prose analog (a completed review always reads as 'solved' regardless of
+  // verdict, so there is no "reviewed but needs another pass" state to
+  // detect). An attempted-but-unreviewed prose question therefore correctly
+  // falls through to the generic in-progress/last-touched tier, same as a
+  // coding question with an inconclusive (zero-test) run above — this is
+  // intentional, not a gap: there is no failure signal for prose without an
+  // actual review verdict-based re-open, which NEE-353 explicitly does not
+  // introduce ("solved" is purely "has a completed review").
+  describe('prose (design/behavioral) tiering', () => {
+    it('an unattempted prose question is picked with a "not attempted" reason, same as coding', () => {
+      const questions = [
+        q({
+          id: 'story',
+          category: 'behavioral',
+          suggestedMinutes: 8,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        }),
+      ];
+      const result = pickPracticeNext(questions);
+      expect(result?.question.id).toBe('story');
+      expect(result?.reason).toContain('not attempted');
+    });
+
+    it('an attempted-but-unreviewed prose question (lastRun null, status in-progress) never lands in the "failed" tier and falls to the in-progress fallback', () => {
+      const questions = [
+        q({
+          id: 'story-in-progress',
+          category: 'behavioral',
+          stats: {
+            attemptCount: 1,
+            lastRun: null,
+            lastActivityAt: '2026-01-02T00:00:00.000Z',
+            status: 'in-progress',
+            imported: false,
+          },
+        }),
+      ];
+      const result = pickPracticeNext(questions);
+      expect(result?.question.id).toBe('story-in-progress');
+      expect(result?.reason).not.toContain('failed last attempt');
+      expect(result?.reason).toContain('in progress');
+    });
+
+    it('a reviewed (solved) prose question is never suggested', () => {
+      const questions = [
+        q({
+          id: 'story-solved',
+          category: 'behavioral',
+          stats: { attemptCount: 1, lastRun: null, lastActivityAt: null, status: 'solved', imported: false },
+        }),
+      ];
+      expect(pickPracticeNext(questions)).toBeNull();
+    });
+
+    it('an in-progress coding failure still outranks an in-progress unreviewed prose question', () => {
+      const questions = [
+        q({
+          id: 'story-in-progress',
+          category: 'behavioral',
+          stats: {
+            attemptCount: 1,
+            lastRun: null,
+            lastActivityAt: '2026-01-05T00:00:00.000Z',
+            status: 'in-progress',
+            imported: false,
+          },
+        }),
+        q({
+          id: 'coding-failed',
+          category: 'js-ts',
+          stats: {
+            attemptCount: 1,
+            lastRun: { passed: 1, total: 2, at: '2026-01-03T00:00:00.000Z', status: 'done' },
+            lastActivityAt: '2026-01-03T00:00:00.000Z',
+            status: 'in-progress',
+            imported: false,
+          },
+        }),
+      ];
+      const result = pickPracticeNext(questions);
+      expect(result?.question.id).toBe('coding-failed');
+      expect(result?.reason).toContain('failed last attempt');
+    });
+  });
 });

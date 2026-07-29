@@ -138,6 +138,29 @@ describe('libraryOrder', () => {
       });
       expect(sorted.map((r) => r.id)).toEqual(['a', 'b']); // c is archived, hidden by default
     });
+
+    // NEE-353: a reviewed prose question (design/behavioral) now derives
+    // status 'solved' from db.ts even though it never has a lastRun — the
+    // status filter here is category-agnostic, so it should behave exactly
+    // like a solved coding question.
+    it('the Solved filter includes a reviewed prose question (lastRun stays null)', () => {
+      const prose = [
+        q({
+          id: 'story',
+          title: 'Greatest Failure',
+          category: 'behavioral',
+          stats: { attemptCount: 1, lastRun: null, lastActivityAt: '2026-01-05T00:00:00.000Z', status: 'solved', imported: false },
+        }),
+        q({
+          id: 'unreviewed',
+          title: 'Conflict Story',
+          category: 'behavioral',
+          stats: { attemptCount: 1, lastRun: null, lastActivityAt: '2026-01-05T00:00:00.000Z', status: 'in-progress', imported: false },
+        }),
+      ];
+      const solvedOnly = orderedQuestions(prose, { ...DEFAULT_LIBRARY_ORDER_PARAMS, status: 'solved' });
+      expect(solvedOnly.map((r) => r.id)).toEqual(['story']);
+    });
   });
 
   describe('prevInOrder / nextInOrder', () => {
@@ -194,6 +217,30 @@ describe('libraryOrder', () => {
 
     it('returns null for an empty list', () => {
       expect(nextUnsolvedInOrder([], 'a')).toBeNull();
+    });
+
+    // NEE-353: a reviewed prose question is 'solved' with lastRun still
+    // null — the solved-banner's Next must skip it exactly like a solved
+    // coding question, not treat the missing lastRun as "still open".
+    it('skips a reviewed prose question (lastRun null, status solved) just like a solved coding question', () => {
+      const ordered = [
+        q({
+          id: 'coding-solved',
+          category: 'js-ts',
+          stats: { attemptCount: 1, lastRun: { passed: 2, total: 2, at: '2026-01-01T00:00:00.000Z', status: 'done' }, lastActivityAt: null, status: 'solved', imported: false },
+        }),
+        q({
+          id: 'story-solved',
+          category: 'behavioral',
+          stats: { attemptCount: 1, lastRun: null, lastActivityAt: null, status: 'solved', imported: false },
+        }),
+        q({
+          id: 'story-unreviewed',
+          category: 'behavioral',
+          stats: { attemptCount: 1, lastRun: null, lastActivityAt: null, status: 'in-progress', imported: false },
+        }),
+      ];
+      expect(nextUnsolvedInOrder(ordered, 'coding-solved')?.id).toBe('story-unreviewed');
     });
   });
 });
