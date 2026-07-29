@@ -749,6 +749,11 @@ code {
   flex: 1;
   min-height: 0;
   display: flex;
+  /* Panes + the editor floor (.center-col min-width, below) can add up to
+   * more than a genuinely narrow window — scroll this row horizontally
+   * rather than letting `body { overflow: hidden }` (above) clip controls
+   * off-screen and unreachable (NEE-290). */
+  overflow-x: auto;
 }
 
 .problem-pane {
@@ -976,7 +981,10 @@ code {
 
 .center-col {
   flex: 1;
-  min-width: 0;
+  /* Editor floor (NEE-290): never shrink the editor+console column below a
+   * usable width. Below this, .room-body (above) scrolls horizontally
+   * instead. */
+  min-width: 420px;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1164,6 +1172,14 @@ code {
   align-items: center;
   gap: 12px;
   min-width: 0;
+  /* Last-resort safety net (NEE-290): the <=1400px breakpoint below drops
+   * the run-count text and the auto-run label first, which should always
+   * be enough room for Results/Output + the Run button + collapse to fit
+   * on one line. If some combination still doesn't, wrap instead of
+   * silently overflowing past the visible window (this container has no
+   * height dependency the way .pane-tabs does, so wrapping here is safe). */
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 
 .console-history {
@@ -2804,4 +2820,75 @@ code {
 
 .picker-path-row .key-input {
   flex: 1;
+}
+
+/* ======================================================================== */
+/* ---- room layout: responsive breakpoints (NEE-290) ----------------------- */
+/* ======================================================================== */
+/*
+ * Manual verification matrix — happy-dom does not lay out, so this is
+ * reasoned/measured by hand rather than asserted by an automated test.
+ * Room.tsx's on-mount (never live-resize) matchMedia defaults collapse the
+ * AI panel below 1150px and the problem pane below 900px, but only as a
+ * *default* — an explicit toggle, or an already-stored 'ace-ai-open'
+ * preference, always wins, so these rules also cover a pane forced open at
+ * a width where it would otherwise default shut.
+ *
+ * 1440x900 — at/above the 1400px breakpoint: side panes stay at their
+ *   original size (problem-pane 30%/280-520px, ai-panel 27%/300-520px).
+ *   This width was already fine before NEE-290 (the regression was "below
+ *   ~1250px"), so it's intentionally unchanged.
+ *
+ * 1280x800 and 1180x800 — below the 1400px breakpoint: side panes shrink
+ *   to 26%/240px and 24%/260px. The AI panel defaults open at both (the
+ *   1150px default-collapse threshold sits below 1180), each comfortably
+ *   fitting "AI review" + Request review + collapse in its 260px+ header.
+ *   The problem pane defaults open too (>=900px); its header (two tabs +
+ *   collapse) never approaches its 240px+ width. .center-col easily clears
+ *   its 420px floor at both — even with both side panes at their shrunk
+ *   minimums, ~700-800px is left for the editor and console.
+ *
+ * 1024x768 — below both the 1150px and 900px thresholds, so the AI panel
+ *   *and* the problem pane default to their collapsed expander-rail state
+ *   (~22px each) — nothing to crush. .center-col gets roughly 980px, far
+ *   above its 420px floor. .console-header/.console-meta have far more
+ *   room than the ~347px of content they measured pre-fix against a 223px
+ *   clientWidth on the unfixed layout. The 1400px rule below also drops the
+ *   run-count text and the auto-run label from .console-meta, so even a
+ *   pane a user has explicitly reopened at this width (overriding the
+ *   default) still leaves Results/Output + Run + collapse on one line.
+ *
+ * Below ~900px generally: with .center-col's 420px floor and both side
+ * panes collapsed to ~22px rails by default, .room-body only needs to
+ * scroll horizontally (rather than clip) once the viewport drops under
+ * roughly 420px + ~44px of rails + borders — well past "phone-sized
+ * window", not the ~1250px regression this ticket fixes.
+ */
+
+@media (max-width: 1400px) {
+  .problem-pane {
+    width: 26%;
+    min-width: 240px;
+  }
+
+  .ai-panel {
+    width: 24%;
+    min-width: 260px;
+  }
+
+  /* Console real estate gets tightest exactly where the side panes start
+   * eating into .center-col — drop the least essential text first so
+   * Results/Output + the Run button + collapse always win the row instead
+   * of silently overflowing past the visible window (NEE-290). */
+  .console-history,
+  .autorun-label {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .problem-pane,
+  .ai-panel {
+    min-width: 220px;
+  }
 }

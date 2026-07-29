@@ -18,6 +18,15 @@ import { useSseConnected } from '../sse';
 import type { AttemptRow, QuestionDetail, TestRunTrigger } from '../types';
 import { NotFound } from './NotFound';
 
+// Layout-only default check (NEE-290): "is the window at least this wide,
+// right now". Never wired to a resize listener — it seeds a useState
+// initializer once on mount, so it can only ever set a *default*, not
+// fight a later explicit toggle. matchMedia is present in every real
+// browser and in the happy-dom test environment.
+function matchesMinWidth(px: number): boolean {
+  return window.matchMedia(`(min-width: ${px}px)`).matches;
+}
+
 export function Room() {
   const { category = '', slug = '' } = useParams();
   const [loaded, setLoaded] = useState<{
@@ -160,9 +169,14 @@ function RoomInner({
 
   // ---- timer + layout -----------------------------------------------------
   const timer = useActiveTimer(attempt?.id ?? null, attempt?.activeSeconds ?? 0);
-  const [problemOpen, setProblemOpen] = useState(true);
+  // Below ~900px / ~1150px there isn't room for every pane at once (NEE-290):
+  // default the problem pane / AI panel collapsed so the console and its Run
+  // button stay reachable. Read once on mount (never re-evaluated against a
+  // live resize) so it only ever supplies a *default* — an explicit toggle,
+  // or a stored 'ace-ai-open' preference, always wins.
+  const [problemOpen, setProblemOpen] = useState(() => matchesMinWidth(900));
   const [consoleOpen, setConsoleOpen] = useState(true);
-  const [aiOpen, setAiOpen] = useLocalStorageState('ace-ai-open', true);
+  const [aiOpen, setAiOpen] = useLocalStorageState('ace-ai-open', () => matchesMinWidth(1150));
 
   return (
     <div className="room">

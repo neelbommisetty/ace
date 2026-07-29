@@ -77,7 +77,10 @@ export function TestConsole({
           )}
           <label className="autorun-toggle" title="Run tests automatically after each save">
             <input type="checkbox" checked={autorun} onChange={onToggleAutorun} />
-            auto-run on save
+            {/* dropped first at narrow widths (styles.css) — the checkbox (with
+                its title tooltip) stays, so the setting is still reachable
+                even once its label is hidden */}
+            <span className="autorun-label">auto-run on save</span>
           </label>
           <button className="btn btn-small btn-accent" onClick={onRun} title="Run tests (⌘/Ctrl+Enter)">
             {running ? 'Running…' : 'Run ⌘↩'}
