@@ -8,12 +8,13 @@ Corpus") on your own. Everything here works from the `feat/ace-next-m1` branch.
 ```bash
 npm install          # once
 npm run build        # tsup (server/cli) + vite (dist/ui) + postbuild
-node dist/index.js ui --workspace <your-practice-dir>
+node dist/cli/index.js ui --workspace <your-practice-dir>
 ```
 
 `ace ui` prints the URL (with a one-boot auth token) and opens your browser.
-`--port <n>` picks a port (default 4242, auto-scans up to +10), `--no-open`
-skips the browser. Ctrl+C shuts down cleanly.
+`--port <n>` picks a port (default 4280, auto-scans up to +10), `--no-open`
+skips the browser. Ctrl+C shuts down cleanly. (4280, not 4242 — the latter is
+the default target for a local LLM proxy, so ace stays off it.)
 
 Faster loops while developing:
 
@@ -141,7 +142,7 @@ npx tsc --noEmit -p ui/tsconfig.json  # SPA typecheck
   mints a new token.
 - **"vitest not installed in workspace"** — run `npm install` in the practice
   workspace (the runner uses the workspace's vitest, not the repo's).
-- **Port busy** — another `ace ui` is running; it auto-scans 4242–4252, or pass
+- **Port busy** — another `ace ui` is running; it auto-scans 4280–4290, or pass
   `--port`.
 - **Node < 22.12** — `node:sqlite` is missing; upgrade (repo engines say so).
 - **Wrong workspace opened** — root resolution walks up from cwd to the

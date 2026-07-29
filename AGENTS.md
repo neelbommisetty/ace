@@ -1,6 +1,6 @@
 # Agent Guide (ace)
 
-This repo is a CLI tool for frontend interview practice. It scaffolds question folders with tests, tracks progress via scorecards, and provides LLM-powered feedback.
+This repo is a local-first web app for frontend interview practice, launched by a small bootstrap CLI (`ace ui`). It scaffolds question folders with tests, tracks progress in SQLite (with a per-question `scorecard.json` still written to disk), and provides LLM-powered review, disputes, follow-up probes, and generation — all through the app's server engines.
 
 ## User Workflow (Installed CLI)
 
@@ -8,8 +8,9 @@ When using the published CLI (`npm install -g ace-interview-prep`), the typical 
 
 1. `ace setup` to store API keys in `~/.ace/config.json` (supports OpenAI and Anthropic; can set a default provider)
 2. `ace init` in a workspace folder to bootstrap `questions/` plus test/tooling config and run `npm install`
-3. Practice via `ace generate`, then `ace test`, `ace feedback`, `ace score`, `ace reset`
-4. Use `ace dispute` if a generated test assertion seems incorrect (can propose/apply a corrected test file)
+3. `ace ui` to launch the local web app — all practising happens there: generating questions, running tests, streamed AI review, disputing a wrong test assertion, follow-up probes, and workspace reset
+
+The CLI itself has exactly three commands — `setup`, `init`, `ui`. The earlier per-action commands (`generate`, `test`, `feedback`, `score`, `reset`, `dispute`) were retired at the M2 cut line and now live as server engines behind `ace ui`; invoking them errors.
 
 Notes:
 
@@ -65,11 +66,7 @@ Adding new questions:
 - `npm test`: run all tests (`vitest run`)
 - `npm run test:watch`: watch mode
 
-Question-targeting commands (e.g. `test`, `score`, `feedback`, `reset`) support:
-
-- Interactive: no args shows a picker
-- Direct: pass a slug (e.g. `ace test debounce`)
-- All: pass `--all` to operate on every question
+The CLI surface is just `setup`, `init`, and `ui` (see the User Workflow section). Per-question actions — running tests, review, disputes, probes, reset — are driven from the `ace ui` app, not from CLI subcommands.
 
 ## CLI Command Implementation Conventions
 

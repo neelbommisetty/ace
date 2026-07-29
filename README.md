@@ -30,6 +30,7 @@ Everything runs on your machine. `ace init` bootstraps a plain-files workspace u
 | System Design — Frontend | `design-fe` | Design | Component architecture, state, rendering |
 | System Design — Backend | `design-be` | Design | APIs, databases, caching, queues |
 | System Design — Full Stack | `design-full` | Design | End-to-end systems, trade-offs |
+| Behavioral | `behavioral` | Behavioral | STAR stories, follow-up probes, competency coverage |
 
 ## Architecture
 
@@ -41,7 +42,7 @@ Global configuration lives under `~/.ace/`, per-workspace state under `<workspac
 
 ## Technical highlights
 
-- All LLM calls go through [`cli/lib/llm.ts`](cli/lib/llm.ts): native OpenAI and Anthropic clients via the Vercel AI SDK, a per-purpose model map (generation, edge-audit, review, extraction, brainstorm, dispute), streaming output as `AsyncIterable<string>`, and Zod-validated structured output.
+- All LLM calls go through [`cli/lib/llm.ts`](cli/lib/llm.ts): native OpenAI and Anthropic clients via the Vercel AI SDK, a per-purpose model map (generation, edge-audit, review, review-extract, brainstorm, dispute, probe), streaming output as `AsyncIterable<string>`, and Zod-validated structured output.
 - Per-provider base URLs (`OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`) point those clients at any endpoint speaking the OpenAI or Anthropic wire protocol — e.g. a local subscription-backed proxy — and key validation probes `{base}/models` on the configured host rather than assuming the vendor API.
 - Question generation is a verified pipeline: generated tests are edge-audited and run against a reference solution, with automatic repair before anything reaches the workspace.
 - Reviews are versioned and crash-safe: a watchdog detects stalled streams and salvages partial output to disk.
@@ -57,9 +58,10 @@ ace init
 ace ui
 ```
 
-`ace init` copies a small hand-authored starter pack (six questions across JS/TS,
-LeetCode, React, and system design) into the new workspace, so the first `ace ui`
-opens a library you can practise in immediately — no API key, no LLM call. Pass
+`ace init` copies a small hand-authored starter pack (twelve questions across
+JS/TS, LeetCode, React, system design, and behavioral — half the pack is
+behavioral stories) into the new workspace, so the first `ace ui` opens a
+library you can practise in immediately — no API key, no LLM call. Pass
 `ace init --no-samples` for an empty workspace; an existing workspace can adopt
 the pack later from the Library's "Add starter questions" action. Add provider
 credentials with `ace setup` (or in the app's Settings screen) when you want ACE
@@ -77,7 +79,7 @@ ace setup --anthropic-key sk-local-... --anthropic-base-url http://localhost:424
 ace setup --anthropic-base-url none
 ```
 
-Earlier CLI question workflows (`generate`, `test`, `feedback`, `score`, `dispute`, …) still ship for scripted use, but the web app is the primary interface.
+The CLI is a bootstrap surface only — `setup`, `init`, and `ui`. Everything about practising (generating, listing, running tests, reviews, disputes, probes) lives in the web app that `ace ui` opens.
 
 ### Develop locally
 
@@ -88,14 +90,14 @@ npm install
 npm run ace ui        # run the CLI through tsx
 npm test
 npm run build
-node dist/index.js help
+node dist/cli/index.js help
 ```
 
 ## Project structure
 
 - `cli/server/` — Hono API, SQLite persistence, SSE bus, watcher, and the review/dispute/generation/brainstorm engines
 - `ui/src/` — React + Monaco single-page app (screens, components, API client)
-- `cli/commands/` — one file per CLI command (`setup`, `init`, `ui`, plus legacy question commands)
+- `cli/commands/` — one file per CLI command (`setup`, `init`, `ui`)
 - `cli/lib/` — shared config, paths, LLM, scaffolding, and category logic
 - `cli/prompts/` — Markdown prompts for generation, review, brainstorming, and dispute analysis
 - `cli/templates/` — Handlebars templates used to scaffold question files
@@ -130,9 +132,8 @@ Base URLs follow the same precedence chain as keys. Clearing one (`ace setup --*
 
 ## Status and roadmap
 
-- **Shipped**: the practice room (editor ↔ disk ↔ tests), versioned streamed reviews, dispute-as-diff, history search, workspace clear/reset, the generate/brainstorm UI, the verified generation pipeline with debrief, and proxy base-URL support.
-- **In progress**: AI interviewer chat with verbal-first delivery.
-- **Planned**: mistake ledger with pre-flight coach's notes, and timed interview sessions with a progress dashboard.
+- **Shipped**: the practice room (editor ↔ disk ↔ tests), a live React preview pane with HMR, versioned streamed reviews, dispute-as-diff, behavioral interviews with follow-up probes, history search, workspace clear/reset, the generate/brainstorm UI, the verified generation pipeline with debrief, and proxy base-URL support.
+- **Possible future work**: AI interviewer chat with verbal-first delivery, a mistake ledger with pre-flight coach's notes, and timed interview sessions with a progress dashboard.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for repo-specific development notes.
 
