@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ScopeError,
   readWorkspaceFile,
@@ -70,6 +70,41 @@ describe('readWorkspaceFile / writeWorkspaceFile', () => {
     expect(file).not.toBeNull();
     expect(file!.content).toBe(content);
     expect(file!.hash).toBe(hash);
+  });
+
+  // NEE-358: these are the user's answers, autosaved every 600ms — a bare
+  // writeFileSync interrupted mid-write leaves a truncated solution at the
+  // real path with no copy anywhere else.
+  it('writes atomically (tmp + rename), leaving no temp file behind', () => {
+    const rel = 'questions/js-ts/debounce/solution.ts';
+    const dir = path.join(root, 'questions', 'js-ts', 'debounce');
+    writeWorkspaceFile(root, rel, 'first\n');
+    writeWorkspaceFile(root, rel, 'second\n');
+
+    expect(fs.readFileSync(path.join(root, rel), 'utf8')).toBe('second\n');
+    expect(fs.readdirSync(dir).filter((n) => n.startsWith('.tmp-'))).toEqual([]);
+  });
+
+  it('cleans up the temp file and rethrows when the rename fails', () => {
+    const rel = 'questions/js-ts/debounce/solution.ts';
+    const dir = path.join(root, 'questions', 'js-ts', 'debounce');
+    writeWorkspaceFile(root, rel, 'original\n');
+
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw new Error('simulated rename failure');
+    });
+    try {
+      expect(() => writeWorkspaceFile(root, rel, 'never lands\n')).toThrow(
+        'simulated rename failure',
+      );
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    // The previous content is untouched — the whole point of rename — and no
+    // partial file is left lying around.
+    expect(fs.readFileSync(path.join(root, rel), 'utf8')).toBe('original\n');
+    expect(fs.readdirSync(dir).filter((n) => n.startsWith('.tmp-'))).toEqual([]);
   });
 
   it('creates missing parent directories on write', () => {

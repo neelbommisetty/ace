@@ -329,9 +329,37 @@ describe('Room probes-done story reload (NEE-345)', () => {
     });
 
     // loadFileInto always fetches, but onlyIfClean must not apply the
-    // result over a dirty buffer — it flags a conflict instead.
-    await screen.findByRole('alert');
+    // result over a dirty buffer — it flags a conflict instead. Matched by
+    // the banner's own text rather than role=alert: a conflict now also
+    // raises the Room-level unsaved strip (NEE-358), so there are two.
+    await screen.findByText(/changed on disk while you have unsaved edits/);
     expect(editor).toHaveValue('a fresh, unsaved edit');
+  });
+});
+
+// NEE-358: flushSaves deliberately declines to write a CONFLICTED file, so a
+// paid call started while story.md is conflicted reads a version of the story
+// missing everything typed since the flag went up — a wasted LLM call on
+// stale input. Block it with a resolve-first message instead.
+describe('Room blocks paid calls while the answer file is conflicted (NEE-358)', () => {
+  it('refuses to start follow-up probes and says what to resolve', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    renderRoom();
+    const editor = await screen.findByTestId('editor-file:///story.md');
+
+    // open the AI panel (collapsed by default at the test viewport width)
+    fireEvent.click(screen.getByTitle('Show AI review panel'));
+
+    // dirty buffer + an external write to the same file = conflict
+    fireEvent.change(editor, { target: { value: 'my unsaved story' } });
+    fireSse('file-changed', { relPath: 'story.md', hash: 'hash-from-elsewhere' });
+    await screen.findByText(/changed on disk while you have unsaved edits/);
+
+    fireEvent.click(screen.getByText('Follow-up probes'));
+
+    await screen.findByText(/Resolve the conflict/);
+    expect(startProbes).not.toHaveBeenCalled();
+    expect(editor).toHaveValue('my unsaved story');
   });
 });
 

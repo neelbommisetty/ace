@@ -73,10 +73,28 @@ export function readWorkspaceFile(
  * whole stale buffer over the first tab's work. The watcher now broadcasts
  * unconditionally; per-tab echo suppression is the client's own
  * `hash === savedHash` check, which is correctly per-tab by construction.
+ *
+ * NEE-358: written tmp + rename, the same way blobs.ts stores a blob. These
+ * are the user's answers, autosaved every 600ms — a crash, a full disk, or an
+ * `ace ui` killed mid-write during a bare writeFileSync leaves a truncated
+ * solution at the real path with no copy anywhere else. rename(2) within the
+ * same directory is atomic, so a reader sees either the old file or the new
+ * one, never a half-written one.
  */
 export function writeWorkspaceFile(root: string, rel: string, content: string): string {
   const abs = resolveWorkspacePath(root, rel);
-  fs.mkdirSync(path.dirname(abs), { recursive: true });
-  fs.writeFileSync(abs, content, 'utf8');
+  const dir = path.dirname(abs);
+  fs.mkdirSync(dir, { recursive: true });
+  // Same directory as the destination: rename is only atomic within a
+  // filesystem, and a tmpdir may well be on another one. The leading dot also
+  // keeps the watcher from reporting the temp file as a question file.
+  const tmp = path.join(dir, `.tmp-${path.basename(abs)}-${crypto.randomBytes(6).toString('hex')}`);
+  try {
+    fs.writeFileSync(tmp, content, 'utf8');
+    fs.renameSync(tmp, abs);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
   return sha1(content);
 }

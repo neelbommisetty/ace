@@ -505,6 +505,163 @@ describe('useFileBuffers reload/autosave interlock (NEE-355)', () => {
   });
 });
 
+// NEE-358: a failed save used to be terminal — saveError recorded, file
+// dropped to 'unsaved', nothing ever tried again. Kill the server, keep
+// typing, come back when it is up: everything typed since was gone.
+describe('useFileBuffers save retries (NEE-358)', () => {
+  it('retries a transient failure with backoff and lands the buffer once the server answers', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    putFile.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    act(() => {
+      result.current.handleChange('solution.ts', 'typed while the server was down');
+    });
+
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].saveError).toBe('Failed to fetch');
+    });
+    expect(result.current.files['solution.ts'].buffer).toBe('typed while the server was down');
+    // the room-level surface names the file, not just the 12px footer strip
+    expect(result.current.unsavedRisk).toMatchObject({ failing: ['solution.ts'] });
+
+    // The first backoff is 1s; no reload, no keystroke — it just lands.
+    await waitFor(
+      () => {
+        expect(putFile).toHaveBeenCalledTimes(2);
+      },
+      { timeout: 3000 },
+    );
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].saveState).toBe('saved');
+    });
+    expect(result.current.files['solution.ts'].saveError).toBeNull();
+    expect(result.current.unsavedRisk).toBeNull();
+  });
+
+  it('does NOT retry a 409 conflict — that is a conflict, not a transient failure', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    putFile.mockRejectedValue(
+      new ApiErrorMock(409, 'file changed on disk since you last loaded it', 'stale-write'),
+    );
+    act(() => {
+      result.current.handleChange('solution.ts', 'B stale buffer');
+    });
+
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].conflict).toBe(true);
+    });
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(putFile).toHaveBeenCalledTimes(1);
+    // a conflict IS surfaced at room level, just not as a failing save
+    expect(result.current.unsavedRisk).toMatchObject({
+      failing: [],
+      conflicted: ['solution.ts'],
+    });
+  });
+
+  it('does NOT retry a 4xx that will fail identically forever', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    putFile.mockRejectedValue(new ApiErrorMock(400, 'path and content must be strings'));
+    act(() => {
+      result.current.handleChange('solution.ts', 'whatever');
+    });
+
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].saveError).toBe('path and content must be strings');
+    });
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(putFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('"Retry now" skips the remaining backoff', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    putFile.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    act(() => {
+      result.current.handleChange('solution.ts', 'typed while the server was down');
+    });
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].saveError).not.toBeNull();
+    });
+
+    act(() => {
+      result.current.retryFailedSaves();
+    });
+
+    await waitFor(() => {
+      expect(putFile).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].saveState).toBe('saved');
+    });
+  });
+});
+
+describe('useFileBuffers leave guard (NEE-358)', () => {
+  function fireBeforeUnload(): boolean {
+    const event = new Event('beforeunload', { cancelable: true });
+    act(() => {
+      window.dispatchEvent(event);
+    });
+    return event.defaultPrevented;
+  }
+
+  it('does not prompt when every buffer is clean', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    expect(fireBeforeUnload()).toBe(false);
+  });
+
+  it('prompts while a buffer is dirty', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    act(() => {
+      result.current.handleChange('solution.ts', 'not saved yet');
+    });
+
+    expect(fireBeforeUnload()).toBe(true);
+  });
+
+  it('prompts while a buffer is conflicted — the case the pagehide flush deliberately skips', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    act(() => {
+      result.current.handleChange('solution.ts', 'my unsaved work');
+    });
+    fireSse('file-changed', { relPath: 'solution.ts', hash: 'hash-from-tab-a' });
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].conflict).toBe(true);
+    });
+
+    expect(fireBeforeUnload()).toBe(true);
+    // and the flush must NOT push the conflicted buffer over disk
+    expect(flushFileSave).not.toHaveBeenCalled();
+  });
+});
+
 describe('useFileBuffers hasTests derivation', () => {
   it('derives hasTests: false from a file set with no kind "test" entries (design/behavioral)', async () => {
     const storyInfo = fileInfo({

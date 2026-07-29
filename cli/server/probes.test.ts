@@ -372,11 +372,23 @@ describe('createProbeEngine', () => {
       resolveProvider: FAKE_PROVIDER,
     });
 
+    // writeWorkspaceFile writes tmp + rename (NEE-358), so the byte-writing
+    // call never names story.md itself — it names a `.tmp-story.md-<rand>`
+    // sibling in the same directory. Fail either, so this stays a test of
+    // "the story write blew up" rather than of one particular syscall order.
+    const isStoryWrite = (file: unknown): boolean => {
+      if (typeof file !== 'string') return false;
+      if (file === storyAbs) return true;
+      return (
+        path.dirname(file) === path.dirname(storyAbs) &&
+        path.basename(file).startsWith('.tmp-story.md-')
+      );
+    };
     const originalWriteFileSync = fs.writeFileSync.bind(fs);
     const writeSpy = vi
       .spyOn(fs, 'writeFileSync')
       .mockImplementation((file: unknown, ...args: unknown[]) => {
-        if (file === storyAbs) throw new Error('simulated disk failure');
+        if (isStoryWrite(file)) throw new Error('simulated disk failure');
         return (originalWriteFileSync as (...a: unknown[]) => unknown)(file, ...args);
       });
 

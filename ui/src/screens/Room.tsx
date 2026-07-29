@@ -252,6 +252,7 @@ function RoomInner({
     question,
     attemptId: refAttempt?.id ?? null,
     flushSaves,
+    conflictedFileNames: buffers.conflictedFileNames,
     editorFiles,
     loadFileInto,
     startRunRef,
@@ -400,6 +401,30 @@ function RoomInner({
         </div>
       )}
       {!connected && <div className="sse-strip">reconnecting…</div>}
+      {buffers.unsavedRisk != null && (
+        <div className="unsaved-strip" role="alert">
+          <span>
+            {buffers.unsavedRisk.failing.length > 0 && (
+              <>
+                Couldn’t save {buffers.unsavedRisk.failing.join(', ')}
+                {buffers.unsavedRisk.message != null && ` (${buffers.unsavedRisk.message})`} — your
+                edits are safe in this tab and will keep retrying.{' '}
+              </>
+            )}
+            {buffers.unsavedRisk.conflicted.length > 0 && (
+              <>
+                {buffers.unsavedRisk.conflicted.join(', ')} changed on disk — resolve the conflict in
+                the editor so your edits can be saved.
+              </>
+            )}
+          </span>
+          {buffers.unsavedRisk.failing.length > 0 && (
+            <button className="btn btn-small" onClick={buffers.retryFailedSaves}>
+              Retry now
+            </button>
+          )}
+        </div>
+      )}
       <div className="room-body">
         {problemOpen ? (
           <>

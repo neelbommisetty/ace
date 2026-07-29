@@ -68,13 +68,22 @@ export function EditorPane({
         {order.map((info) => {
           const f = files[info.relPath];
           const dirty = f != null && f.loaded && f.buffer !== f.savedContent;
+          // NEE-358: the conflict banner renders for the ACTIVE tab only, so a
+          // conflicted background file — one nothing will autosave — was
+          // invisible until you happened to click back to it.
+          const conflicted = f != null && f.conflict;
           return (
             <button
               key={info.relPath}
               className={`file-tab ${info.relPath === active ? 'active' : ''}`}
               onClick={() => onSelect(info.relPath)}
-              title={info.relPath}
+              title={conflicted ? `${info.relPath} — changed on disk, unresolved` : info.relPath}
             >
+              {conflicted && (
+                <span className="conflict-badge" title="Changed on disk — resolve to keep saving">
+                  ⚠
+                </span>
+              )}
               {info.readonly && (
                 <span
                   className="lock-badge"

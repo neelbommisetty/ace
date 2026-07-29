@@ -31,6 +31,7 @@ export function useReviewPanel({
   question,
   attemptId,
   flushSaves,
+  conflictedFileNames,
   editorFiles,
   loadFileInto,
   startRunRef,
@@ -46,12 +47,32 @@ export function useReviewPanel({
    */
   attemptId: string | null;
   flushSaves: () => Promise<void>;
+  /**
+   * Names of editable files currently flagged as conflicted (NEE-358). A
+   * conflicted file is one flushSaves deliberately refuses to write, so
+   * starting a review or probe run would spend a paid call on disk content
+   * that is missing everything the user has typed since the flag went up.
+   */
+  conflictedFileNames: string[];
   editorFiles: QuestionFileInfo[];
   loadFileInto: (relPath: string, opts?: { onlyIfClean?: boolean }) => Promise<void>;
   startRunRef: RefObject<(trigger: TestRunTrigger) => void>;
 }) {
   const questionId = question.id;
   const flushSavesRef = useLatestRef(flushSaves);
+  const conflictedRef = useLatestRef(conflictedFileNames);
+
+  /**
+   * The resolve-first message for a blocked paid call (NEE-358), or null when
+   * nothing is conflicted. Both entry points below check this BEFORE spending
+   * the call: flushSaves cannot write a conflicted file, so the engine would
+   * read a version of the answer missing the user's latest writing.
+   */
+  const conflictBlock = (): string | null => {
+    const names = conflictedRef.current;
+    if (names.length === 0) return null;
+    return `${names.join(', ')} ${names.length === 1 ? 'has' : 'have'} unresolved changes from disk. Resolve the conflict — reload or keep your version — so the run reads what you actually wrote.`;
+  };
 
   const [reviews, setReviews] = useState<ReviewRow[] | null>(null);
   const [disputes, setDisputes] = useState<DisputeRow[]>([]);
@@ -105,6 +126,11 @@ export function useReviewPanel({
 
   const requestReview = useCallback(() => {
     setReviewNotice(null);
+    const blocked = conflictBlock();
+    if (blocked != null) {
+      setReviewNotice({ kind: 'error', message: blocked });
+      return;
+    }
     void (async () => {
       try {
         // the review reads files from disk — flush dirty buffers first
@@ -207,6 +233,11 @@ export function useReviewPanel({
   // Answers are typed directly in the Monaco editor (story.md), never here.
   const requestProbes = useCallback(() => {
     setProbeNotice(null);
+    const blocked = conflictBlock();
+    if (blocked != null) {
+      setProbeNotice({ kind: 'error', message: blocked });
+      return;
+    }
     void (async () => {
       try {
         // Probes read the story from disk — flush dirty buffers first,

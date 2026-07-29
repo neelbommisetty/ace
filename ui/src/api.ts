@@ -145,7 +145,17 @@ async function toApiError(res: Response): Promise<ApiError> {
   return new ApiError(res.status, message, code);
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * How long a file read/write may hang before it is treated as a failure
+ * (NEE-358). Without this, a server that accepted the connection and then
+ * stopped answering (suspended laptop, a wedged `ace ui`) left the editor
+ * showing "saving…" forever — no error, no retry, and every keystroke since
+ * living only in the browser buffer. Deliberately NOT applied to SSE or any
+ * long-lived stream, which are supposed to stay open.
+ */
+const FILE_REQUEST_TIMEOUT_MS = 15_000;
+
+async function requestOnce<T>(path: string, init?: RequestInit): Promise<T> {
   let res = await doFetch(path, init, token);
   if (res.status === 401) {
     // localStorage is shared across tabs of this origin: another tab may
@@ -168,6 +178,34 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw await toApiError(res);
   }
   return (await res.json()) as T;
+}
+
+function request<T>(path: string, init?: RequestInit): Promise<T> {
+  return requestOnce<T>(path, init);
+}
+
+/**
+ * `request` with a deadline. A timeout surfaces as `ApiError(0, …, 'timeout')`
+ * — status 0 because nothing was ever answered — which the caller can treat
+ * as transient and retry, unlike a 4xx.
+ */
+async function requestWithTimeout<T>(
+  path: string,
+  init: RequestInit | undefined,
+  timeoutMs: number,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await requestOnce<T>(path, { ...init, signal: controller.signal });
+  } catch (e) {
+    if (controller.signal.aborted) {
+      throw new ApiError(0, `the server did not respond within ${timeoutMs / 1000}s`, 'timeout');
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const q = (s: string) => encodeURIComponent(s);
@@ -286,7 +324,11 @@ export function getResume(): Promise<
 }
 
 export function getFile(relPath: string): Promise<{ path: string; content: string; hash: string }> {
-  return request(`/api/file?path=${encodeURIComponent(relPath)}`);
+  return requestWithTimeout(
+    `/api/file?path=${encodeURIComponent(relPath)}`,
+    undefined,
+    FILE_REQUEST_TIMEOUT_MS,
+  );
 }
 
 /**
@@ -304,10 +346,14 @@ export function putFile(
   content: string,
   opts?: { savedHash?: string },
 ): Promise<{ hash: string }> {
-  return request('/api/file', {
-    method: 'PUT',
-    body: JSON.stringify(fileWriteBody(relPath, content, opts?.savedHash)),
-  });
+  return requestWithTimeout(
+    '/api/file',
+    {
+      method: 'PUT',
+      body: JSON.stringify(fileWriteBody(relPath, content, opts?.savedHash)),
+    },
+    FILE_REQUEST_TIMEOUT_MS,
+  );
 }
 
 export function startTestRun(

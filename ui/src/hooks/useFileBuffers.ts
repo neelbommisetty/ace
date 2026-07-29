@@ -7,6 +7,9 @@ import { useCancellableEffect } from './useCancellableEffect';
 import { useLatestRef } from './useLatestRef';
 
 const SAVE_DEBOUNCE_MS = 600;
+/** First retry delay after a transient save failure; doubles up to the cap (NEE-358). */
+const SAVE_RETRY_BASE_MS = 1000;
+const SAVE_RETRY_MAX_MS = 30_000;
 
 /** Reload GETs still outstanding, keyed by relPath (NEE-355). */
 type ReloadMap = Map<string, Set<Promise<void>>>;
@@ -248,6 +251,43 @@ export function useFileBuffers({
     };
   }, []);
 
+  /**
+   * (Re)arms the pending-save timer for `relPath`. One timer per file, shared
+   * by the 600ms debounce and the failure backoff (NEE-358), so a retry is
+   * cancellable/flushable by exactly the machinery that already handles the
+   * debounce — and a keystroke during a long backoff just pulls the next
+   * attempt forward instead of queueing a second one.
+   */
+  const armSave = useCallback((relPath: string, delayMs: number) => {
+    const timers = saveTimers.current;
+    const existing = timers.get(relPath);
+    if (existing != null) window.clearTimeout(existing);
+    timers.set(
+      relPath,
+      window.setTimeout(() => {
+        timers.delete(relPath);
+        saveFileRef.current(relPath);
+      }, delayMs),
+    );
+  }, []);
+
+  /** Consecutive failed save attempts per file — drives the backoff. */
+  const saveAttempts = useRef(new Map<string, number>());
+
+  /**
+   * Save failures used to be terminal: `saveError` was recorded, the file
+   * dropped to 'unsaved', and nothing ever tried again — kill the server,
+   * keep typing, come back later, and everything typed since was gone
+   * (NEE-358). Transient failures now back off and retry indefinitely, so the
+   * buffer lands the moment the server answers again. A 4xx is NOT transient
+   * (a stale-write 409 is a conflict, handled above; 400/401/403 will fail
+   * identically forever), so those stay one-shot errors.
+   */
+  const isTransientSaveFailure = (e: unknown): boolean => {
+    if (e instanceof ApiError) return e.status === 0 || e.status >= 500;
+    return true; // network-level throw (fetch TypeError, abort) — worth retrying
+  };
+
   const saveFile = useCallback(
     async (relPath: string, opts?: { autorun?: boolean }) => {
       const f = filesRef.current[relPath];
@@ -266,6 +306,7 @@ export function useFileBuffers({
       savesInFlight.current.add(relPath);
       try {
         const { hash } = await putFile(relPath, content, { savedHash: f.savedHash });
+        saveAttempts.current.delete(relPath);
         updateFile(relPath, (cur) => ({
           savedContent: content,
           savedHash: hash,
@@ -283,13 +324,20 @@ export function useFileBuffers({
         // it goes down the same conflict path an external file-changed takes,
         // so the banner can offer reload vs. keep-mine.
         if (e instanceof ApiError && e.status === 409 && e.code === 'stale-write') {
+          saveAttempts.current.delete(relPath);
           updateFile(relPath, { saveState: 'unsaved', saveError: null, conflict: true });
           return;
         }
-        updateFile(relPath, {
-          saveState: 'unsaved',
-          saveError: e instanceof Error ? e.message : 'save failed',
-        });
+        const message = e instanceof Error ? e.message : 'save failed';
+        if (isTransientSaveFailure(e) && mountedRef.current) {
+          const attempt = (saveAttempts.current.get(relPath) ?? 0) + 1;
+          saveAttempts.current.set(relPath, attempt);
+          armSave(relPath, Math.min(SAVE_RETRY_MAX_MS, SAVE_RETRY_BASE_MS * 2 ** (attempt - 1)));
+          updateFile(relPath, { saveState: 'unsaved', saveError: message });
+          return;
+        }
+        saveAttempts.current.delete(relPath);
+        updateFile(relPath, { saveState: 'unsaved', saveError: message });
       } finally {
         endSaveWindow(relPath);
       }
@@ -300,19 +348,8 @@ export function useFileBuffers({
   saveFileRef.current = (relPath, opts) => void saveFile(relPath, opts);
 
   const scheduleSave = useCallback(
-    (relPath: string) => {
-      const timers = saveTimers.current;
-      const existing = timers.get(relPath);
-      if (existing != null) window.clearTimeout(existing);
-      timers.set(
-        relPath,
-        window.setTimeout(() => {
-          timers.delete(relPath);
-          void saveFile(relPath);
-        }, SAVE_DEBOUNCE_MS),
-      );
-    },
-    [saveFile],
+    (relPath: string) => armSave(relPath, SAVE_DEBOUNCE_MS),
+    [armSave],
   );
 
   const flushSaves = useCallback(async (): Promise<void> => {
@@ -353,6 +390,34 @@ export function useFileBuffers({
       void flushSavesRef.current();
     };
   }, [readonly, flushSavesRef]);
+
+  /**
+   * Leave guard (NEE-358). The pagehide flush below is best-effort and, by
+   * design, declines to push a CONFLICTED buffer (that would clobber the disk
+   * version the conflict is about) — and a save that is mid-backoff hasn't
+   * landed either. Both cases end with the user's text existing only in this
+   * tab, so closing or navigating away must ask first rather than drop it.
+   *
+   * beforeunload only: the app mounts a plain BrowserRouter, and react-router
+   * v7's useBlocker requires a data router — retrofitting one just for this
+   * guard is a bigger change than the guard. In-app navigation out of the
+   * Room still runs the unmount flush, so the uncovered case is narrow
+   * (leaving the Room in-app while a conflict is unresolved).
+   */
+  useEffect(() => {
+    if (readonly) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      const atRisk = Object.values(filesRef.current).some(
+        (f) => f.loaded && !f.info.readonly && (f.conflict || f.buffer !== f.savedContent),
+      );
+      if (!atRisk) return;
+      e.preventDefault();
+      // Legacy spelling some browsers still require to raise the prompt.
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [readonly, filesRef]);
 
   // Tab close / navigation away: regular fetches may be dropped mid-unload,
   // so push dirty buffers with keepalive requests.
@@ -447,6 +512,41 @@ export function useFileBuffers({
     [filesRef, updateFile, hasTests, autorunRef, startRunRef, endSaveWindow],
   );
 
+  /**
+   * Files whose edits are currently reachable only from this browser tab
+   * (NEE-358) — a failing save that is still retrying, or a conflict nobody
+   * has resolved. The 12px "⚠ save failed" strip in the editor footer was the
+   * only signal for either, and it only ever showed the ACTIVE tab's file; the
+   * Room lifts these to banner level next to the reconnecting strip.
+   */
+  const unsavedRisk = useMemo(() => {
+    const failing: string[] = [];
+    const conflicted: string[] = [];
+    for (const f of Object.values(files)) {
+      if (!f.loaded || f.info.readonly) continue;
+      if (f.conflict) conflicted.push(f.info.name);
+      else if (f.saveError != null) failing.push(f.info.name);
+    }
+    if (failing.length === 0 && conflicted.length === 0) return null;
+    const firstError = Object.values(files).find((f) => f.saveError != null)?.saveError ?? null;
+    return { failing, conflicted, message: firstError };
+  }, [files]);
+
+  /** Names of conflicted editable files — what gates a paid review/probe call. */
+  const conflictedFileNames = useMemo(
+    () => Object.values(files).filter((f) => f.conflict && !f.info.readonly).map((f) => f.info.name),
+    [files],
+  );
+
+  /** "Retry now" from the banner: skip the remaining backoff on every failing file. */
+  const retryFailedSaves = useCallback(() => {
+    for (const [relPath, f] of Object.entries(filesRef.current)) {
+      if (f.saveError == null || f.info.readonly) continue;
+      saveAttempts.current.delete(relPath);
+      armSave(relPath, 0);
+    }
+  }, [filesRef, armSave]);
+
   return {
     editorFiles,
     hasTests,
@@ -458,5 +558,8 @@ export function useFileBuffers({
     handleChange,
     resolveConflictReload,
     resolveConflictKeep,
+    unsavedRisk,
+    conflictedFileNames,
+    retryFailedSaves,
   };
 }

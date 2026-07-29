@@ -232,6 +232,22 @@ code {
   padding: 3px 16px;
 }
 
+/* NEE-358: room-level counterpart to the editor footer's 12px "save failed"
+   strip — a failing save or an unresolved conflict means the only copy of
+   that text is this browser tab, which is not a footnote-sized fact. */
+.unsaved-strip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(208, 59, 59, 0.12);
+  border-bottom: 1px solid rgba(208, 59, 59, 0.4);
+  color: var(--crit-text);
+  font-size: 13px;
+  padding: 6px 16px;
+}
+
 .room-solved-banner {
   flex: none;
   display: flex;
@@ -1189,6 +1205,11 @@ code {
 .lock-badge {
   font-size: 10px;
   opacity: 0.8;
+}
+
+.conflict-badge {
+  color: var(--crit-text);
+  font-size: 12px;
 }
 
 .dirty-dot {
