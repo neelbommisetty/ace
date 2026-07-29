@@ -108,7 +108,9 @@ export function useFileBuffers({
   /** Saves that bailed because a reload was open; re-issued when it closes. */
   const savesDeferredByReload = useRef(new Set<string>());
   /** Set below, once saveFile exists — the deferred re-issue needs it. */
-  const saveFileRef = useRef<(relPath: string, opts?: { autorun?: boolean }) => void>(() => {});
+  const saveFileRef = useRef<(relPath: string, opts?: { autorun?: boolean }) => Promise<void>>(
+    () => Promise.resolve(),
+  );
 
   /**
    * Fetches `relPath` from disk and adopts it as the buffer + saved state.
@@ -141,7 +143,7 @@ export function useFileBuffers({
         set?.delete(promise);
         if (set != null && set.size === 0) reloadsInFlight.current.delete(relPath);
         if (isReloading(reloadsInFlight.current, relPath)) return;
-        if (savesDeferredByReload.current.delete(relPath)) saveFileRef.current(relPath);
+        if (savesDeferredByReload.current.delete(relPath)) void saveFileRef.current(relPath);
       };
 
       const promise: Promise<void> = getFile(relPath).then(
@@ -266,7 +268,7 @@ export function useFileBuffers({
       relPath,
       window.setTimeout(() => {
         timers.delete(relPath);
-        saveFileRef.current(relPath);
+        void saveFileRef.current(relPath);
       }, delayMs),
     );
   }, []);
@@ -288,7 +290,38 @@ export function useFileBuffers({
     return true; // network-level throw (fetch TypeError, abort) — worth retrying
   };
 
-  const saveFile = useCallback(
+  /**
+   * Tail of the write queue for each file — one PUT per relPath at a time.
+   *
+   * Without this, two of THIS tab's own saves could be in flight at once: the
+   * debounce fires and PUTs on savedHash H0, the user keeps typing, the next
+   * debounce fires before that PUT has answered, and a second PUT goes out
+   * anchored on the SAME H0 (nothing has updated it yet). The first write
+   * moves disk to H1, so the second — carrying the NEWER text — comes back
+   * 409 'stale-write' and lands in the conflict banner, which reads as an
+   * external editor and whose ordinary "Reload" resolution then discards that
+   * newer text. Serializing means the queued attempt re-reads
+   * savedHash/savedContent when it actually runs, so it PUTs the newest buffer
+   * on the freshest hash, and a self-inflicted conflict is impossible.
+   */
+  const writeQueue = useRef(new Map<string, Promise<void>>());
+
+  /** Runs `write` after whatever is already queued for `relPath`. */
+  const enqueueWrite = useCallback(
+    (relPath: string, write: () => Promise<void>): Promise<void> => {
+      const prev = writeQueue.current.get(relPath) ?? Promise.resolve();
+      // Run regardless of how the previous write settled; it owns its errors.
+      const next = prev.then(write, write);
+      writeQueue.current.set(relPath, next);
+      void next.catch(() => {}).then(() => {
+        if (writeQueue.current.get(relPath) === next) writeQueue.current.delete(relPath);
+      });
+      return next;
+    },
+    [],
+  );
+
+  const runSave = useCallback(
     async (relPath: string, opts?: { autorun?: boolean }) => {
       const f = filesRef.current[relPath];
       if (!f || !f.loaded || f.info.readonly || f.conflict) return;
@@ -345,7 +378,18 @@ export function useFileBuffers({
     [filesRef, updateFile, hasTests, autorunRef, startRunRef, endSaveWindow],
   );
 
-  saveFileRef.current = (relPath, opts) => void saveFile(relPath, opts);
+  /**
+   * Public entry point: every autosave/flush/retry goes through the per-file
+   * queue, and the promise it returns covers the queued attempt (so flushSaves
+   * still resolves only once the buffer is actually on disk).
+   */
+  const saveFile = useCallback(
+    (relPath: string, opts?: { autorun?: boolean }): Promise<void> =>
+      enqueueWrite(relPath, () => runSave(relPath, opts)),
+    [enqueueWrite, runSave],
+  );
+
+  saveFileRef.current = (relPath, opts) => saveFile(relPath, opts);
 
   const scheduleSave = useCallback(
     (relPath: string) => armSave(relPath, SAVE_DEBOUNCE_MS),
@@ -487,29 +531,35 @@ export function useFileBuffers({
       if (!f) return;
       const content = f.buffer;
       updateFile(relPath, { conflict: false, saveState: 'saving', saveError: null });
-      savesInFlight.current.add(relPath);
-      // Deliberately no `savedHash` (NEE-359): "Keep mine" IS the user's
-      // explicit decision to overwrite whatever disk holds now, so it must not
-      // be rejected by the stale-write precondition it is resolving.
-      putFile(relPath, content)
-        .then(({ hash }) => {
-          updateFile(relPath, (cur) => ({
-            savedContent: content,
-            savedHash: hash,
-            lastSavedAt: Date.now(),
-            saveState: cur.buffer === content ? 'saved' : 'unsaved',
-          }));
-          if (autorunRef.current && hasTests) startRunRef.current('save');
-        })
-        .catch((e: unknown) => {
-          updateFile(relPath, {
-            saveState: 'unsaved',
-            saveError: e instanceof Error ? e.message : 'save failed',
-          });
-        })
-        .finally(() => endSaveWindow(relPath));
+      // Through the same per-file queue as autosave: a conflict raised by a
+      // reload can land while an autosave PUT is still in flight, and two
+      // overlapping PUTs for one file are exactly what turns the stale-write
+      // precondition into a self-inflicted 409.
+      void enqueueWrite(relPath, () => {
+        savesInFlight.current.add(relPath);
+        // Deliberately no `savedHash` (NEE-359): "Keep mine" IS the user's
+        // explicit decision to overwrite whatever disk holds now, so it must not
+        // be rejected by the stale-write precondition it is resolving.
+        return putFile(relPath, content)
+          .then(({ hash }) => {
+            updateFile(relPath, (cur) => ({
+              savedContent: content,
+              savedHash: hash,
+              lastSavedAt: Date.now(),
+              saveState: cur.buffer === content ? 'saved' : 'unsaved',
+            }));
+            if (autorunRef.current && hasTests) startRunRef.current('save');
+          })
+          .catch((e: unknown) => {
+            updateFile(relPath, {
+              saveState: 'unsaved',
+              saveError: e instanceof Error ? e.message : 'save failed',
+            });
+          })
+          .finally(() => endSaveWindow(relPath));
+      });
     },
-    [filesRef, updateFile, hasTests, autorunRef, startRunRef, endSaveWindow],
+    [filesRef, updateFile, hasTests, autorunRef, startRunRef, endSaveWindow, enqueueWrite],
   );
 
   /**

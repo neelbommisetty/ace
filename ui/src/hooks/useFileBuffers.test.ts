@@ -662,6 +662,56 @@ describe('useFileBuffers leave guard (NEE-358)', () => {
   });
 });
 
+// A second save for the same file starting while the first is still in flight
+// would PUT the NEWER text anchored on the SAME (now stale) savedHash, so the
+// server rejected it 409 — a conflict this tab inflicted on itself, whose
+// "Reload" resolution then discards exactly that newer text.
+describe('useFileBuffers overlapping same-tab saves (NEE-359)', () => {
+  it('queues the second save behind the first instead of racing two PUTs on one stale hash', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    // Save #1 goes out on hash-solution.ts and is held open (a slow round trip:
+    // the PUT writes the file, saves a blob and inserts a snapshot row).
+    const put1 = deferred<{ hash: string }>();
+    putFile.mockReturnValueOnce(put1.promise);
+    act(() => {
+      result.current.handleChange('solution.ts', 'C1');
+    });
+    await waitFor(() => {
+      expect(putFile).toHaveBeenCalledTimes(1);
+    });
+
+    // The user keeps typing and the next debounce elapses while #1 is still
+    // open. No second PUT may go out yet — it could only carry the same stale
+    // savedHash.
+    act(() => {
+      result.current.handleChange('solution.ts', 'C2');
+    });
+    await new Promise((r) => setTimeout(r, 700));
+    expect(putFile).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      put1.resolve({ hash: 'hash-after-c1' });
+      await put1.promise;
+    });
+
+    // Now it runs, re-reading the basis the first save established: the newest
+    // buffer on the freshest hash, so the server has no reason to 409.
+    await waitFor(() => {
+      expect(putFile).toHaveBeenCalledTimes(2);
+    });
+    expect(putFile).toHaveBeenLastCalledWith('solution.ts', 'C2', { savedHash: 'hash-after-c1' });
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].saveState).toBe('saved');
+    });
+    expect(result.current.files['solution.ts'].conflict).toBe(false);
+    expect(result.current.files['solution.ts'].buffer).toBe('C2');
+  });
+});
+
 describe('useFileBuffers hasTests derivation', () => {
   it('derives hasTests: false from a file set with no kind "test" entries (design/behavioral)', async () => {
     const storyInfo = fileInfo({
