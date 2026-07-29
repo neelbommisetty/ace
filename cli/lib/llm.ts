@@ -236,7 +236,7 @@ const PURPOSE_TIERS: Record<LLMPurpose, ModelTier> = {
   dispute: 'top',
   'edge-audit': 'mid',
   brainstorm: 'mid',
-  probe: 'mid',
+  probe: 'top',
   'review-extract': 'basic',
 };
 

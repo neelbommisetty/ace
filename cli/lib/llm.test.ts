@@ -118,7 +118,10 @@ describe('per-purpose model map (NEE-274)', () => {
     expect(getModelId('anthropic', 'dispute')).toBe('claude-opus-5');
     expect(getModelId('anthropic', 'edge-audit')).toBe('claude-sonnet-5');
     expect(getModelId('anthropic', 'brainstorm')).toBe('claude-sonnet-5');
-    expect(getModelId('anthropic', 'probe')).toBe('claude-sonnet-5');
+    // probe is 'top' (NEE-364): the mid-tier model double-emitted its JSON
+    // object through the proxy, breaking structured parse; the top tier is
+    // the one that reliably returns a single valid object here.
+    expect(getModelId('anthropic', 'probe')).toBe('claude-opus-5');
     expect(getModelId('anthropic', 'review-extract')).toBe('claude-haiku-4-5');
 
     expect(getModelId('openai', 'generate')).toBe('gpt-5.6-sol');
@@ -126,7 +129,7 @@ describe('per-purpose model map (NEE-274)', () => {
     expect(getModelId('openai', 'dispute')).toBe('gpt-5.6-sol');
     expect(getModelId('openai', 'edge-audit')).toBe('gpt-5.6-terra');
     expect(getModelId('openai', 'brainstorm')).toBe('gpt-5.6-terra');
-    expect(getModelId('openai', 'probe')).toBe('gpt-5.6-terra');
+    expect(getModelId('openai', 'probe')).toBe('gpt-5.6-sol');
     expect(getModelId('openai', 'review-extract')).toBe('gpt-5.6-luna');
   });
 });

@@ -290,7 +290,7 @@ describe('createProbeEngine', () => {
     const { probeSet } = await done;
     expect(probeSet.questionId).toBe(question.id);
     expect(probeSet.attemptId).toBe('attempt-1');
-    expect(probeSet.model).toBe('gpt-5.6-terra'); // probe purpose resolves to the 'mid' tier
+    expect(probeSet.model).toBe('gpt-5.6-sol'); // probe purpose resolves to the 'top' tier (NEE-364)
     expect(probeSet.appliedAt).not.toBeNull();
     expect(probeSet.probes).toEqual(TWO_PROBES.probes);
 
