@@ -8,6 +8,7 @@ import { loader } from '@monaco-editor/react';
 import editorWorker from 'monaco-editor/editor/editor.worker.js?worker';
 import tsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker';
 import { EDITOR_THEME } from './editor-options';
+import { triggerStaleReload } from './stale-reload';
 
 // Monarch tokenizers for every language the room can open. Monaco registers
 // these behind a lazy import(), which Vite emits as separate hashed chunks;
@@ -21,12 +22,34 @@ import 'monaco-editor/languages/definitions/css/css.js';
 import 'monaco-editor/languages/definitions/html/html.js';
 import 'monaco-editor/languages/definitions/markdown/markdown.js';
 
+// A rebuild rewrites dist/assets with new content hashes; an already-open
+// tab still requests these worker scripts by their old hashed filenames.
+// Unlike a dynamic import(), a failed worker fetch never throws synchronously
+// and never fires Vite's `vite:preloadError` — the failure only surfaces
+// later as an `error` event on the Worker instance (or, in some browsers, a
+// synchronous throw from the `new Worker(...)` constructor itself). Route
+// both into the same one-shot reload path used for preload errors so a
+// stale tab recovers instead of silently losing squiggles/diagnostics.
+function newWorkerWithStaleReloadGuard(create: () => Worker): Worker {
+  let worker: Worker;
+  try {
+    worker = create();
+  } catch (err) {
+    triggerStaleReload(window.sessionStorage, () => window.location.reload());
+    throw err;
+  }
+  worker.addEventListener('error', () => {
+    triggerStaleReload(window.sessionStorage, () => window.location.reload());
+  });
+  return worker;
+}
+
 self.MonacoEnvironment = {
   getWorker(_workerId: string, label: string): Worker {
     if (label === 'typescript' || label === 'javascript' || label === 'ts') {
-      return new tsWorker();
+      return newWorkerWithStaleReloadGuard(() => new tsWorker());
     }
-    return new editorWorker();
+    return newWorkerWithStaleReloadGuard(() => new editorWorker());
   },
 };
 
