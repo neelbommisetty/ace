@@ -16,7 +16,8 @@ export type CategorySlug =
   | 'leetcode-algo'
   | 'design-fe'
   | 'design-be'
-  | 'design-full';
+  | 'design-full'
+  | 'behavioral';
 
 export type Difficulty = 'easy' | 'medium' | 'hard';
 
@@ -133,6 +134,18 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     solutionFiles: ['notes.md'],
     testFiles: [],
     templateDir: 'design',
+  },
+  behavioral: {
+    slug: 'behavioral',
+    name: 'Behavioral',
+    shortName: 'Behavioral',
+    hint: 'Conflict, failure, influence, ownership — your real stories',
+    type: 'behavioral',
+    group: 'behavioral',
+    suggestedTimes: { easy: 5, medium: 8, hard: 10 },
+    solutionFiles: ['story.md'],
+    testFiles: [],
+    templateDir: 'behavioral',
   },
 };
 

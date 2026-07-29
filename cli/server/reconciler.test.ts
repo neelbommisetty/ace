@@ -81,6 +81,17 @@ describe('reconcile', () => {
     expect(scroll?.source).toBe('manual');
   });
 
+  it('upserts a behavioral question dir instead of landing in skippedDirs', () => {
+    writeQuestion('behavioral', 'a-time-you-disagreed', {
+      readme: '# A Time You Disagreed\n',
+    });
+
+    const result = reconcile(db, tempRoot);
+    expect(result.added).toBe(1);
+    expect(result.skippedDirs).toEqual([]);
+    expect(db.getQuestion('behavioral', 'a-time-you-disagreed')).not.toBeNull();
+  });
+
   it('skips dirs under unknown categories, reporting repo-relative paths', () => {
     writeQuestion('js-ts', 'ok', { readme: '# Ok\n' });
     writeQuestion('not-a-category', 'orphan', { readme: '# Orphan\n' });

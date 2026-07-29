@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { renderSolutionStub, scaffoldQuestionAt } from './scaffold.js';
+import { getStubContent, renderSolutionStub, scaffoldQuestionAt } from './scaffold.js';
 
 let tempRoot = '';
 let otherCwdWorkspace = '';
@@ -68,6 +68,25 @@ describe('scaffoldQuestionAt', () => {
     expect(result.dir).toBe(expectedDir);
     expect(result.files.sort()).toEqual(['README.md', 'notes.md']);
     expect(fs.existsSync(path.join(expectedDir, 'notes.md'))).toBe(true);
+  });
+
+  it('writes behavioral-question files (story.md, no test file, never .reference.md)', () => {
+    const result = scaffoldQuestionAt(tempRoot, {
+      title: 'A Conflict You Navigated',
+      slug: 'conflict-navigated',
+      category: 'behavioral',
+      difficulty: 'medium',
+      description: 'Tell me about a time you disagreed with a decision.',
+      // A reference solution is never written for a category with no test
+      // suite to verify it against — must be silently dropped, not written.
+      referenceSolutionMd: '# Reference\n\nSome reference material.',
+    });
+
+    const expectedDir = path.join(tempRoot, 'questions', 'behavioral', 'conflict-navigated');
+    expect(result.dir).toBe(expectedDir);
+    expect(result.files.sort()).toEqual(['README.md', 'story.md']);
+    expect(fs.existsSync(path.join(expectedDir, 'story.md'))).toBe(true);
+    expect(fs.existsSync(path.join(expectedDir, '.reference.md'))).toBe(false);
   });
 
   it('writeScorecard: false (default) leaves no scorecard.json', () => {
@@ -166,5 +185,17 @@ describe('renderSolutionStub', () => {
 
   it('returns an empty string when the category has no template for the file', () => {
     expect(renderSolutionStub('js-ts', 'nonexistent.ts', { signature: 'x' })).toBe('');
+  });
+});
+
+describe('getStubContent', () => {
+  it('renders the behavioral story.md template non-empty', () => {
+    // Not optional: getStubContent returning '' for a missing template is
+    // silent — that '' becomes the workspace-reset baseline and the
+    // reset-to-stub content, i.e. a user's story would be blanked on reset
+    // with no error anywhere.
+    const stub = getStubContent('behavioral', 'story.md');
+    expect(stub).not.toBe('');
+    expect(stub).toContain('## Situation');
   });
 });

@@ -6,8 +6,9 @@
 // a real temp-dir db, fake engines, no LLM.
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { scaffoldQuestionAt } from '../lib/scaffold.js';
 import { makeApp, makeWorkspace, type WorkspaceHandle } from './test-support.js';
-import type { QuestionRow, QuestionWithStats } from './types.js';
+import type { QuestionDetail, QuestionRow, QuestionWithStats } from './types.js';
 
 let ws: WorkspaceHandle;
 
@@ -37,6 +38,40 @@ function makeQuestion(): QuestionRow {
     source: 'manual',
   });
 }
+
+function makeBehavioralQuestion(): QuestionRow {
+  const scaffolded = scaffoldQuestionAt(ws.root, {
+    title: 'A Time You Disagreed With a Decision',
+    slug: 'disagreed-with-a-decision',
+    category: 'behavioral',
+    difficulty: 'medium',
+    description: 'Tell me about a time you disagreed with a decision and had to push back.',
+  });
+  return ws.session.db.upsertQuestion({
+    category: 'behavioral',
+    slug: 'disagreed-with-a-decision',
+    title: 'A Time You Disagreed With a Decision',
+    difficulty: 'medium',
+    suggestedMinutes: 8,
+    dirPath: scaffolded.dir,
+    source: 'manual',
+  });
+}
+
+describe('GET /api/questions/:category/:slug', () => {
+  it('a behavioral question exposes story.md as kind "notes" with zero test files', async () => {
+    const question = makeBehavioralQuestion();
+    const fetch = buildApp();
+
+    const res = await fetch(`/api/questions/${question.category}/${question.slug}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as QuestionDetail;
+
+    expect(body.files).toHaveLength(1);
+    expect(body.files[0]).toMatchObject({ name: 'story.md', kind: 'notes', readonly: false });
+    expect(body.files.some((f) => f.kind === 'test')).toBe(false);
+  });
+});
 
 describe('POST /api/questions/:category/:slug/archive', () => {
   it('sets archivedAt and removes the question from the default list', async () => {

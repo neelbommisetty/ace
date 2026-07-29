@@ -57,6 +57,21 @@ describe('add', () => {
 
 const stub = () => renderSolutionStub('js-ts', 'solution.ts', { signature: SIGNATURE });
 
+describe('verifyGeneratedQuestion (fail-loud backstop)', () => {
+  it('throws for a category with no solution/test files to verify (testFiles: [])', async () => {
+    // behavioral (like design) declares testFiles: [] — there is nothing to
+    // run, so this must throw synchronously rather than silently no-op or
+    // report a false green.
+    await expect(
+      verifyGeneratedQuestion(REPO_ROOT, 'behavioral', {
+        referenceSolution: '',
+        testCode: '',
+        stubSolution: '',
+      }),
+    ).rejects.toThrow(/no solution\/test files to verify/);
+  });
+});
+
 describe('verifyGeneratedQuestion (integration, real vitest)', () => {
   it(
     'returns green for a correct reference + failing-on-stub suite',

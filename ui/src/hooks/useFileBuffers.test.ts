@@ -132,3 +132,21 @@ describe('useFileBuffers handleChange readonly guard (NEE-334)', () => {
     });
   });
 });
+
+describe('useFileBuffers hasTests derivation', () => {
+  it('derives hasTests: false from a file set with no kind "test" entries (design/behavioral)', async () => {
+    const storyInfo = fileInfo({
+      name: 'story.md',
+      relPath: 'story.md',
+      kind: 'notes',
+      readonly: false,
+    });
+    const { result } = setup([storyInfo]);
+
+    await waitFor(() => {
+      expect(result.current.files['story.md'].loaded).toBe(true);
+    });
+
+    expect(result.current.hasTests).toBe(false);
+  });
+});
