@@ -33,6 +33,14 @@ const CONFIGURED_SETTINGS: SettingsInfo = {
   anthropic: { configured: false, masked: null, baseUrl: null },
   defaultProvider: 'openai',
   mockMode: false,
+  models: {
+    generate: { provider: 'openai', model: 'gpt-5.6-sol' },
+    'edge-audit': { provider: 'openai', model: 'gpt-5.6-terra' },
+    review: { provider: 'openai', model: 'gpt-5.6-sol' },
+    'review-extract': { provider: 'openai', model: 'gpt-5.6-luna' },
+    brainstorm: { provider: 'openai', model: 'gpt-5.6-terra' },
+    dispute: { provider: 'openai', model: 'gpt-5.6-sol' },
+  },
 };
 
 const KEYLESS_SETTINGS: SettingsInfo = {
@@ -40,6 +48,7 @@ const KEYLESS_SETTINGS: SettingsInfo = {
   anthropic: { configured: false, masked: null, baseUrl: null },
   defaultProvider: null,
   mockMode: false,
+  models: null,
 };
 
 const MOCK_MODE_KEYLESS_SETTINGS: SettingsInfo = {
@@ -148,5 +157,25 @@ describe('NewQuestion — describe mode', () => {
 
     expect(screen.queryByText(/No LLM provider is configured/)).not.toBeInTheDocument();
     expect(screen.getByLabelText('Topic')).toBeEnabled();
+  });
+
+  it('states the pipeline cost and resolved model before Generate is invoked (NEE-303)', async () => {
+    getSettings.mockResolvedValue(CONFIGURED_SETTINGS);
+    getGenerationJobs.mockResolvedValue({ jobs: [] });
+    renderNewQuestion();
+
+    expect(
+      await screen.findByText(/costs several LLM calls and can take a couple of minutes/),
+    ).toHaveTextContent('openai/gpt-5.6-sol');
+  });
+
+  it('omits the model from the disclosure line while settings are unresolved (keyless)', async () => {
+    getSettings.mockResolvedValue(KEYLESS_SETTINGS);
+    getGenerationJobs.mockResolvedValue({ jobs: [] });
+    renderNewQuestion();
+
+    const note = await screen.findByText(/costs several LLM calls and can take a couple of minutes/);
+    expect(note).not.toHaveTextContent('openai/');
+    expect(note).not.toHaveTextContent('anthropic/');
   });
 });

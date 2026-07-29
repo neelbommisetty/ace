@@ -2,12 +2,14 @@ import { useId, useRef, useState } from 'react';
 import { DiffEditor } from '@monaco-editor/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { applyDispute, getFile, startDispute } from '../api';
+import { applyDispute, getFile, getSettings, startDispute } from '../api';
 import { EDITOR_APPEARANCE, EDITOR_THEME } from '../editor-options';
+import { useCancellableEffect } from '../hooks/useCancellableEffect';
+import { modelLabel, resolvedModelFor } from '../lib/models';
 import { DISPUTE_VERDICT_LABELS } from '../lib/review';
 import { Modal } from './Modal';
 import { useSseEvent } from '../sse';
-import type { DisputeRow } from '../types';
+import type { DisputeRow, SettingsInfo } from '../types';
 
 type Phase = 'input' | 'running' | 'done' | 'error';
 
@@ -39,6 +41,21 @@ export function DisputeModal({
   const [applyError, setApplyError] = useState<string | null>(null);
   const headingId = useId();
   const argumentRef = useRef<HTMLTextAreaElement>(null);
+
+  // Own settings fetch (NEE-303) — this modal has no route-level parent that
+  // already has SettingsInfo in scope, so it mirrors NewQuestion's own
+  // getSettings() call rather than threading a prop through Room.tsx.
+  const [settings, setSettings] = useState<SettingsInfo | null>(null);
+  useCancellableEffect((cancelled) => {
+    getSettings()
+      .then((info) => {
+        if (!cancelled()) setSettings(info);
+      })
+      .catch(() => {
+        // Leave settings null — the cost line below just omits the model.
+      });
+  }, []);
+  const disputeModel = resolvedModelFor(settings, 'dispute');
 
   // Match completion events by QUESTION, not jobId: the server allows one
   // dispute per question at a time, and with a fast engine (mock mode
@@ -115,8 +132,9 @@ export function DisputeModal({
           <>
             <p className="dialog-note">
               An LLM re-reads the problem, your solution and the failing tests, then rules on
-              whether the test itself is wrong. Costs one LLM call; the verdict is kept in your
-              history.
+              whether the test itself is wrong. Costs one LLM call
+              {disputeModel != null ? ` · ${modelLabel(disputeModel)}` : ''}; the verdict is kept in
+              your history.
             </p>
             <label className="field-label" htmlFor="dispute-argument">
               Your case (optional)

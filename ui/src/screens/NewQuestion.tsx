@@ -17,6 +17,7 @@ import {
   categoryShortName,
   suggestedMinutes,
 } from '../lib/categories';
+import { isKeyless, modelLabel, resolvedModelFor } from '../lib/models';
 import { useSseEvent } from '../sse';
 import type { BrainstormSessionRow, Difficulty, GenerationJobRow, SettingsInfo } from '../types';
 
@@ -60,8 +61,7 @@ export function NewQuestion() {
   }, []);
 
   const settingsLoaded = settings != null;
-  const keyless =
-    settingsLoaded && !settings.mockMode && !settings.openai.configured && !settings.anthropic.configured;
+  const keyless = isKeyless(settings);
   const formDisabled = !settingsLoaded || keyless;
 
   return (
@@ -102,9 +102,9 @@ export function NewQuestion() {
           )}
 
           {tab === 'describe' ? (
-            <DescribeForm disabled={formDisabled} />
+            <DescribeForm disabled={formDisabled} settings={settings} />
           ) : (
-            <BrainstormPane disabled={formDisabled} />
+            <BrainstormPane disabled={formDisabled} settings={settings} />
           )}
 
           <GenerationJobStrip />
@@ -114,13 +114,20 @@ export function NewQuestion() {
   );
 }
 
-function DescribeForm({ disabled }: { disabled: boolean }) {
+function DescribeForm({
+  disabled,
+  settings,
+}: {
+  disabled: boolean;
+  settings: SettingsInfo | null;
+}) {
   const [category, setCategory] = useState<string>(CATEGORY_SLUGS[0]);
   const [difficulty, setDifficulty] = useState<Difficulty>('medium');
   const [topic, setTopic] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingJob, setPendingJob] = useState<GenerationJobRow | null>(null);
+  const generateModel = resolvedModelFor(settings, 'generate');
 
   const trimmedTopic = topic.trim();
   const canSubmit = !disabled && !submitting && trimmedTopic.length > 0 && trimmedTopic.length <= TOPIC_MAX;
@@ -224,6 +231,12 @@ function DescribeForm({ disabled }: { disabled: boolean }) {
         />
       </div>
 
+      <p className="dialog-note">
+        Runs a verified generate → edge-audit → verify → repair pipeline — costs several LLM calls
+        and can take a couple of minutes
+        {generateModel != null ? ` · ${modelLabel(generateModel)}` : ''}.
+      </p>
+
       {error != null && <div className="error-note">{error}</div>}
 
       <div className="settings-row">
@@ -253,11 +266,18 @@ function DescribeForm({ disabled }: { disabled: boolean }) {
  * session (sessionStorage id, falling back to the most recent session from
  * the server) so a reload or tab-switch doesn't lose an in-progress chat.
  */
-function BrainstormPane({ disabled }: { disabled: boolean }) {
+function BrainstormPane({
+  disabled,
+  settings,
+}: {
+  disabled: boolean;
+  settings: SettingsInfo | null;
+}) {
   const [session, setSession] = useState<BrainstormSessionRow | null>(null);
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const brainstormModel = resolvedModelFor(settings, 'brainstorm');
 
   // The engine emits 'brainstorm-started' synchronously (before the LLM call
   // even begins) and 'brainstorm-done'/'brainstorm-error' only after it —
@@ -458,6 +478,11 @@ function BrainstormPane({ disabled }: { disabled: boolean }) {
       {session?.status === 'error' && session.errorMessage != null && (
         <div className="error-note">{session.errorMessage}</div>
       )}
+
+      <p className="dialog-note">
+        Each turn costs one LLM call
+        {brainstormModel != null ? ` · ${modelLabel(brainstormModel)}` : ''}.
+      </p>
 
       <form className="brainstorm-composer" onSubmit={onSend}>
         <textarea

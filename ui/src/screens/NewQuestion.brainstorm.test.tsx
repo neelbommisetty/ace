@@ -51,6 +51,14 @@ const CONFIGURED_SETTINGS: SettingsInfo = {
   anthropic: { configured: false, masked: null, baseUrl: null },
   defaultProvider: 'openai',
   mockMode: false,
+  models: {
+    generate: { provider: 'openai', model: 'gpt-5.6-sol' },
+    'edge-audit': { provider: 'openai', model: 'gpt-5.6-terra' },
+    review: { provider: 'openai', model: 'gpt-5.6-sol' },
+    'review-extract': { provider: 'openai', model: 'gpt-5.6-luna' },
+    brainstorm: { provider: 'openai', model: 'gpt-5.6-terra' },
+    dispute: { provider: 'openai', model: 'gpt-5.6-sol' },
+  },
 };
 
 const SESSION_KEY = 'ace-brainstorm-session';
@@ -273,5 +281,13 @@ describe('NewQuestion — brainstorm mode', () => {
     await waitFor(() => expect(screen.getByLabelText('Brainstorm')).toHaveValue(''));
     expect(screen.queryByText('something about React state')).not.toBeInTheDocument();
     expect(getBrainstormSessions).not.toHaveBeenCalled();
+  });
+
+  it('states the per-turn cost and resolved model before Brainstorm/Send is invoked (NEE-303)', async () => {
+    await openBrainstormTab();
+
+    expect(await screen.findByText(/Each turn costs one LLM call/)).toHaveTextContent(
+      'openai/gpt-5.6-terra',
+    );
   });
 });

@@ -282,6 +282,7 @@ function RoomInner({
             stream={review.reviewStream}
             notice={review.reviewNotice}
             justDoneId={review.justDoneId}
+            settings={review.settings}
             onRequest={readonly ? undefined : review.requestReview}
             onCollapse={() => setAiOpen(false)}
           />

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { getSettings, getWorkspace, putSettings } from '../api';
 import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { WorkspaceResetDialog } from '../components/WorkspaceResetDialog';
+import { modelLabel, PURPOSE_LABELS, PURPOSE_ORDER } from '../lib/models';
 import type { SettingsInfo, WorkspaceResetMode } from '../types';
 
 type ProviderKey = 'openai' | 'anthropic';
@@ -120,6 +121,7 @@ export function Settings() {
                 </div>
                 {defaultError != null && <div className="error-note">{defaultError}</div>}
               </section>
+              <ModelsSection info={info} />
             </>
           )}
           <section className="settings-danger-zone">
@@ -183,6 +185,38 @@ export function Settings() {
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Read-only per-purpose model map (NEE-303) — what GET /api/settings resolves
+ * each paid action to right now. Full editability (NEE-274) can follow later;
+ * this just answers "what will actually run" before the user commits to it
+ * on Request review / Dispute / Generate / Brainstorm.
+ */
+function ModelsSection({ info }: { info: SettingsInfo }) {
+  const models = info.models;
+  return (
+    <section className="settings-card">
+      <h2 className="settings-card-title">Models</h2>
+      <p className="settings-hint">Which provider and model each paid action resolves to.</p>
+      {models == null ? (
+        <p className="settings-hint">
+          {info.openai.configured || info.anthropic.configured
+            ? 'Pick a default provider above to resolve models.'
+            : 'Add an API key above to resolve models.'}
+        </p>
+      ) : (
+        <ul className="activity-list">
+          {PURPOSE_ORDER.map((purpose) => (
+            <li key={purpose} className="activity-item">
+              <span>{PURPOSE_LABELS[purpose]}</span>
+              <span className="mono cell-dim">{modelLabel(models[purpose])}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 

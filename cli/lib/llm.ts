@@ -3,6 +3,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import type { z } from 'zod';
 import { loadAceConfig, type AceConfig } from './config.js';
+import type { LLMPurpose } from '../../shared/wire-types.js';
 
 export type LLMProvider = 'openai' | 'anthropic';
 
@@ -157,14 +158,13 @@ export function getDefaultProvider(): LLMProvider | null {
   return available[0];
 }
 
-/** What a given LLM call is for — selects the model via PURPOSE_TIERS + TIER_MODELS below. */
-export type LLMPurpose =
-  | 'generate'
-  | 'edge-audit'
-  | 'review'
-  | 'review-extract'
-  | 'brainstorm'
-  | 'dispute';
+/**
+ * What a given LLM call is for — selects the model via PURPOSE_TIERS +
+ * TIER_MODELS below. Declared in shared/wire-types.ts (GET /api/settings
+ * exposes the resolved map, NEE-303) and re-exported here so the existing
+ * `./llm.js` importers are untouched.
+ */
+export type { LLMPurpose };
 
 /** Capability tier a purpose resolves to — the policy half of the model map. */
 type ModelTier = 'top' | 'mid' | 'basic';
@@ -230,6 +230,22 @@ const TIER_MODELS: Record<LLMProvider, Record<ModelTier, string>> = {
  */
 export function getModelId(provider: LLMProvider, purpose: LLMPurpose): string {
   return TIER_MODELS[provider][PURPOSE_TIERS[purpose]];
+}
+
+/** Every purpose PURPOSE_TIERS resolves — iterated to build the full model map below. */
+const ALL_PURPOSES = Object.keys(PURPOSE_TIERS) as LLMPurpose[];
+
+/**
+ * The full per-purpose model map for one provider — what GET /api/settings
+ * exposes (NEE-303) so paid actions can state their model before invocation
+ * instead of only recording it after the fact.
+ */
+export function getModelMap(provider: LLMProvider): Record<LLMPurpose, string> {
+  const map = {} as Record<LLMPurpose, string>;
+  for (const purpose of ALL_PURPOSES) {
+    map[purpose] = getModelId(provider, purpose);
+  }
+  return map;
 }
 
 // When no fetchImpl is given the factories must receive no `fetch` key at

@@ -99,6 +99,7 @@ const {
   getTestRuns,
   getReviews,
   getDisputes,
+  getSettings,
   getAttempt,
   startFreshAttempt,
   startTestRun,
@@ -128,6 +129,7 @@ const {
     getTestRuns: vi.fn(),
     getReviews: vi.fn(),
     getDisputes: vi.fn(),
+    getSettings: vi.fn(),
     getAttempt: vi.fn(),
     startFreshAttempt: vi.fn(),
     startTestRun: vi.fn(),
@@ -153,6 +155,7 @@ vi.mock('../api', () => ({
   getTestRuns,
   getReviews,
   getDisputes,
+  getSettings,
   getAttempt,
   startFreshAttempt,
   startTestRun,
@@ -241,6 +244,13 @@ beforeEach(() => {
   getTestRuns.mockResolvedValue([]);
   getReviews.mockResolvedValue([]);
   getDisputes.mockResolvedValue([]);
+  getSettings.mockResolvedValue({
+    openai: { configured: true, masked: '...abcd', baseUrl: null },
+    anthropic: { configured: false, masked: null, baseUrl: null },
+    defaultProvider: 'openai',
+    mockMode: false,
+    models: null,
+  });
   getAttempt.mockResolvedValue({ attempt: attemptRow(), events: [] });
   patchAttempt.mockResolvedValue({ attempt: attemptRow() });
   startTestRun.mockResolvedValue({ runId: 'run-new' });

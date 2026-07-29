@@ -234,11 +234,32 @@ export interface ProviderSettings {
   baseUrl: string | null; // vendor default when null; not masked
 }
 
+/**
+ * What a given LLM call is for — mirrors cli/lib/llm.ts's `PURPOSE_TIERS`
+ * keys one-for-one; that file imports this type rather than redeclaring it,
+ * so the wire shape and the resolution policy can never drift apart.
+ */
+export type LLMPurpose = 'generate' | 'edge-audit' | 'review' | 'review-extract' | 'brainstorm' | 'dispute';
+
+/** The exact provider + model id a purpose resolves to right now (NEE-303). */
+export interface ResolvedModel {
+  provider: 'openai' | 'anthropic';
+  model: string;
+}
+
 export interface SettingsInfo {
   openai: ProviderSettings;
   anthropic: ProviderSettings;
   defaultProvider: 'openai' | 'anthropic' | null;
   mockMode: boolean;
+  /**
+   * Per-purpose resolved provider/model (NEE-303), using the same resolution
+   * a real call would (mock mode always resolves to 'openai', matching
+   * `resolveProvider()` in cli/server/settings.ts) — what the UI shows
+   * *before* invoking a paid action. Null when no provider can be resolved
+   * (keyless, non-mock): no model would actually run.
+   */
+  models: Record<LLMPurpose, ResolvedModel> | null;
 }
 
 /**

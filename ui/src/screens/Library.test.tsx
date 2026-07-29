@@ -152,6 +152,7 @@ function settings(overrides: Partial<SettingsInfo> = {}): SettingsInfo {
     anthropic: { configured: false, masked: null, baseUrl: null },
     defaultProvider: 'openai',
     mockMode: false,
+    models: null,
     ...overrides,
   };
 }

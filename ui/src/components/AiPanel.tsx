@@ -5,7 +5,8 @@ import { Link } from 'react-router';
 import { getDebrief, type DebriefResponse } from '../api';
 import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { relTime } from '../lib/format';
-import type { QuestionRow, ReviewRow } from '../types';
+import { isKeyless, modelLabel, resolvedModelFor } from '../lib/models';
+import type { QuestionRow, ReviewRow, SettingsInfo } from '../types';
 import { DimensionBars, ReviewBadge } from './ReviewBadge';
 
 export interface ReviewStream {
@@ -25,6 +26,7 @@ export function AiPanel({
   stream,
   notice,
   justDoneId,
+  settings,
   onRequest,
   onCollapse,
 }: {
@@ -34,6 +36,12 @@ export function AiPanel({
   notice: ReviewNotice | null;
   /** id of a review that finished streaming this session — its body opens expanded */
   justDoneId: string | null;
+  /**
+   * Provider/keyless state (NEE-303) — null while loading. Gates the
+   * "Request review" button the way NewQuestion gates Generate/Brainstorm:
+   * with no key configured, no enabled button is ever rendered.
+   */
+  settings: SettingsInfo | null;
   /** Absent in the readonly reference mode — hides the "Request review" action. */
   onRequest?: () => void;
   onCollapse: () => void;
@@ -42,6 +50,13 @@ export function AiPanel({
   const latest = reviews?.[0] ?? null;
   const past = reviews != null ? reviews.slice(1) : [];
   const hasReviews = (reviews?.length ?? 0) > 0;
+  // Mirrors NewQuestion's formDisabled: while settings haven't loaded yet,
+  // treat the button the same as keyless (hidden) rather than briefly
+  // showing an enabled button that guesses at a good outcome.
+  const settingsLoaded = settings != null;
+  const keyless = isKeyless(settings);
+  const canRequest = settingsLoaded && !keyless;
+  const reviewModel = resolvedModelFor(settings, 'review');
 
   // Debrief (interviewer packet + reference solution) — server-gated: the
   // endpoint 404s until the first review exists, and manual/pre-overhaul
@@ -85,15 +100,23 @@ export function AiPanel({
       <div className="pane-header">
         <span className="pane-title">AI review</span>
         <div className="ai-header-actions">
-          {onRequest && (
+          {onRequest && canRequest && (
             <button
               className="btn btn-small btn-accent"
               disabled={running}
               onClick={onRequest}
-              title="runs an LLM review — needs an API key in Settings"
+              title={
+                reviewModel != null
+                  ? `Costs one LLM call · ${modelLabel(reviewModel)}`
+                  : 'runs an LLM review — needs an API key in Settings'
+              }
             >
               {running && <span className="pulse-dot pulse-dot-on-accent" />}
-              {running ? 'Reviewing…' : 'Request review'}
+              {running
+                ? 'Reviewing…'
+                : reviewModel != null
+                  ? `Request review · ${modelLabel(reviewModel)}`
+                  : 'Request review'}
             </button>
           )}
           <button className="icon-btn" onClick={onCollapse} title="Collapse AI panel">
@@ -102,7 +125,10 @@ export function AiPanel({
         </div>
       </div>
       <div className="pane-scroll" ref={scrollRef} onScroll={onScroll}>
-        {notice?.kind === 'no-key' && (
+        {/* Proactive (settings-derived, before any click) or reactive (a 503
+            slipped through, e.g. a key removed in another tab mid-session) —
+            either way, the same notice instead of an enabled button. */}
+        {((onRequest && keyless) || notice?.kind === 'no-key') && (
           <div className="ai-notice">
             No LLM API key configured —{' '}
             <Link className="ai-notice-link" to="/settings">

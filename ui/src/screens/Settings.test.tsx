@@ -19,6 +19,7 @@ const SETTINGS_INFO: SettingsInfo = {
   anthropic: { configured: false, masked: null, baseUrl: null },
   defaultProvider: null,
   mockMode: false,
+  models: null,
 };
 
 const WORKSPACE_INFO: WorkspaceInfo = {

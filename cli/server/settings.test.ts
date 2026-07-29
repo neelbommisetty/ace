@@ -2,12 +2,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SettingsValidationError, updateSettings } from './settings.js';
-import { validateAnthropicKey, validateOpenAIKey } from '../lib/llm.js';
+import { getSettingsInfo, SettingsValidationError, updateSettings } from './settings.js';
+import { getDefaultProvider, getModelMap, isMockLlm, validateAnthropicKey, validateOpenAIKey } from '../lib/llm.js';
 
 vi.mock('../lib/llm.js', () => ({
   clearConfigCache: vi.fn(),
   getDefaultProvider: vi.fn(() => null),
+  getModelMap: vi.fn(() => ({})),
   isMockLlm: vi.fn(() => false),
   validateAnthropicKey: vi.fn(),
   validateOpenAIKey: vi.fn(),
@@ -15,6 +16,9 @@ vi.mock('../lib/llm.js', () => ({
 
 const mockValidateOpenAI = vi.mocked(validateOpenAIKey);
 const mockValidateAnthropic = vi.mocked(validateAnthropicKey);
+const mockGetDefaultProvider = vi.mocked(getDefaultProvider);
+const mockGetModelMap = vi.mocked(getModelMap);
+const mockIsMockLlm = vi.mocked(isMockLlm);
 
 let tempHome = '';
 const originalEnv = { ...process.env };
@@ -127,5 +131,58 @@ describe('updateSettings base URLs', () => {
       OPENAI_API_KEY: 'new-key',
       OPENAI_BASE_URL: 'http://localhost:4242/v1',
     });
+  });
+});
+
+describe('getSettingsInfo models (NEE-303)', () => {
+  it('is null when no provider resolves (keyless, non-mock)', () => {
+    mockIsMockLlm.mockReturnValue(false);
+    mockGetDefaultProvider.mockReturnValue(null);
+
+    expect(getSettingsInfo().models).toBeNull();
+    expect(mockGetModelMap).not.toHaveBeenCalled();
+  });
+
+  it("wraps getModelMap's ids with the resolved provider for every purpose", () => {
+    mockIsMockLlm.mockReturnValue(false);
+    mockGetDefaultProvider.mockReturnValue('anthropic');
+    mockGetModelMap.mockReturnValue({
+      generate: 'claude-opus-5',
+      'edge-audit': 'claude-sonnet-5',
+      review: 'claude-opus-5',
+      'review-extract': 'claude-haiku-4-5',
+      brainstorm: 'claude-sonnet-5',
+      dispute: 'claude-opus-5',
+    });
+
+    const { models } = getSettingsInfo();
+
+    expect(mockGetModelMap).toHaveBeenCalledWith('anthropic');
+    expect(models).toEqual({
+      generate: { provider: 'anthropic', model: 'claude-opus-5' },
+      'edge-audit': { provider: 'anthropic', model: 'claude-sonnet-5' },
+      review: { provider: 'anthropic', model: 'claude-opus-5' },
+      'review-extract': { provider: 'anthropic', model: 'claude-haiku-4-5' },
+      brainstorm: { provider: 'anthropic', model: 'claude-sonnet-5' },
+      dispute: { provider: 'anthropic', model: 'claude-opus-5' },
+    });
+  });
+
+  it('resolves to openai in mock mode even with getDefaultProvider() null', () => {
+    mockIsMockLlm.mockReturnValue(true);
+    mockGetDefaultProvider.mockReturnValue(null);
+    mockGetModelMap.mockReturnValue({
+      generate: 'mock-top',
+      'edge-audit': 'mock-mid',
+      review: 'mock-top',
+      'review-extract': 'mock-basic',
+      brainstorm: 'mock-mid',
+      dispute: 'mock-top',
+    });
+
+    const { models } = getSettingsInfo();
+
+    expect(mockGetModelMap).toHaveBeenCalledWith('openai');
+    expect(models?.review).toEqual({ provider: 'openai', model: 'mock-top' });
   });
 });

@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type RefObject } from 'react';
-import { ApiError, getDisputes, getReviews, startReview } from '../api';
+import { ApiError, getDisputes, getReviews, getSettings, startReview } from '../api';
 import type { ReviewNotice, ReviewStream } from '../components/AiPanel';
 import { useSseEvent } from '../sse';
 import type {
@@ -7,6 +7,7 @@ import type {
   QuestionFileInfo,
   QuestionRow,
   ReviewRow,
+  SettingsInfo,
   TestRunTrigger,
 } from '../types';
 import { useCancellableEffect } from './useCancellableEffect';
@@ -37,6 +38,10 @@ export function useReviewPanel({
   const [reviewStream, setReviewStream] = useState<ReviewStream | null>(null);
   const [reviewNotice, setReviewNotice] = useState<ReviewNotice | null>(null);
   const [justDoneId, setJustDoneId] = useState<string | null>(null);
+  // Provider/keyless + model-map state for the AiPanel gating and disclosure
+  // (NEE-303) — same getSettings() NewQuestion already calls, fetched here so
+  // Room doesn't need its own copy just to thread it one level down.
+  const [settings, setSettings] = useState<SettingsInfo | null>(null);
 
   useCancellableEffect(
     (cancelled) => {
@@ -55,6 +60,18 @@ export function useReviewPanel({
     },
     [question.category, question.slug],
   );
+
+  useCancellableEffect((cancelled) => {
+    getSettings()
+      .then((info) => {
+        if (!cancelled()) setSettings(info);
+      })
+      .catch(() => {
+        // Leave settings null — AiPanel's keyless check treats null as "not
+        // yet known" and keeps the button hidden rather than risking a
+        // click-then-503 on a guess.
+      });
+  }, []);
 
   const requestReview = useCallback(() => {
     setReviewNotice(null);
@@ -158,6 +175,7 @@ export function useReviewPanel({
     reviewStream,
     reviewNotice,
     justDoneId,
+    settings,
     requestReview,
     disputeModal,
     openDispute,

@@ -8,6 +8,7 @@ import {
 import {
   clearConfigCache,
   getDefaultProvider,
+  getModelMap,
   isMockLlm,
   validateAnthropicKey,
   validateOpenAIKey,
@@ -45,11 +46,24 @@ function toProviderSettings(key: string | undefined, baseUrl: string | undefined
 
 export function getSettingsInfo(): SettingsInfo {
   const config = loadAceConfig();
+  // Same resolution a real call would use (resolveProvider() above) — not
+  // getDefaultProvider() alone, which is null in mock mode even though every
+  // call there actually resolves to 'openai' and returns a mock response.
+  const provider = resolveProvider();
   return {
     openai: toProviderSettings(config.OPENAI_API_KEY, config.OPENAI_BASE_URL),
     anthropic: toProviderSettings(config.ANTHROPIC_API_KEY, config.ANTHROPIC_BASE_URL),
     defaultProvider: getDefaultProvider(),
     mockMode: isMockLlm(),
+    models:
+      provider == null
+        ? null
+        : (Object.fromEntries(
+            Object.entries(getModelMap(provider)).map(([purpose, model]) => [
+              purpose,
+              { provider, model },
+            ]),
+          ) as SettingsInfo['models']),
   };
 }
 
