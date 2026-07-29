@@ -157,10 +157,11 @@ export interface AceDb {
   /** All versions for a question, newest first. */
   listReviews(questionId: string): ReviewRow[];
   /**
-   * Newest review for a question, or null if none — same "a review row
-   * exists" signal `listQuestions` uses to derive `solved` for no-test
-   * categories (NEE-353), so solve-detection here and question-status
-   * derivation there never disagree.
+   * Newest review for a question (by `version`), or null if none — the same
+   * row `listQuestions`' `last_review_verdict` subquery resolves, so the
+   * verdict-aware `solved` rule for no-test categories (NEE-353, NEE-356)
+   * reads identically from `isQuestionSolved` (app.ts) and from
+   * question-status derivation.
    */
   getLatestReview(questionId: string): ReviewRow | null;
 

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { Hono } from 'hono';
 import { hasTests, lookupCategoryConfig } from '../lib/categories.js';
+import { isPositiveVerdict } from '../../shared/verdicts.js';
 import { ScopeError } from './files.js';
 import * as routes from './routes/index.js';
 import type { EngineFactories, WorkspaceSession } from './session.js';
@@ -64,13 +65,15 @@ function hasTestsForQuestion(db: AceDb, questionId: string): boolean {
  *    question's derived status reads in-progress — this predicate keeps
  *    end-verify and status derivation consistent.
  *  - No-test categories (design/behavioral, testFiles: []): a test run can
- *    never exist, so solved instead means "at least one review has been
- *    recorded" — same rule `listQuestions` applies via its `has_review`
- *    subquery.
+ *    never exist, so solved instead means "the LATEST review carries a
+ *    positive verdict" (NEE-356) — same rule `listQuestions` applies via
+ *    its `last_review_verdict` subquery + `isPositiveVerdict`. A 'No Hire'
+ *    (or an unstated verdict) leaves the question unsolved, exactly as a
+ *    failing run does for a test category.
  */
 export function isQuestionSolved(db: AceDb, questionId: string): boolean {
   if (!hasTestsForQuestion(db, questionId)) {
-    return db.getLatestReview(questionId) != null;
+    return isPositiveVerdict(db.getLatestReview(questionId)?.verdict);
   }
   const run = db.getLatestCompletedTestRun(questionId);
   return run != null && run.total != null && run.total > 0 && run.passed === run.total;
@@ -84,14 +87,16 @@ export function isQuestionSolved(db: AceDb, questionId: string): boolean {
  *    left over from a previous attempt (e.g. before a fresh re-attempt was
  *    started) from closing a new attempt as 'solved' the instant it's
  *    created.
- *  - No-test categories: the equivalent recency guard — the latest review
- *    must not predate the attempt's `startedAt`, so a review written for an
- *    earlier attempt can't instantly close a freshly started one.
+ *  - No-test categories: the same positive-verdict rule plus the equivalent
+ *    recency guard — the latest review must carry a positive verdict
+ *    (NEE-356) and must not predate the attempt's `startedAt`, so neither a
+ *    'No Hire' nor a review written for an earlier attempt can close a
+ *    freshly started one.
  */
 export function isAttemptSolved(db: AceDb, attempt: AttemptRow): boolean {
   if (!hasTestsForQuestion(db, attempt.questionId)) {
     const review = db.getLatestReview(attempt.questionId);
-    return review != null && review.at >= attempt.startedAt;
+    return review != null && isPositiveVerdict(review.verdict) && review.at >= attempt.startedAt;
   }
   if (!isQuestionSolved(db, attempt.questionId)) return false;
   const run = db.getLatestCompletedTestRun(attempt.questionId);

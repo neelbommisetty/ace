@@ -263,6 +263,19 @@ function questionDetail(overrides: Partial<QuestionDetail> = {}): QuestionDetail
   };
 }
 
+/**
+ * A behavioral (prose) question's detail: one editable story.md, no test
+ * file — the exact shape questions.ts sends for a `testFiles: []` category
+ * (`kind: 'notes'` for the primary answer file).
+ */
+function proseDetail(): QuestionDetail {
+  return questionDetail({
+    question: questionRow({ category: 'behavioral', slug: 'greatest-failure' }),
+    readme: '# Greatest Failure\n\nTell me about it.',
+    files: [{ name: 'story.md', relPath: 'story.md', kind: 'notes', readonly: false }],
+  });
+}
+
 function renderRoom() {
   return render(
     <MemoryRouter initialEntries={['/q/js-ts/closures']}>
@@ -452,6 +465,25 @@ describe('Room ends the attempt as solved on leaving', () => {
     expect(patchAttempt).not.toHaveBeenCalledWith('att-4', { end: { reason: 'solved' } });
   });
 
+  it('a prose room never claims solved on leaving — its attempt is the server\'s to end (NEE-356)', async () => {
+    const attempt = attemptRow({
+      id: 'att-1',
+      startedAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    createOrResumeAttempt.mockResolvedValue({ attempt });
+    getQuestionDetail.mockResolvedValue(proseDetail());
+
+    const { unmount } = renderRoom();
+    await screen.findByTestId('editor-file:///story.md');
+
+    unmount();
+    await new Promise((r) => setTimeout(r, 0));
+    // No test run can ever exist here, so there is nothing to claim from —
+    // endProseAttemptOnReview (cli/server/reviews.ts) owns this transition.
+    expect(patchAttempt).not.toHaveBeenCalledWith('att-1', { end: { reason: 'solved' } });
+    expect(flushAttemptEnd).not.toHaveBeenCalled();
+  });
+
   it('never claims solved in readonly mode', async () => {
     const latestAttempt = attemptRow({
       id: 'att-3',
@@ -468,5 +500,101 @@ describe('Room ends the attempt as solved on leaving', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(patchAttempt).not.toHaveBeenCalled();
     expect(flushAttemptEnd).not.toHaveBeenCalled();
+  });
+});
+
+// NEE-356: prose (design/behavioral) attempts are ended by the SERVER when
+// their review completes — there is no test run for the client to watch, so
+// the room learns about it from the 'attempt-ended' SSE event and reloads,
+// letting the server decide what the room becomes (readonly reference when
+// the verdict solved it, a fresh attempt when it did not).
+describe('Room reacts to a server-side attempt end (NEE-356)', () => {
+  it('reloads into readonly reference mode when the review closes the attempt as solved', async () => {
+    const attempt = attemptRow({ id: 'att-1', number: 1 });
+    const endedAttempt = attemptRow({
+      id: 'att-1',
+      number: 1,
+      endedAt: new Date().toISOString(),
+      endReason: 'solved',
+    });
+    getQuestionDetail.mockResolvedValue(proseDetail());
+    // first open: live attempt; after the server ends it: readonly reference
+    createOrResumeAttempt.mockResolvedValueOnce({ attempt });
+    createOrResumeAttempt.mockResolvedValueOnce({
+      attempt: null,
+      readonly: true,
+      latestAttempt: endedAttempt,
+    });
+
+    renderRoom();
+    await screen.findByTestId('editor-file:///story.md');
+    expect(screen.queryByText(/read-only reference/)).not.toBeInTheDocument();
+
+    act(() => {
+      emitSse('attempt-ended', {
+        attemptId: 'att-1',
+        questionId: 'q-1',
+        attempt: endedAttempt,
+      });
+    });
+
+    expect(await screen.findByText(/read-only reference/)).toBeInTheDocument();
+    // both affordances the ticket unlocked for prose are now reachable
+    expect(screen.getByRole('button', { name: 'Start new attempt' })).toBeInTheDocument();
+    expect(createOrResumeAttempt).toHaveBeenCalledTimes(2);
+  });
+
+  it('reloads into a fresh editable attempt when the verdict fell short of solved', async () => {
+    const attempt = attemptRow({ id: 'att-1', number: 1 });
+    const endedAttempt = attemptRow({
+      id: 'att-1',
+      number: 1,
+      endedAt: new Date().toISOString(),
+      endReason: 'submitted',
+    });
+    getQuestionDetail.mockResolvedValue(proseDetail());
+    createOrResumeAttempt.mockResolvedValueOnce({ attempt });
+    // unsolved question, no active attempt -> the server mints attempt #2
+    createOrResumeAttempt.mockResolvedValueOnce({ attempt: attemptRow({ id: 'att-2', number: 2 }) });
+
+    renderRoom();
+    await screen.findByTestId('editor-file:///story.md');
+
+    act(() => {
+      emitSse('attempt-ended', {
+        attemptId: 'att-1',
+        questionId: 'q-1',
+        attempt: endedAttempt,
+      });
+    });
+
+    await waitFor(() => {
+      expect(createOrResumeAttempt).toHaveBeenCalledTimes(2);
+    });
+    // still editable — a missed verdict is not a solved question
+    await waitFor(() => {
+      expect(screen.getByTestId('editor-file:///story.md')).not.toHaveAttribute('readonly');
+    });
+    expect(screen.queryByText(/read-only reference/)).not.toBeInTheDocument();
+  });
+
+  it('ignores an attempt-ended for a different attempt', async () => {
+    const attempt = attemptRow({ id: 'att-1', number: 1 });
+    getQuestionDetail.mockResolvedValue(proseDetail());
+    createOrResumeAttempt.mockResolvedValue({ attempt });
+
+    renderRoom();
+    await screen.findByTestId('editor-file:///story.md');
+
+    act(() => {
+      emitSse('attempt-ended', {
+        attemptId: 'att-99',
+        questionId: 'q-other',
+        attempt: attemptRow({ id: 'att-99', endedAt: new Date().toISOString() }),
+      });
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(createOrResumeAttempt).toHaveBeenCalledTimes(1);
   });
 });

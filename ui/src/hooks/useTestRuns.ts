@@ -318,6 +318,15 @@ export function useTestRuns({
   // Either way this is only a client-side hint — the server re-verifies from
   // test_runs (isAttemptSolved) before honoring the claim, so a stale or
   // forged value here is harmless.
+  //
+  // Test categories ONLY, by construction: prose categories (design/
+  // behavioral) have `testFiles: []`, so lastRun stays null forever and
+  // this returns false. That is correct rather than a gap — their attempts
+  // are ended server-side the moment the review completes
+  // (endProseAttemptOnReview in cli/server/reviews.ts, announced as
+  // 'attempt-ended'), because for prose the review, not a test run, is the
+  // thing that finishes the attempt. Do NOT grow a review-based branch
+  // here: it would be a third copy of the solved rule, racing the server's.
   const shouldClaimSolved = useCallback(() => {
     if (attempt == null) return false;
     const r = lastRunRef.current;

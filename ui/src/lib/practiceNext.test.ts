@@ -140,15 +140,17 @@ describe('pickPracticeNext', () => {
 
   // NEE-353: a prose (design/behavioral) question can never have a lastRun,
   // so it can never satisfy the "failed last attempt" tier's `lastRun != null`
-  // check — that tier is inherently test-run-shaped and has no meaningful
-  // prose analog (a completed review always reads as 'solved' regardless of
-  // verdict, so there is no "reviewed but needs another pass" state to
-  // detect). An attempted-but-unreviewed prose question therefore correctly
-  // falls through to the generic in-progress/last-touched tier, same as a
-  // coding question with an inconclusive (zero-test) run above — this is
-  // intentional, not a gap: there is no failure signal for prose without an
-  // actual review verdict-based re-open, which NEE-353 explicitly does not
-  // introduce ("solved" is purely "has a completed review").
+  // check — that tier is inherently test-run-shaped. Prose questions
+  // therefore fall through to the generic in-progress/last-touched tier,
+  // same as a coding question with an inconclusive (zero-test) run above.
+  //
+  // NEE-356 changed WHICH prose questions get here, not the tiering: solved
+  // now requires a positive verdict, so a question whose latest review was
+  // a 'No Hire' reads 'in-progress' and stays a candidate — the whole point
+  // of the ticket was that a failed review used to filter the question out
+  // of this list forever. It still lands in the generic in-progress tier
+  // rather than a "failed" one; surfacing the verdict in the reason line
+  // would need the review row here, which this pure function does not take.
   describe('prose (design/behavioral) tiering', () => {
     it('an unattempted prose question is picked with a "not attempted" reason, same as coding', () => {
       const questions = [
@@ -184,7 +186,30 @@ describe('pickPracticeNext', () => {
       expect(result?.reason).toContain('in progress');
     });
 
-    it('a reviewed (solved) prose question is never suggested', () => {
+    // The NEE-356 regression in one assertion: server-side, a 'No Hire'
+    // review leaves the question 'in-progress' (db.ts listQuestions), and
+    // this list must keep offering exactly that question — it used to read
+    // 'solved' and get filtered out for good.
+    it('a prose question whose review missed the bar (in-progress, no lastRun) is still suggested', () => {
+      const questions = [
+        q({
+          id: 'story-no-hire',
+          category: 'behavioral',
+          stats: {
+            attemptCount: 1,
+            lastRun: null,
+            lastActivityAt: '2026-01-03T00:00:00.000Z',
+            status: 'in-progress',
+            imported: false,
+          },
+        }),
+      ];
+      const result = pickPracticeNext(questions);
+      expect(result?.question.id).toBe('story-no-hire');
+      expect(result?.reason).toContain('in progress');
+    });
+
+    it('a reviewed prose question that cleared the bar (solved) is never suggested', () => {
       const questions = [
         q({
           id: 'story-solved',

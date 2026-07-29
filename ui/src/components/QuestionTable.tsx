@@ -178,12 +178,12 @@ export function QuestionTable({
                     )
                   ) : !categoryHasTests(q.category) ? (
                     // Design/behavioral questions never produce a test run
-                    // (NEE-353) — 'solved' status here means a completed
-                    // review exists, so say that instead of leaving a bare
-                    // '—' that reads as "unknown" rather than "not
-                    // applicable".
+                    // (NEE-353) — 'solved' status here means their latest
+                    // review cleared the hire bar (NEE-356), so say that
+                    // instead of leaving a bare '—' that reads as "unknown"
+                    // rather than "not applicable".
                     q.stats.status === 'solved' ? (
-                      <span className="run-pass" title="Solved via a completed review">
+                      <span className="run-pass" title="Solved — the latest review cleared the hire bar">
                         reviewed
                       </span>
                     ) : (

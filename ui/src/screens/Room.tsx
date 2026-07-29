@@ -30,7 +30,7 @@ import {
   prevInOrder,
 } from '../lib/libraryOrder';
 import { CONSOLE_DEFAULT_HEIGHT, PANE_DEFAULT_WIDTH } from '../lib/paneLayout';
-import { useSseConnected } from '../sse';
+import { useSseConnected, useSseEvent } from '../sse';
 import type { AttemptRow, QuestionDetail, QuestionWithStats, TestRunTrigger } from '../types';
 import { NotFound } from './NotFound';
 
@@ -144,6 +144,17 @@ export function Room() {
       linkQuery: libraryOrderQueryString(searchParams),
     };
   }, [questions, searchParams, category]);
+
+  // The server closes a prose attempt itself when its review completes
+  // (NEE-356) — design/behavioral questions have no test run, so nothing
+  // here can notice that moment. Reload rather than flipping local state:
+  // the room's mode then comes from the same server derivation a normal
+  // open uses (readonly reference when the verdict solved it, a fresh
+  // attempt when it didn't), instead of a second copy of the solved rule
+  // living in the SPA.
+  useSseEvent('attempt-ended', ({ attemptId }) => {
+    if (loaded?.attempt?.id === attemptId) setReloadKey((k) => k + 1);
+  });
 
   if (notFound) {
     return <NotFound message={`No question at ${category}/${slug}.`} />;

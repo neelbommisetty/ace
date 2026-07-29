@@ -263,14 +263,19 @@ describe('POST /api/questions/:category/:slug/attempts', () => {
 
 // NEE-353: no-test categories (design/behavioral, testFiles: []) can never
 // produce a test run, so isQuestionSolved/isAttemptSolved (app.ts) derive
-// solved from a completed review instead — the same rule listQuestions
-// applies (db.ts). These route-level tests exercise the actual regression:
+// solved from a review instead — the same rule listQuestions applies
+// (db.ts). These route-level tests exercise the actual regression:
 // before this fix, isQuestionSolved/isAttemptSolved stayed on the
 // test-run-only definition even though listQuestions had already moved to
 // the review-based one, so a reviewed prose question read 'solved' in the
 // Library but PATCH .../attempts could never accept reason: 'solved' for it
 // and POST .../attempts never returned { readonly: true }.
-describe('prose (no-test category) solved derivation — PATCH/POST /api/attempts (NEE-353)', () => {
+//
+// NEE-356 made every one of those derivations verdict-aware: only a review
+// at the Hire tier or above solves the question, so a 'No Hire' can no
+// longer flip it to solved (and out of "Practice next") behind the user's
+// back.
+describe('prose (no-test category) solved derivation — PATCH/POST /api/attempts (NEE-353, NEE-356)', () => {
   it('a reviewed behavioral question ends solved and reopens readonly', async () => {
     const q = makeProseQuestion('behavioral', 'greatest-failure');
     const attempt = ws.session.db.createAttempt(q.id);
@@ -305,11 +310,11 @@ describe('prose (no-test category) solved derivation — PATCH/POST /api/attempt
     expect(postBody.latestAttempt?.id).toBe(attempt.id);
   });
 
-  it('a reviewed design question ends solved and reopens readonly (deliberate design-semantics change: solved comes from any completed review, not a verdict)', async () => {
+  it('a "No Hire" review never solves a design question: the claim is dropped and reopening mints a fresh, editable attempt (NEE-356)', async () => {
     const q = makeProseQuestion('design-fe', 'infinite-scroll');
     const attempt = ws.session.db.createAttempt(q.id);
-    // A 'No Hire' verdict still counts as a *completed* review — solved
-    // status tracks "has this been assessed", not "did it pass".
+    // A completed review is NOT a pass. Solved needs a positive verdict, so
+    // this question stays unsolved and stays in the practice rotation.
     ws.session.db.createReview({
       questionId: q.id,
       attemptId: null,
@@ -319,17 +324,43 @@ describe('prose (no-test category) solved derivation — PATCH/POST /api/attempt
     });
 
     const fetch = buildApp();
+    // The client's 'solved' claim is re-verified and silently dropped.
     const endRes = await patchAttempt(fetch, attempt.id, { end: { reason: 'solved' } });
     expect(endRes.status).toBe(200);
     const endBody = (await endRes.json()) as { attempt: AttemptRow };
-    expect(endBody.attempt.endedAt).not.toBeNull();
-    expect(endBody.attempt.endReason).toBe('solved');
+    expect(endBody.attempt.endedAt).toBeNull();
+    expect(endBody.attempt.endReason).toBeNull();
 
+    // The server-side end (endProseAttemptOnReview) uses 'submitted' for a
+    // sub-bar verdict; the question is still unsolved, so reopening mints
+    // attempt #2 to revise in rather than a readonly reference.
+    ws.session.db.patchAttempt(attempt.id, { end: { reason: 'submitted' } });
     const postRes = await postAttempts(fetch, q.category, q.slug);
     expect(postRes.status).toBe(200);
-    const postBody = (await postRes.json()) as { attempt: AttemptRow | null; readonly?: boolean };
-    expect(postBody.attempt).toBeNull();
-    expect(postBody.readonly).toBe(true);
+    const postBody = (await postRes.json()) as {
+      attempt: AttemptRow | null;
+      readonly?: boolean;
+    };
+    expect(postBody.readonly).toBeUndefined();
+    expect(postBody.attempt?.number).toBe(2);
+    expect(postBody.attempt?.endedAt).toBeNull();
+  });
+
+  it('a "Lean Hire" review sits below the bar too — same unsolved treatment as "No Hire"', async () => {
+    const q = makeProseQuestion('design-be', 'rate-limiter');
+    const attempt = ws.session.db.createAttempt(q.id);
+    ws.session.db.createReview({
+      questionId: q.id,
+      attemptId: null,
+      bodyMd: 'Almost there.',
+      verdict: 'Lean Hire',
+      source: 'user',
+    });
+
+    const fetch = buildApp();
+    const endRes = await patchAttempt(fetch, attempt.id, { end: { reason: 'solved' } });
+    const endBody = (await endRes.json()) as { attempt: AttemptRow };
+    expect(endBody.attempt.endedAt).toBeNull();
   });
 
   it('an attempted-but-unreviewed prose question is not solved: end reason "solved" is ignored and the attempt stays open/editable', async () => {

@@ -434,6 +434,16 @@ export interface SseEventMap {
     results: TestCaseResult[] | null;
     errorMessage: string | null;
   };
+  /**
+   * The SERVER closed an attempt on its own (NEE-356). Only prose
+   * categories (design/behavioral, `testFiles: []`) produce this: they have
+   * no test run for the client to watch, so the review completing IS the
+   * end of the attempt — no client-side signal exists for that moment. The
+   * Room reloads on it and lets the server re-derive the room's mode
+   * (readonly reference vs. a fresh attempt), rather than keeping a second
+   * copy of the solved rule in the SPA.
+   */
+  'attempt-ended': { attemptId: string; questionId: string; attempt: AttemptRow };
   'review-started': { jobId: string; questionId: string; kind: 'code' | 'design' | 'behavioral' };
   'review-chunk': { jobId: string; chunk: string };
   'review-done': { jobId: string; questionId: string; review: ReviewRow };

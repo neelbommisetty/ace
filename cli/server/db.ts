@@ -40,6 +40,7 @@ import type {
   TestRunTrigger,
 } from './types.js';
 import { CATEGORIES, CATEGORY_SLUGS, hasTests } from '../lib/categories.js';
+import { isPositiveVerdict } from '../../shared/verdicts.js';
 import { nowIso, uuidv7 } from './ids.js';
 import { MIGRATIONS } from './migrations.js';
 
@@ -48,11 +49,13 @@ const SCHEMA_VERSION_KEY = 'schema_version';
 /**
  * Category slugs with an empty `testFiles` (design/behavioral, NEE-353) —
  * these can never produce a test run, so `listQuestions` derives their
- * `solved` status from a completed review instead. Computed once from
- * `CATEGORIES` so the SQL below never hardcodes a slug. `isQuestionSolved` /
- * `isAttemptSolved` (app.ts) encode the identical no-test-category rule
- * per-question via `hasTests`/`lookupCategoryConfig` instead of this
- * precomputed set — keep both sites in sync if the rule ever changes.
+ * `solved` status from the latest review's VERDICT instead (NEE-356).
+ * Computed once from `CATEGORIES` so the SQL below never hardcodes a slug.
+ * `isQuestionSolved` / `isAttemptSolved` (app.ts) encode the identical
+ * no-test-category rule per-question via `hasTests`/`lookupCategoryConfig`
+ * instead of this precomputed set, and share the verdict half through
+ * `isPositiveVerdict` — keep all three sites in sync if the rule ever
+ * changes.
  */
 const NO_TEST_CATEGORY_SLUGS = CATEGORY_SLUGS.filter((slug) => !hasTests(CATEGORIES[slug]));
 
@@ -386,12 +389,14 @@ class SqliteAceDb implements AceDb {
       "AND t.status IN ('done', 'compile-error') " +
       'ORDER BY t.at DESC, t.id DESC LIMIT 1';
     // Categories with no test suite (design/behavioral, NEE-353) can never
-    // produce a test run, so their `solved` status comes from having at
-    // least one review instead — reviews are only ever persisted in full
-    // (createReview inserts one row, atomically, once the streamed body is
-    // complete; there is no pending/partial row), so "has a review row" IS
-    // "has a completed review". The slug set is a bound parameter, not
-    // interpolated, so this SQL never hardcodes a category.
+    // produce a test run, so their `solved` status comes from the LATEST
+    // review's verdict instead (NEE-356) — reviews are only ever persisted
+    // in full (createReview inserts one row, atomically, once the streamed
+    // body is complete; there is no pending/partial row), so a review row
+    // IS a completed review. `ORDER BY version DESC` is byte-consistent
+    // with AceDb.getLatestReview, which is what isQuestionSolved (app.ts)
+    // reads — the two must resolve the same row. The slug set is a bound
+    // parameter, not interpolated, so this SQL never hardcodes a category.
     const noTestPlaceholders = NO_TEST_CATEGORY_SLUGS.map(() => '?').join(', ');
     const categoryHasNoTests =
       NO_TEST_CATEGORY_SLUGS.length > 0 ? `q.category IN (${noTestPlaceholders})` : '0';
@@ -406,7 +411,8 @@ class SqliteAceDb implements AceDb {
         (${latestDone.replace('%COL%', 'status')}) AS last_done_status,
         (SELECT MAX(t.at) FROM test_runs t WHERE t.question_id = q.id) AS last_run_at,
         (${categoryHasNoTests}) AS category_has_no_tests,
-        EXISTS (SELECT 1 FROM reviews rv WHERE rv.question_id = q.id) AS has_review
+        (SELECT rv.verdict FROM reviews rv WHERE rv.question_id = q.id
+         ORDER BY rv.version DESC LIMIT 1) AS last_review_verdict
       FROM questions q
       ORDER BY q.category, q.slug`,
     ).all(...NO_TEST_CATEGORY_SLUGS) as SqlRow[];
@@ -423,13 +429,17 @@ class SqliteAceDb implements AceDb {
             }
           : null;
       const categoryHasNoTests = r.category_has_no_tests === 1;
-      const hasReview = r.has_review === 1;
+      const lastReviewVerdict = r.last_review_verdict as string | null;
       let status: QuestionStatus = 'not-attempted';
       if (categoryHasNoTests) {
-        // No test suite exists to derive status from — a completed review
-        // is the only signal (NEE-353). The review's verdict is irrelevant:
-        // any completed review means the question has been assessed.
-        if (hasReview) {
+        // No test suite exists to derive status from — the latest review's
+        // verdict is the only signal (NEE-353, verdict-aware since
+        // NEE-356). Solved requires a POSITIVE verdict: a 'No Hire' means
+        // the question was assessed and missed, and must stay in-progress
+        // so the Library and "Practice next" keep offering it. Latest
+        // review wins, mirroring the latest-run-wins rule in the test
+        // branch below and isQuestionSolved's getLatestReview (app.ts).
+        if (isPositiveVerdict(lastReviewVerdict)) {
           status = 'solved';
         } else if (attemptCount > 0) {
           status = 'in-progress';

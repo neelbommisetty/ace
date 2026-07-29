@@ -167,6 +167,56 @@ describe('POST /api/questions/:category/:slug/probes', () => {
     expect(res.status).toBe(202);
   });
 
+  // NEE-356: the per-attempt bound above was effectively "one round EVER"
+  // for prose questions, because their attempts never ended and so no
+  // second attempt was reachable. The probes route itself needed no change
+  // — this walks the now-unlocked loop through the real routes to prove it.
+  it('a second attempt, unlocked by the review that ended the first, gets a fresh probe round (NEE-356)', async () => {
+    setProviderConfigured();
+    const question = scaffoldStory('conflict-second-round', { story: REAL_STORY });
+    const fetch = buildApp();
+    const attemptsUrl = `/api/questions/behavioral/${question.slug}/attempts`;
+    const probesUrl = `/api/questions/behavioral/${question.slug}/probes`;
+
+    const first = (await (await fetch(attemptsUrl, { method: 'POST' })).json()) as {
+      attempt: { id: string; number: number };
+    };
+    expect(first.attempt.number).toBe(1);
+
+    // Round 1 lands, and the bound holds within the attempt.
+    ws.session.db.createProbeSet({
+      questionId: question.id,
+      attemptId: first.attempt.id,
+      probes: [{ question: 'What would the other engineer say?', source: 'derived' }],
+      model: 'claude-sonnet-5',
+    });
+    expect((await fetch(probesUrl, { method: 'POST' })).status).toBe(409);
+
+    // The review completes: reviews.ts persists it and closes the attempt
+    // (endProseAttemptOnReview) — 'submitted' here, since the verdict fell
+    // short of the hire bar and must not mark the question solved.
+    ws.session.db.createReview({
+      questionId: question.id,
+      attemptId: first.attempt.id,
+      bodyMd: 'The conflict is described but the resolution is thin.',
+      verdict: 'No Hire',
+      source: 'user',
+    });
+    ws.session.db.patchAttempt(first.attempt.id, { end: { reason: 'submitted' } });
+
+    // Reopening the room mints attempt #2 (the question is NOT solved, so
+    // this is an editable attempt, not a readonly reference).
+    const second = (await (await fetch(attemptsUrl, { method: 'POST' })).json()) as {
+      attempt: { id: string; number: number } | null;
+      readonly?: boolean;
+    };
+    expect(second.readonly).toBeUndefined();
+    expect(second.attempt?.number).toBe(2);
+
+    // …and that fresh attempt has its own probe budget.
+    expect((await fetch(probesUrl, { method: 'POST' })).status).toBe(202);
+  });
+
   it('503s keyless', async () => {
     const question = scaffoldStory('conflict-keyless', { story: REAL_STORY });
     const fetch = buildApp();

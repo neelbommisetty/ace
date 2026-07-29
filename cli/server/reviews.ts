@@ -2,11 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import {
+  hasTests,
   isProseAnswer,
   lookupCategoryConfig,
   type CategoryConfig,
   type QuestionType,
 } from '../lib/categories.js';
+import { isPositiveVerdict } from '../../shared/verdicts.js';
 import { chatObject, chatStream, getModelId, type LLMMessage } from '../lib/llm.js';
 import { readFileOr } from '../lib/read-file-or.js';
 import { buildQuestionSection, buildSystemPrompt } from '../lib/prompt-builder.js';
@@ -19,7 +21,13 @@ import { uuidv7 } from './ids.js';
 import { createJobRegistry } from './job-engine.js';
 import { resolveProvider } from './settings.js';
 import type { Bus } from './sse.js';
-import type { AceDb, QuestionRow } from './types.js';
+import type {
+  AceDb,
+  AttemptEndReason,
+  AttemptRow,
+  QuestionRow,
+  ReviewRow,
+} from './types.js';
 
 const CHUNK_FLUSH_MS = 50;
 // 180s: the charter-driven review prompt is beefier than its predecessor.
@@ -351,6 +359,58 @@ ${testContent}`;
 }
 
 // ---------------------------------------------------------------------------
+// Attempt end for prose categories (NEE-356)
+// ---------------------------------------------------------------------------
+
+/**
+ * Ends the active attempt of a no-test question when its review completes.
+ *
+ * Coding categories end their attempt client-side (useTestRuns' claim-on-
+ * leave, re-verified by `isAttemptSolved`) because a test run is the thing
+ * that marks the work done. Prose categories have `testFiles: []`, so that
+ * signal can never fire — before this, a design/behavioral attempt stayed
+ * open forever, which in turn made readonly reference mode, "Start new
+ * attempt" and a second round of follow-up probes unreachable. The review
+ * completing IS the end of the attempt here.
+ *
+ * The end reason carries the verdict, using the SAME positive-verdict rule
+ * `isQuestionSolved`/`listQuestions` derive `solved` from: 'solved' when
+ * the review cleared the bar, 'submitted' when it did not (the answer was
+ * assessed, just not passed) — so a 'No Hire' attempt closes without ever
+ * claiming the question is solved.
+ *
+ * Exported for the engine tests; `null` when nothing was ended.
+ */
+export function endProseAttemptOnReview(opts: {
+  db: AceDb;
+  bus: Bus;
+  question: QuestionRow;
+  config: CategoryConfig;
+  /** The attempt the review was started for (routes/reviews.ts), if any. */
+  attemptId: string | null;
+  review: ReviewRow;
+}): AttemptRow | null {
+  const { db, bus, question, config, attemptId, review } = opts;
+  if (hasTests(config)) return null;
+  const active = db.getActiveAttempt(question.id);
+  if (active == null) return null;
+  // A fresh attempt started while the review was streaming is NOT the one
+  // this review assessed — leave it open. (attemptId is null only when the
+  // review was requested with no active attempt at all, e.g. from a
+  // readonly room; then whatever is active now was started afterwards too,
+  // so it is left alone as well.)
+  if (active.id !== attemptId) return null;
+  const reason: AttemptEndReason = isPositiveVerdict(review.verdict) ? 'solved' : 'submitted';
+  const ended = db.patchAttempt(active.id, { end: { reason } });
+  bus.emit('attempt-ended', {
+    attemptId: ended.id,
+    questionId: question.id,
+    attempt: ended,
+  });
+  return ended;
+}
+
+// ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
 
@@ -573,6 +633,15 @@ export function createReviewEngine(opts: {
       }
       run.done();
       bus.emit('review-done', { jobId, questionId: question.id, review });
+      // Prose categories only (NEE-356): the review IS the end of the
+      // attempt. Best-effort and strictly after 'review-done' — a db hiccup
+      // while closing the attempt must never turn a completed, persisted,
+      // already-announced review into a 'review-error'.
+      try {
+        endProseAttemptOnReview({ db, bus, question, config, attemptId, review });
+      } catch {
+        // the attempt stays open; the review itself is safe
+      }
     } catch (err) {
       // Persist nothing on failure — the partial text already traveled via
       // chunks, so flush whatever is buffered before announcing the error.

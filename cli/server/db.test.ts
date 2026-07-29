@@ -810,10 +810,12 @@ describe('question stats', () => {
 
 // NEE-353: categories with testFiles: [] (design-fe/design-be/design-full,
 // behavioral) can never produce a test run, so listQuestions derives their
-// `solved` status from a completed review instead. Coding categories keep
-// the pre-existing test-run-only derivation, asserted unchanged above.
-describe('question stats — no-test categories (NEE-353)', () => {
-  it('a behavioral question is not-attempted until an attempt exists, in-progress once attempted, solved once reviewed', () => {
+// `solved` status from a review instead. NEE-356 made that derivation
+// verdict-aware: only the LATEST review, and only at the Hire tier or
+// above, counts as solved. Coding categories keep the pre-existing
+// test-run-only derivation, asserted unchanged above.
+describe('question stats — no-test categories (NEE-353, verdict-aware NEE-356)', () => {
+  it('a behavioral question is not-attempted until an attempt exists, in-progress once attempted, solved once reviewed at the hire bar', () => {
     const q = makeQuestion({ category: 'behavioral', slug: 'greatest-failure' });
     expect(db.listQuestions()[0].stats.status).toBe('not-attempted');
 
@@ -830,7 +832,7 @@ describe('question stats — no-test categories (NEE-353)', () => {
     expect(db.listQuestions()[0].stats.status).toBe('solved');
   });
 
-  it('a design question reads solved from a review regardless of verdict (design semantics change is intentional)', () => {
+  it('a "No Hire" review leaves a design question in-progress (NEE-356) — the app must keep suggesting it', () => {
     const q = makeQuestion({ category: 'design-fe', slug: 'infinite-scroll' });
     db.createAttempt(q.id);
     db.createReview({
@@ -840,7 +842,58 @@ describe('question stats — no-test categories (NEE-353)', () => {
       verdict: 'No Hire',
       source: 'user',
     });
+    expect(db.listQuestions()[0].stats.status).toBe('in-progress');
+  });
+
+  it('a review that states no verdict at all never solves a prose question', () => {
+    const q = makeQuestion({ category: 'behavioral', slug: 'verdictless' });
+    db.createAttempt(q.id);
+    db.createReview({ questionId: q.id, attemptId: null, bodyMd: 'Good.', source: 'user' });
+    expect(db.listQuestions()[0].stats.status).toBe('in-progress');
+  });
+
+  it('"Lean Hire" sits below the bar; a later "Strong Hire" solves it — latest review wins', () => {
+    const q = makeQuestion({ category: 'design-be', slug: 'rate-limiter-retry' });
+    db.createAttempt(q.id);
+    db.createReview({
+      questionId: q.id,
+      attemptId: null,
+      bodyMd: 'Hedging.',
+      verdict: 'Lean Hire',
+      source: 'user',
+    });
+    expect(db.listQuestions()[0].stats.status).toBe('in-progress');
+
+    db.createReview({
+      questionId: q.id,
+      attemptId: null,
+      bodyMd: 'Much sharper this time.',
+      verdict: 'Strong Hire',
+      source: 'user',
+    });
     expect(db.listQuestions()[0].stats.status).toBe('solved');
+  });
+
+  it('a later "No Hire" re-review un-solves a previously solved prose question — latest review wins, exactly as the latest run does for coding', () => {
+    const q = makeQuestion({ category: 'behavioral', slug: 'regressed-story' });
+    db.createAttempt(q.id);
+    db.createReview({
+      questionId: q.id,
+      attemptId: null,
+      bodyMd: 'Great.',
+      verdict: 'Hire',
+      source: 'user',
+    });
+    expect(db.listQuestions()[0].stats.status).toBe('solved');
+
+    db.createReview({
+      questionId: q.id,
+      attemptId: null,
+      bodyMd: 'The rewrite lost the conflict entirely.',
+      verdict: 'No Hire',
+      source: 'user',
+    });
+    expect(db.listQuestions()[0].stats.status).toBe('in-progress');
   });
 
   it('a no-test question with zero attempts and zero reviews is not-attempted, never solved', () => {
@@ -851,7 +904,13 @@ describe('question stats — no-test categories (NEE-353)', () => {
   it('never produces a test run for a no-test category, so lastRun always stays null', () => {
     const q = makeQuestion({ category: 'behavioral', slug: 'conflict-story' });
     db.createAttempt(q.id);
-    db.createReview({ questionId: q.id, attemptId: null, bodyMd: 'Good.', source: 'user' });
+    db.createReview({
+      questionId: q.id,
+      attemptId: null,
+      bodyMd: 'Good.',
+      verdict: 'Hire',
+      source: 'user',
+    });
     const stats = db.listQuestions().find((x) => x.id === q.id)!.stats;
     expect(stats.status).toBe('solved');
     expect(stats.lastRun).toBeNull();
