@@ -519,7 +519,10 @@ export interface SseEventMap {
    * workspace switch did.
    */
   hello: { version: string; workspaceRoot: string | null; epoch: string | null };
-  /** A file changed on disk from OUTSIDE the server (VS Code etc.). */
+  /** A file on disk changed. Since NEE-359 the watcher broadcasts this
+   * unconditionally — an external editor (VS Code etc.), a server-side append
+   * (probes/dispute), and a tab's own PUT all emit it. Each client suppresses
+   * its own echo locally via `hash === savedHash`, which is per-tab correct. */
   'file-changed': { relPath: string; hash: string };
   /** Question dirs were added/removed; clients should refetch the library. */
   'questions-changed': Record<string, never>;

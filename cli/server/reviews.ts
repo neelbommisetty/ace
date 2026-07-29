@@ -662,8 +662,11 @@ export function createReviewEngine(opts: {
         // text already accumulated — e.g. the watchdog aborting a stalled
         // connection after the model wrote a partial body. Same salvage
         // convention as the db-write failure path above (.ace/tmp is wiped
-        // at boot, so salvage lives directly under .ace/).
-        if (fullText.length > 0) {
+        // at boot, so salvage lives directly under .ace/). Skip when the
+        // message already names a salvage path — the db-persist catch above
+        // rethrows through here after salvaging, and we must not name the
+        // same file twice (once "full", once "partial").
+        if (fullText.length > 0 && !message.includes('salvaged to')) {
           const salvagePath = path.join(workspaceRoot, '.ace', `review-salvage-${jobId}.md`);
           try {
             fs.writeFileSync(salvagePath, fullText, 'utf8');
