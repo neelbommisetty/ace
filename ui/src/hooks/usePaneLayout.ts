@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import {
   CONSOLE_DEFAULT_HEIGHT,
   CONSOLE_MIN_HEIGHT,
@@ -22,6 +23,15 @@ export interface PaneLayout {
   paneMax: number;
   consoleMin: number;
   consoleMax: number;
+  /**
+   * Attach these to the rendered pane-slot elements. Before any drag has
+   * ever written a stored value, resize* measures the pane's *actual*
+   * on-screen size (CSS-driven) via these refs instead of falling back to a
+   * fixed default that can diverge arbitrarily from what's rendered.
+   */
+  problemRef: RefObject<HTMLDivElement | null>;
+  aiRef: RefObject<HTMLDivElement | null>;
+  consoleRef: RefObject<HTMLDivElement | null>;
   /** Applies a raw pixel delta (positive = right/down) to the stored width/height, clamped to current bounds. */
   resizeProblem: (deltaPx: number) => void;
   resizeAi: (deltaPx: number) => void;
@@ -53,6 +63,9 @@ export function usePaneLayout(): PaneLayout {
     width: window.innerWidth,
     height: window.innerHeight,
   }));
+  const problemRef = useRef<HTMLDivElement | null>(null);
+  const aiRef = useRef<HTMLDivElement | null>(null);
+  const consoleRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const reclamp = () => {
@@ -70,13 +83,26 @@ export function usePaneLayout(): PaneLayout {
 
   const resizeProblem = (deltaPx: number) =>
     setProblemWidth((w) =>
-      clampPaneWidth('problem', (w ?? PANE_DEFAULT_WIDTH.problem) + deltaPx, window.innerWidth),
+      clampPaneWidth(
+        'problem',
+        (w ?? problemRef.current?.getBoundingClientRect().width ?? PANE_DEFAULT_WIDTH.problem) + deltaPx,
+        window.innerWidth,
+      ),
     );
   const resizeAi = (deltaPx: number) =>
-    setAiWidth((w) => clampPaneWidth('ai', (w ?? PANE_DEFAULT_WIDTH.ai) + deltaPx, window.innerWidth));
+    setAiWidth((w) =>
+      clampPaneWidth(
+        'ai',
+        (w ?? aiRef.current?.getBoundingClientRect().width ?? PANE_DEFAULT_WIDTH.ai) + deltaPx,
+        window.innerWidth,
+      ),
+    );
   const resizeConsole = (deltaPx: number) =>
     setConsoleHeight((h) =>
-      clampConsoleHeight((h ?? CONSOLE_DEFAULT_HEIGHT) + deltaPx, window.innerHeight),
+      clampConsoleHeight(
+        (h ?? consoleRef.current?.getBoundingClientRect().height ?? CONSOLE_DEFAULT_HEIGHT) + deltaPx,
+        window.innerHeight,
+      ),
     );
 
   return {
@@ -88,6 +114,9 @@ export function usePaneLayout(): PaneLayout {
     paneMax: PANE_MAX_WIDTH,
     consoleMin: CONSOLE_MIN_HEIGHT,
     consoleMax: maxConsoleHeight(viewport.height),
+    problemRef,
+    aiRef,
+    consoleRef,
     resizeProblem,
     resizeAi,
     resizeConsole,

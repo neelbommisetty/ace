@@ -293,6 +293,7 @@ function RoomInner({
         {problemOpen ? (
           <>
             <div
+              ref={layout.problemRef}
               className="pane-slot-problem"
               style={layout.problemWidth != null ? { width: `${layout.problemWidth}px` } : undefined}
             >
@@ -349,6 +350,7 @@ function RoomInner({
           {hasTests &&
             (consoleOpen ? (
               <div
+                ref={layout.consoleRef}
                 className="console-slot"
                 style={layout.consoleHeight != null ? { height: `${layout.consoleHeight}px` } : undefined}
               >
@@ -405,6 +407,7 @@ function RoomInner({
               onReset={layout.resetAi}
             />
             <div
+              ref={layout.aiRef}
               className="pane-slot-ai"
               style={layout.aiWidth != null ? { width: `${layout.aiWidth}px` } : undefined}
             >
