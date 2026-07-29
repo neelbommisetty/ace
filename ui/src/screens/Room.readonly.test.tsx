@@ -305,7 +305,7 @@ describe('Room readonly reference mode', () => {
     // that is normally editable — the regression is a crash on
     // `loaded.attempt.id` before this file was ever rendered at all.
     await waitFor(() => {
-      expect(screen.getAllByTitle('Test file — read-only in M1')).toHaveLength(2);
+      expect(screen.getAllByTitle('Generated tests are read-only — dispute a failing assertion to propose a fix')).toHaveLength(2);
     });
     const editor = screen.getByTestId('editor-file:///solution.ts');
     expect(editor).toHaveAttribute('readonly');
@@ -357,7 +357,7 @@ describe('Room readonly reference mode', () => {
     });
     expect(screen.queryByText(/read-only reference/)).not.toBeInTheDocument();
     // the editable solution file has no lock badge; only the test file does
-    expect(screen.getAllByTitle('Test file — read-only in M1')).toHaveLength(1);
+    expect(screen.getAllByTitle('Generated tests are read-only — dispute a failing assertion to propose a fix')).toHaveLength(1);
     expect(screen.getByText('00:42')).toBeInTheDocument();
   });
 });

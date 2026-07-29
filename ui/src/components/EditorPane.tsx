@@ -76,7 +76,10 @@ export function EditorPane({
               title={info.relPath}
             >
               {info.readonly && (
-                <span className="lock-badge" title="Test file — read-only in M1">
+                <span
+                  className="lock-badge"
+                  title="Generated tests are read-only — dispute a failing assertion to propose a fix"
+                >
                   🔒
                 </span>
               )}

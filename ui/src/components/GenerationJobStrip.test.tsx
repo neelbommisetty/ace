@@ -145,6 +145,7 @@ function renderStrip() {
 afterEach(() => {
   vi.clearAllMocks();
   sseHandlers.clear();
+  localStorage.clear();
 });
 
 describe('GenerationJobStrip', () => {
@@ -314,6 +315,62 @@ describe('GenerationJobStrip', () => {
       renderStrip();
 
       expect(await screen.findByText(/1:40:0\d/)).toBeInTheDocument();
+    });
+  });
+
+  describe('dismiss / clear finished (NEE-309)', () => {
+    it('dismisses a single finished card and persists the dismissal in localStorage', async () => {
+      getGenerationJobs.mockResolvedValue({
+        jobs: [job({ id: 'job-1', status: 'done', title: 'Closures', slug: 'closures' })],
+      });
+      renderStrip();
+      await screen.findByText('Closures');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Dismiss card' }));
+
+      expect(screen.queryByText('Closures')).toBeNull();
+      expect(JSON.parse(localStorage.getItem('ace-dismissed-generation-jobs')!)).toEqual(['job-1']);
+    });
+
+    it('does not offer a dismiss control on a running card', async () => {
+      getGenerationJobs.mockResolvedValue({ jobs: [job({ status: 'running' })] });
+      renderStrip();
+      await screen.findByText('closures and scope');
+
+      expect(screen.queryByRole('button', { name: 'Dismiss card' })).toBeNull();
+    });
+
+    it('a dismissed job stays hidden across a remount (persisted)', async () => {
+      getGenerationJobs.mockResolvedValue({
+        jobs: [job({ id: 'job-1', status: 'done', title: 'Closures', slug: 'closures' })],
+      });
+      const { unmount } = renderStrip();
+      await screen.findByText('Closures');
+      fireEvent.click(screen.getByRole('button', { name: 'Dismiss card' }));
+      unmount();
+
+      renderStrip();
+      await waitFor(() => expect(getGenerationJobs).toHaveBeenCalledTimes(2));
+      expect(screen.queryByText('Closures')).toBeNull();
+    });
+
+    it('"Clear finished" dismisses every terminal card but leaves running ones', async () => {
+      getGenerationJobs.mockResolvedValue({
+        jobs: [
+          job({ id: 'job-1', status: 'done', title: 'Closures', slug: 'closures' }),
+          job({ id: 'job-2', status: 'error', errorMessage: 'boom', topic: 'promises' }),
+          job({ id: 'job-3', status: 'running', topic: 'still going' }),
+        ],
+      });
+      renderStrip();
+      await screen.findByText('Closures');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Clear finished' }));
+
+      expect(screen.queryByText('Closures')).toBeNull();
+      expect(screen.queryByText('boom')).toBeNull();
+      expect(screen.getByText('still going')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Clear finished' })).toBeNull();
     });
   });
 

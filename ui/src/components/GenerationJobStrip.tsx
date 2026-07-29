@@ -35,6 +35,32 @@ function isTerminal(job: GenerationJobRow): boolean {
   return job.status === 'done' || job.status === 'error';
 }
 
+// Dismissed-card ids (NEE-309): the server keeps returning terminal jobs up
+// to its GET limit (20), so the strip filters them out on the client instead.
+// Persisted in localStorage — a dismissed card stays dismissed across a
+// reload — and keyed by job id so re-running/retrying the same job (a fresh
+// id) isn't affected by a prior dismissal.
+const DISMISSED_KEY = 'ace-dismissed-generation-jobs';
+
+function loadDismissed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DISMISSED_KEY);
+    if (raw == null) return new Set();
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.filter((v) => typeof v === 'string')) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDismissed(ids: Set<string>): void {
+  try {
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify([...ids]));
+  } catch {
+    // best-effort persistence only
+  }
+}
+
 // Anchored to the current run (runStartedAt) rather than job creation, so a
 // retried job's clock restarts at 0:00 instead of counting from the original
 // attempt (NEE-277); the caller falls back to createdAt when the server
@@ -54,6 +80,15 @@ export function GenerationJobStrip() {
   const [jobs, setJobs] = useState<GenerationJobRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [, setTick] = useState(0);
+  const [dismissed, setDismissed] = useState<Set<string>>(() => loadDismissed());
+
+  const dismiss = (jobId: string) => {
+    setDismissed((prev) => {
+      const next = new Set(prev).add(jobId);
+      saveDismissed(next);
+      return next;
+    });
+  };
   // Ephemeral pipeline phase per jobId — SSE-only local state (not on the job
   // row): after a reload active cards just show the generic label again.
   const [phases, setPhases] = useState<Map<string, JobPhase>>(new Map());
@@ -173,16 +208,51 @@ export function GenerationJobStrip() {
 
   if (!loaded || jobs.length === 0) return null;
 
+  const visibleJobs = jobs.filter((job) => !dismissed.has(job.id));
+  if (visibleJobs.length === 0) return null;
+
+  const anyFinished = visibleJobs.some(isTerminal);
+
   return (
     <div className="job-strip">
-      {jobs.map((job) => (
-        <GenerationJobCard key={job.id} job={job} jobPhase={phases.get(job.id)} />
+      {anyFinished && (
+        <div className="job-strip-actions">
+          <button
+            className="btn btn-small"
+            onClick={() => {
+              setDismissed((prev) => {
+                const next = new Set(prev);
+                for (const job of visibleJobs) if (isTerminal(job)) next.add(job.id);
+                saveDismissed(next);
+                return next;
+              });
+            }}
+          >
+            Clear finished
+          </button>
+        </div>
+      )}
+      {visibleJobs.map((job) => (
+        <GenerationJobCard
+          key={job.id}
+          job={job}
+          jobPhase={phases.get(job.id)}
+          onDismiss={isTerminal(job) ? () => dismiss(job.id) : undefined}
+        />
       ))}
     </div>
   );
 }
 
-function GenerationJobCard({ job, jobPhase }: { job: GenerationJobRow; jobPhase?: JobPhase }) {
+function GenerationJobCard({
+  job,
+  jobPhase,
+  onDismiss,
+}: {
+  job: GenerationJobRow;
+  jobPhase?: JobPhase;
+  onDismiss?: () => void;
+}) {
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   // Step-log drawer (NEE-272). `everOpened` keeps the drawer MOUNTED (just
@@ -229,6 +299,16 @@ function GenerationJobCard({ job, jobPhase }: { job: GenerationJobRow; jobPhase?
       {drawerOpen ? '▾' : '▸'}
     </button>
   );
+  const dismissBtn = onDismiss ? (
+    <button
+      className="icon-btn job-card-dismiss"
+      aria-label="Dismiss card"
+      title="Dismiss"
+      onClick={onDismiss}
+    >
+      ×
+    </button>
+  ) : null;
   const drawer = everOpened ? (
     <div className="job-card-drawer" hidden={!drawerOpen} data-testid={`job-drawer-${job.id}`}>
       <AiRunDrawer refId={job.id} />
@@ -266,6 +346,7 @@ function GenerationJobCard({ job, jobPhase }: { job: GenerationJobRow; jobPhase?
             Open room →
           </Link>
           {caret}
+          {dismissBtn}
         </div>
         {drawer}
       </div>
@@ -288,6 +369,7 @@ function GenerationJobCard({ job, jobPhase }: { job: GenerationJobRow; jobPhase?
           {resumable ? 'Retry (no new LLM call)' : 'Retry'}
         </button>
         {caret}
+        {dismissBtn}
       </div>
       {drawer}
     </div>

@@ -1,10 +1,13 @@
-import { useCallback, useRef, useState } from 'react';
-import { useParams } from 'react-router';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import type { RefObject } from 'react';
+import type { OnMount } from '@monaco-editor/react';
+import { Link, useParams } from 'react-router';
 import { ApiError, createOrResumeAttempt, getQuestionDetail, startFreshAttempt } from '../api';
 import { AiPanel } from '../components/AiPanel';
 import { DisputeModal } from '../components/DisputeModal';
 import { EditorPane } from '../components/EditorPane';
 import { FreshAttemptDialog } from '../components/FreshAttemptDialog';
+import { Modal } from '../components/Modal';
 import { ProblemPane } from '../components/ProblemPane';
 import { TestConsole } from '../components/TestConsole';
 import { TopBar } from '../components/TopBar';
@@ -25,6 +28,17 @@ import { NotFound } from './NotFound';
 // browser and in the happy-dom test environment.
 function matchesMinWidth(px: number): boolean {
   return window.matchMedia(`(min-width: ${px}px)`).matches;
+}
+
+/** True when the keystroke's focus is somewhere typing belongs (inputs, textareas — Monaco's hidden textarea included — or contenteditable). */
+function isEditableTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    (target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.tagName === 'SELECT' ||
+      target.isContentEditable)
+  );
 }
 
 export function Room() {
@@ -77,7 +91,15 @@ export function Room() {
   if (error != null) {
     return (
       <div className="notfound">
-        <p className="notfound-message error-note">{error}</p>
+        <p className="notfound-message error-note">
+          {error}{' '}
+          <button className="btn btn-small" onClick={() => setReloadKey((k) => k + 1)}>
+            Retry
+          </button>
+        </p>
+        <p>
+          <Link to="/">← Back to the Library</Link>
+        </p>
       </div>
     );
   }
@@ -178,6 +200,57 @@ function RoomInner({
   const [consoleOpen, setConsoleOpen] = useState(true);
   const [aiOpen, setAiOpen] = useLocalStorageState('ace-ai-open', () => matchesMinWidth(1150));
 
+  // ---- keyboard shortcuts overlay + pane-toggle bindings (NEE-309) --------
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const shortcutsCloseBtnRef = useRef<HTMLButtonElement>(null);
+  // Captures the live Monaco editor instance so "focus editor" has something
+  // to call .focus() on — Cmd/Ctrl+Enter and Cmd/Ctrl+S already live inside
+  // useTestRuns' own onMount (handleEditorMount); this just piggybacks on the
+  // same mount callback to also stash the instance here.
+  const editorInstanceRef = useRef<Parameters<OnMount>[0] | null>(null);
+  const handleEditorMount: OnMount = useCallback(
+    (editor, monacoInstance) => {
+      editorInstanceRef.current = editor;
+      runs.handleEditorMount(editor, monacoInstance);
+    },
+    [runs],
+  );
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      // '?' opens the shortcuts overlay — never while typing, and not while
+      // some other modal (fresh attempt / dispute) already owns focus.
+      if (e.key === '?' && !isEditableTarget(e.target)) {
+        e.preventDefault();
+        setShortcutsOpen(true);
+        return;
+      }
+      if (!e.altKey || e.metaKey || e.ctrlKey) return;
+      if (isEditableTarget(e.target)) return;
+      switch (e.key) {
+        case 'p':
+          e.preventDefault();
+          setProblemOpen((v) => !v);
+          break;
+        case 'i':
+          e.preventDefault();
+          setAiOpen((v) => !v);
+          break;
+        case 'c':
+          e.preventDefault();
+          setConsoleOpen((v) => !v);
+          break;
+        case 'e':
+          e.preventDefault();
+          editorInstanceRef.current?.focus();
+          break;
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [setAiOpen]);
+
   return (
     <div className="room">
       <TopBar
@@ -229,7 +302,7 @@ function RoomInner({
             active={buffers.activeTab}
             onSelect={buffers.setActiveTab}
             onChange={buffers.handleChange}
-            onMount={runs.handleEditorMount}
+            onMount={handleEditorMount}
             onConflictReload={buffers.resolveConflictReload}
             onConflictKeep={buffers.resolveConflictKeep}
           />
@@ -305,6 +378,12 @@ function RoomInner({
           onApplied={review.handleDisputeApplied}
         />
       )}
+      {shortcutsOpen && (
+        <ShortcutsOverlay
+          closeBtnRef={shortcutsCloseBtnRef}
+          onClose={() => setShortcutsOpen(false)}
+        />
+      )}
       {freshOpen && refAttempt != null && (
         <FreshAttemptDialog
           nextNumber={refAttempt.number + 1}
@@ -317,5 +396,48 @@ function RoomInner({
         />
       )}
     </div>
+  );
+}
+
+const SHORTCUT_ROWS: Array<{ keys: string; desc: string }> = [
+  { keys: '⌘/Ctrl + Enter', desc: 'Run tests' },
+  { keys: '⌘/Ctrl + S', desc: 'Flush saves' },
+  { keys: 'Alt + P', desc: 'Toggle problem pane' },
+  { keys: 'Alt + I', desc: 'Toggle AI panel' },
+  { keys: 'Alt + C', desc: 'Toggle console' },
+  { keys: 'Alt + E', desc: 'Focus editor' },
+  { keys: '?', desc: 'Show this list' },
+];
+
+/** '?' overlay listing the room's keyboard shortcuts (NEE-309). Reuses the shared Modal shell (NEE-293). */
+function ShortcutsOverlay({
+  onClose,
+  closeBtnRef,
+}: {
+  onClose: () => void;
+  closeBtnRef: RefObject<HTMLButtonElement | null>;
+}) {
+  const headingId = useId();
+  return (
+    <Modal labelledBy={headingId} onClose={onClose} canClose initialFocusRef={closeBtnRef}>
+      <div className="modal-header">
+        <h2 id={headingId}>Keyboard shortcuts</h2>
+        <button className="icon-btn" onClick={onClose} title="Close" ref={closeBtnRef}>
+          ✕
+        </button>
+      </div>
+      <div className="modal-body">
+        <table className="shortcuts-table">
+          <tbody>
+            {SHORTCUT_ROWS.map((row) => (
+              <tr key={row.desc}>
+                <td className="mono shortcuts-keys">{row.keys}</td>
+                <td>{row.desc}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Modal>
   );
 }

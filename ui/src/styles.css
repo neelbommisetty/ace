@@ -713,6 +713,22 @@ code {
   overflow-y: auto;
 }
 
+.shortcuts-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.shortcuts-table td {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.shortcuts-keys {
+  padding-right: 18px;
+  white-space: nowrap;
+  color: var(--dim);
+}
+
 .modal-loading {
   color: var(--dim);
   padding: 18px 0;
@@ -2387,6 +2403,17 @@ code {
 
 .job-card-caret {
   flex: none;
+}
+
+.job-card-dismiss {
+  flex: none;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.job-strip-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .job-card-drawer {
