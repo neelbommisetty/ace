@@ -203,49 +203,53 @@ function HistoryCard({ item, onOpen }: { item: HistoryItem; onOpen: () => void }
     const { review, question } = item;
     const lines = firstImprovementLines(review.bodyMd);
     return (
-      <li className="history-card" onClick={onOpen}>
-        <div className="history-card-main">
-          <div className="history-card-head">
-            <span className="history-card-title">{question.title}</span>
-            <span className="mono cell-dim">v{review.version}</span>
-            <ReviewBadge review={review} />
-          </div>
-          {lines.length > 0 && (
-            <div className="improve-lines">
-              {lines.map((line, i) => (
-                <div key={i} className="improve-line">
-                  {line}
-                </div>
-              ))}
+      <li>
+        <button type="button" className="history-card" onClick={onOpen}>
+          <div className="history-card-main">
+            <div className="history-card-head">
+              <span className="history-card-title">{question.title}</span>
+              <span className="mono cell-dim">v{review.version}</span>
+              <ReviewBadge review={review} />
             </div>
-          )}
-        </div>
-        <div className="history-card-side">
-          <CategoryChip category={question.category} />
-          <span className="activity-when">{relTime(item.at)}</span>
-        </div>
+            {lines.length > 0 && (
+              <div className="improve-lines">
+                {lines.map((line, i) => (
+                  <div key={i} className="improve-line">
+                    {line}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="history-card-side">
+            <CategoryChip category={question.category} />
+            <span className="activity-when">{relTime(item.at)}</span>
+          </div>
+        </button>
       </li>
     );
   }
   const { dispute, question } = item;
   return (
-    <li className="history-card" onClick={onOpen}>
-      <div className="history-card-main">
-        <div className="history-card-head">
-          <span className="history-card-title">{question.title}</span>
-          <span className={`dispute-tag dv-${dispute.verdict}`}>
-            {DISPUTE_VERDICT_LABELS[dispute.verdict]}
-          </span>
-          {dispute.appliedAt != null && <span className="chip chip-applied">applied</span>}
+    <li>
+      <button type="button" className="history-card" onClick={onOpen}>
+        <div className="history-card-main">
+          <div className="history-card-head">
+            <span className="history-card-title">{question.title}</span>
+            <span className={`dispute-tag dv-${dispute.verdict}`}>
+              {DISPUTE_VERDICT_LABELS[dispute.verdict]}
+            </span>
+            {dispute.appliedAt != null && <span className="chip chip-applied">applied</span>}
+          </div>
+          <div className="improve-lines">
+            <div className="improve-line">{dispute.summary}</div>
+          </div>
         </div>
-        <div className="improve-lines">
-          <div className="improve-line">{dispute.summary}</div>
+        <div className="history-card-side">
+          <CategoryChip category={question.category} />
+          <span className="activity-when">{relTime(item.at)}</span>
         </div>
-      </div>
-      <div className="history-card-side">
-        <CategoryChip category={question.category} />
-        <span className="activity-when">{relTime(item.at)}</span>
-      </div>
+      </button>
     </li>
   );
 }

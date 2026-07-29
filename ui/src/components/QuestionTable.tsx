@@ -1,4 +1,5 @@
-import { useNavigate } from 'react-router';
+import type { MouseEvent } from 'react';
+import { Link, useNavigate } from 'react-router';
 import { relTime } from '../lib/format';
 import type { QuestionWithStats } from '../types';
 import { CategoryChip, DifficultyChip, StatusChip } from './Chip';
@@ -26,11 +27,27 @@ export function QuestionTable({ questions }: { questions: QuestionWithStats[] })
               <tr
                 key={q.id}
                 className={missing ? 'row-missing' : 'row-clickable'}
-                onClick={missing ? undefined : () => navigate(`/q/${q.category}/${q.slug}`)}
+                onClick={
+                  missing
+                    ? undefined
+                    : (e: MouseEvent<HTMLTableRowElement>) => {
+                        // The title cell is a real <Link> now — let its own
+                        // click handling (incl. cmd/middle-click new tab) win
+                        // rather than racing it with an imperative navigate().
+                        if (e.target instanceof Element && e.target.closest('a')) return;
+                        navigate(`/q/${q.category}/${q.slug}`);
+                      }
+                }
                 title={missing ? 'Question directory is missing on disk' : undefined}
               >
                 <td className="cell-title">
-                  {q.title}
+                  {missing ? (
+                    q.title
+                  ) : (
+                    <Link className="row-link" to={`/q/${q.category}/${q.slug}`}>
+                      {q.title}
+                    </Link>
+                  )}
                   {missing && <span className="badge badge-missing">missing</span>}
                 </td>
                 <td>

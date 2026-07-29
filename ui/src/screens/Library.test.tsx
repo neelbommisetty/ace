@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useEffect, useRef } from 'react';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, Route, Routes } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerWorkspaceSwitchOpener } from '../lib/switchSignal';
 import { Library } from './Library';
@@ -420,5 +420,44 @@ describe('Library', () => {
     const noTestsChip = screen.getByText('no tests');
     expect(noTestsChip.className).not.toContain('run-pass');
     expect(noTestsChip.className).not.toContain('run-fail');
+  });
+
+  // NEE-292: the title cell must be a real, focusable <Link> — Tab reaches
+  // it, it carries a real href (cmd/middle-click new tab "for free"), and
+  // activating it (Enter and click both fire the same DOM 'click') opens
+  // the room.
+  it('exposes each question row as a focusable link that opens the room', async () => {
+    getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+    getQuestions.mockResolvedValue([question()]);
+    getGenerationJobs.mockResolvedValue({ jobs: [] });
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route path="/" element={<Library />} />
+          <Route path="/q/:category/:slug" element={<div>Room for question</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const link = await screen.findByRole('link', { name: 'Closures and Scope' });
+    expect(link).toHaveAttribute('href', '/q/js-ts/closures-and-scope');
+
+    link.focus();
+    expect(link).toHaveFocus();
+
+    fireEvent.click(link);
+    expect(await screen.findByText('Room for question')).toBeInTheDocument();
+  });
+
+  it('skips the link (and focus) for a row whose question directory is missing on disk', async () => {
+    getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+    getQuestions.mockResolvedValue([
+      question({ id: 'q-missing', slug: 'missing-question', title: 'Missing Question', missingAt: new Date().toISOString() }),
+    ]);
+    getGenerationJobs.mockResolvedValue({ jobs: [] });
+    renderLibrary();
+
+    await screen.findByText('Missing Question');
+    expect(screen.queryByRole('link', { name: 'Missing Question' })).toBeNull();
   });
 });
