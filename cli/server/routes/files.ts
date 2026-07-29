@@ -78,8 +78,9 @@ export function registerFileRoutes(app: Hono, ctx: RouteContext): void {
     // another tab saved, or the server appended follow-up probes / applied a
     // dispute fix — this PUT would silently discard that write, so reject it
     // and let the client surface its conflict banner instead. Omitting
-    // `savedHash` keeps the old last-write-wins behavior (the keepalive
-    // pagehide flush and non-UI callers), so the precondition is opt-in.
+    // `savedHash` keeps the old last-write-wins behavior (the explicit
+    // "Keep mine" conflict resolution and non-UI callers), so the
+    // precondition is opt-in.
     const savedHash = body.savedHash;
     if (typeof savedHash === 'string') {
       const current = readWorkspaceFile(workspaceRoot, rel);
