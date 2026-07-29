@@ -203,13 +203,16 @@ describe('POST /api/questions/:category/:slug/probes', () => {
     };
     expect(first.attempt.number).toBe(1);
 
-    // Round 1 lands, and the bound holds within the attempt.
-    ws.session.db.createProbeSet({
+    // Round 1 lands, and the bound holds within the attempt. The bound only
+    // counts APPLIED probe sets (NEE-357), so mark this one applied — this
+    // walk is exercising the per-attempt bound, not the orphan carve-out.
+    const probeSet = ws.session.db.createProbeSet({
       questionId: question.id,
       attemptId: first.attempt.id,
       probes: [{ question: 'What would the other engineer say?', source: 'derived' }],
       model: 'claude-sonnet-5',
     });
+    ws.session.db.markProbeSetApplied(probeSet.id);
     expect((await fetch(probesUrl, { method: 'POST' })).status).toBe(409);
 
     // The review completes: reviews.ts persists it and closes the attempt
