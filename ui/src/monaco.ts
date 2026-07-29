@@ -9,20 +9,95 @@ import editorWorker from 'monaco-editor/editor/editor.worker.js?worker';
 import tsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker';
 import cssWorker from 'monaco-editor/language/css/css.worker.js?worker';
 import htmlWorker from 'monaco-editor/language/html/html.worker.js?worker';
+import { createHighlighterCoreSync, createJavaScriptRegexEngine } from 'shiki';
+import { shikiToMonaco } from '@shikijs/monaco';
+import catppuccinMacchiato from 'shiki/themes/catppuccin-macchiato.mjs';
+import tsxGrammar from 'shiki/langs/tsx.mjs';
+import javascriptGrammar from 'shiki/langs/javascript.mjs';
+import jsxGrammar from 'shiki/langs/jsx.mjs';
+import cssGrammar from 'shiki/langs/css.mjs';
+import htmlGrammar from 'shiki/langs/html.mjs';
+import markdownGrammar from 'shiki/langs/markdown.mjs';
 import { EDITOR_THEME } from './editor-options';
 import { triggerStaleReload } from './stale-reload';
 
-// Monarch tokenizers for every language the room can open. Monaco registers
-// these behind a lazy import(), which Vite emits as separate hashed chunks;
-// after a rebuild an already-open tab 404s on the old hash and every token
-// falls back to plain foreground (the "theme stopped rendering" bug). A
-// static import folds each tokenizer into the main bundle instead, so the
-// lazy load resolves in-memory and never touches the network.
+// Every language the room can open still needs Monaco's own language
+// *configuration* registered — auto-closing brackets, comment toggling —
+// even though shiki (below) now replaces Monaco's built-in Monarch
+// tokenizer for colorization. Monaco registers configuration + Monarch
+// tokenizer together behind a lazy import(), which Vite emits as a separate
+// hashed chunk; after a rebuild an already-open tab 404s on the old hash and
+// every token falls back to plain foreground (the "theme stopped rendering"
+// bug). A static import folds each definition into the main bundle instead,
+// so the lazy load resolves in-memory and never touches the network. The
+// Monarch tokenizer these also register is immediately superseded once
+// shikiToMonaco() runs below — `setTokensProvider` overwrites whatever
+// `setMonarchTokensProvider` installed for the same language id, so import
+// order here (before the shiki setup) is what makes shiki's provider win.
 import 'monaco-editor/languages/definitions/typescript/typescript.js';
 import 'monaco-editor/languages/definitions/javascript/javascript.js';
 import 'monaco-editor/languages/definitions/css/css.js';
 import 'monaco-editor/languages/definitions/html/html.js';
 import 'monaco-editor/languages/definitions/markdown/markdown.js';
+
+// NEE-335: Monaco's Monarch TypeScript tokenizer is coarse — it has no
+// notion of "this", "function call", or "property access", so
+// `this.data.children[id].filter(...)` comes out as nearly all `identifier`
+// tokens and the hand-rolled theme's function/class/variable rules almost
+// never fire. Shiki runs the real TextMate grammars (the same ones VS Code
+// uses) against the official catppuccin-macchiato theme instead.
+// `createHighlighterCoreSync` + `createJavaScriptRegexEngine` keeps setup
+// entirely synchronous (no oniguruma wasm to fetch); `forgiving: true`
+// tolerates the handful of grammar regexes the JS engine can't translate
+// 1:1 from Oniguruma rather than throwing on them. Every grammar/theme
+// import above is `shiki/<kind>/<name>.mjs`, not shiki's own
+// `createHighlighter()` bundle helper — that helper pulls grammars in
+// behind a lazy import(), which would regress the same stale-tab bug the
+// language-definition imports above guard against (c9e4a98/NEE-330).
+//
+// Caveat — .tsx maps to the Monaco language id "typescript": Monaco has no
+// separate "tsx" language id, and this app's own `languageFor()`
+// (DisputeModal.tsx) maps both .ts and .tsx to "typescript"; the
+// react-apps question set is full of .tsx files. Loading the plain
+// `typescript` grammar under that id would leave every JSX file
+// untokenized (falls back to plain foreground) the moment a tag appears.
+// Rather than accept that, the `tsx` grammar — a strict superset that
+// layers JSX scopes on top of the same TypeScript grammar — is renamed to
+// `typescript` below and registered in its place instead of the plain one.
+// Plain .ts content (interfaces, generics, `this`) tokenizes identically
+// through it; .tsx content now gets real JSX scopes too.
+const typescriptGrammar = tsxGrammar.map((grammar) =>
+  grammar.name === 'tsx'
+    ? { ...grammar, name: 'typescript', aliases: ['ts', 'cts', 'mts'] }
+    : grammar,
+);
+
+const highlighter = createHighlighterCoreSync({
+  themes: [catppuccinMacchiato],
+  langs: [typescriptGrammar, javascriptGrammar, jsxGrammar, cssGrammar, htmlGrammar, markdownGrammar],
+  engine: createJavaScriptRegexEngine({ forgiving: true }),
+});
+
+// shikiToMonaco() (below) registers a Monaco theme named after the VS Code
+// theme it was given — here, shiki's own `catppuccinMacchiato.name`. Every
+// other surface in the app (editor-options.ts's EDITOR_THEME, DisputeModal's
+// diff editor) passes that same string as the Monaco theme id, so this
+// guards against the two silently drifting apart rather than trusting the
+// coincidence.
+if (catppuccinMacchiato.name !== EDITOR_THEME) {
+  throw new Error(
+    `shiki theme name ("${catppuccinMacchiato.name}") no longer matches EDITOR_THEME ("${EDITOR_THEME}")`,
+  );
+}
+
+// Registers shiki's tokens provider for every one of the languages above
+// that Monaco already knows about (typescript, javascript, css, html,
+// markdown — all registered by the static language-definition imports
+// above) and defines the `catppuccin-macchiato` Monaco theme from the VS
+// Code theme's own `tokenColors`/`colors`. Must run after those imports
+// (see the comment on them) so this tokens provider is the one left
+// installed, not Monarch's.
+shikiToMonaco(highlighter, monaco);
 
 // A rebuild rewrites dist/assets with new content hashes; an already-open
 // tab still requests these worker scripts by their old hashed filenames.
@@ -102,48 +177,16 @@ monaco.typescript.typescriptDefaults.setCompilerOptions({
   allowNonTsExtensions: true,
 });
 
-// Catppuccin Macchiato (official palette hexes) for every Monaco surface.
-monaco.editor.defineTheme(EDITOR_THEME, {
-  base: 'vs-dark',
-  inherit: true,
-  rules: [
-    { token: 'comment', foreground: '939ab7', fontStyle: 'italic' },
-    { token: 'keyword', foreground: 'c6a0f6' },
-    { token: 'string', foreground: 'a6da95' },
-    { token: 'number', foreground: 'f5a97f' },
-    { token: 'type', foreground: 'eed49f' },
-    { token: 'class', foreground: 'eed49f' },
-    { token: 'function', foreground: '8aadf4' },
-    { token: 'variable', foreground: 'cad3f5' },
-    { token: 'constant', foreground: 'f5a97f' },
-    { token: 'operator', foreground: '91d7e3' },
-    { token: 'delimiter', foreground: '939ab7' },
-    { token: 'tag', foreground: '8aadf4' },
-    { token: 'attribute.name', foreground: 'eed49f' },
-    { token: 'regexp', foreground: 'f5bde6' },
-  ],
-  colors: {
-    'editor.background': '#24273a',
-    'editor.foreground': '#cad3f5',
-    'editor.lineHighlightBackground': '#363a4f66',
-    'editorLineNumber.foreground': '#6e738d',
-    'editorLineNumber.activeForeground': '#a5adcb',
-    'editorGutter.background': '#24273a',
-    'editorIndentGuide.background1': '#363a4f',
-    'editorIndentGuide.activeBackground1': '#494d64',
-    'editorWidget.background': '#1e2030',
-    'editorWidget.border': '#363a4f',
-    'editorSuggestWidget.background': '#1e2030',
-    'editorSuggestWidget.border': '#363a4f',
-    'editorSuggestWidget.selectedBackground': '#363a4f',
-    'editorHoverWidget.background': '#1e2030',
-    'editorHoverWidget.border': '#363a4f',
-    'editorCursor.foreground': '#f4dbd6',
-    'editor.selectionBackground': '#5b607899',
-    'scrollbarSlider.background': '#5b607866',
-    'scrollbarSlider.hoverBackground': '#5b6078aa',
-    'scrollbarSlider.activeBackground': '#5b6078dd',
-  },
-});
-
+// The hand-rolled `monaco.editor.defineTheme(EDITOR_THEME, ...)` that used
+// to live here is gone: `shikiToMonaco()` above already registers a Monaco
+// theme under this same `catppuccin-macchiato` name (EDITOR_THEME), built
+// from the official VS Code theme's `tokenColors` and `colors` and encoded
+// against shiki's own colormap. Redefining over it here would silently
+// break every token color again. Every workbench surface this app hand-
+// tuned before (line highlight, selection, scrollbar, indent guides,
+// widgets) is present in the official theme's `colors` or resolves through
+// Monaco's own color-registry fallback chain (e.g. `editorIndentGuide.
+// background1` falls back to the theme's `editorIndentGuide.background`,
+// `editorWidget.border` falls back to a foreground tint) — none of them
+// came out actually unset, so none were re-added.
 loader.config({ monaco });
