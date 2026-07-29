@@ -171,6 +171,16 @@ Keep these exact names (they key historical score comparisons):
 
 ## Signals
 
+**If a `## Follow-ups` section is present** in `notes.md`, the candidate
+answered probe questions pressing on an API contract or data-model decision
+left vague the first time — weigh whether the answer actually names the
+mechanism (where an idempotency key is checked, what a retry does, the
+versioning stance) or just restates the original design in other words. A
+candidate who meets a direct probe about a contract's failure semantics with
+more infra name-dropping should score lower on API Design and Deep Dive /
+Trade-offs than the initial notes alone suggested. Most design notes have no
+`## Follow-ups` section — say nothing about it when it's absent.
+
 Positive (Staff-level):
 - Designs the contract from the client's seat: states what the client may
   assume, then makes the server honor it — not the reverse.

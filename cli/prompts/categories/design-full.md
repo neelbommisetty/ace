@@ -187,6 +187,16 @@ Keep these exact names (they key historical score comparisons):
 
 ## Signals
 
+**If a `## Follow-ups` section is present** in `notes.md`, the candidate
+answered probe questions pushing on the hardest seam or trade-off they
+dodged the first time — weigh whether the answer actually takes a position
+(names the axis, states what evidence would reverse it, commits to a
+mechanism) or just restates the original design in other words. A candidate
+who meets a direct probe about a contested trade-off with more
+boxes-and-arrows should score lower on Deep Dive / Trade-offs than the
+initial notes alone suggested. Most design notes have no `## Follow-ups`
+section — say nothing about it when it's absent.
+
 Positive (Staff-level):
 - States who owns each piece of state before drawing any component — and
   the design visibly follows from that decision.

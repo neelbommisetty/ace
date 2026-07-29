@@ -194,6 +194,17 @@ Keep these exact names (they key historical score comparisons):
 
 ## Signals
 
+**If a `## Follow-ups` section is present** in `notes.md`, the candidate
+answered probe questions drilling into a specific invariant or trade-off
+they left underspecified the first time — weigh whether the answer commits
+to something new (a stated consistency choice, a number, a named
+failure-mode behavior) or just re-describes the original architecture in
+different words. A candidate who meets a direct probe about, say, the
+reconnect/dedup story with more component name-dropping should score lower
+on Deep Dive / Trade-offs and Requirements Gathering than the initial notes
+alone suggested. Most design notes have no `## Follow-ups` section — say
+nothing about it when it's absent.
+
 Positive (Staff-level):
 
 - Invariants stated before mechanisms — "what must always hold" precedes
