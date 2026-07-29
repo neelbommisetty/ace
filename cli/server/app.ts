@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { hasTests, lookupCategoryConfig } from '../lib/categories.js';
 import { isPositiveVerdict } from '../../shared/verdicts.js';
 import { ScopeError } from './files.js';
+import type { PreviewManager } from './preview.js';
 import * as routes from './routes/index.js';
 import type { EngineFactories, WorkspaceSession } from './session.js';
 import type { Bus } from './sse.js';
@@ -34,6 +35,12 @@ export interface CreateAppOptions {
   setSwapping?: (swapping: boolean) => void;
   /** Defaults to the real engine factories; tests inject fakes for the reset/switch routes too. */
   engines?: EngineFactories;
+  /**
+   * Live preview dev-server manager (NEE-348). startAceServer passes the
+   * instance it disposes on shutdown; when omitted the route context creates
+   * one (fine for tests — it holds no resources until the first open()).
+   */
+  preview?: PreviewManager;
 }
 
 const HOST_RE = /^(127\.0\.0\.1|localhost)(:\d+)?$/;
@@ -231,6 +238,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   routes.registerReviewRoutes(app, ctx);
   routes.registerDisputeRoutes(app, ctx);
   routes.registerProbeRoutes(app, ctx);
+  routes.registerPreviewRoutes(app, ctx);
   routes.registerGenerationRoutes(app, ctx);
   routes.registerBrainstormRoutes(app, ctx);
   routes.registerAiRoutes(app, ctx);

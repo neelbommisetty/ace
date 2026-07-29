@@ -1,4 +1,5 @@
 import type { CreateAppOptions, ImporterApi } from '../app.js';
+import { createPreviewManager, type PreviewManager } from '../preview.js';
 import type { EngineFactories, WorkspaceSession } from '../session.js';
 import type { Bus } from '../sse.js';
 
@@ -8,6 +9,8 @@ export interface RouteContext {
   version: string;
   importer: ImporterApi;
   uiDir: string | null;
+  /** Live preview dev-server lifecycle (NEE-348). */
+  preview: PreviewManager;
   getWorkspaceRoot: () => string | null;
   getSession: () => WorkspaceSession | null;
   requireSession: () => WorkspaceSession;
@@ -49,6 +52,10 @@ export function createRouteContext(
     version: opts.version,
     importer: opts.importer,
     uiDir: opts.uiDir,
+    // startAceServer passes its own so close() can dispose it; tests that
+    // never open a preview are fine with the default (it holds no resources
+    // until the first open()).
+    preview: opts.preview ?? createPreviewManager({ bus: opts.bus }),
     getWorkspaceRoot,
     getSession,
     requireSession,

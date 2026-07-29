@@ -35,6 +35,13 @@ export interface PerformWorkspaceSwitchOptions {
   engines?: EngineFactories;
   /** Awaited before the old session's db closes — the same request-drain seam as performWorkspaceReset. */
   drainRequests?: () => Promise<void>;
+  /**
+   * Stops the old workspace's live-preview dev server (NEE-348) before the
+   * teardown, so a switched-away workspace never leaves a Vite server
+   * holding a port. Best-effort: a failure here never aborts the switch (the
+   * preview manager's idle timeout is the backstop).
+   */
+  stopPreview?: (oldRoot: string) => Promise<void>;
 }
 
 export interface PerformWorkspaceSwitchResult {
@@ -74,6 +81,13 @@ export async function performWorkspaceSwitch(
   let oldClosed = oldSession == null;
 
   try {
+    if (oldRoot != null && opts.stopPreview) {
+      try {
+        await opts.stopPreview(oldRoot);
+      } catch {
+        // best-effort — see the option's doc comment
+      }
+    }
     if (oldSession) {
       // beforeDbClose runs after the watcher/engines are torn down but
       // before db.close() — wait out any request that got past the 503 gate

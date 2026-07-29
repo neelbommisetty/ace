@@ -3,6 +3,7 @@ import path from 'node:path';
 import { serve, type ServerType } from '@hono/node-server';
 import { createApp } from './app.js';
 import { previewImport, runImport } from './importer.js';
+import { createPreviewManager } from './preview.js';
 import {
   closeWorkspaceSession,
   closeWorkspaceSessionSafe,
@@ -72,11 +73,16 @@ export async function startAceServer(opts: StartAceServerOptions): Promise<AceSe
       }
     }
 
+    // Owned here (not inside createApp) so close() below can dispose it —
+    // stopping ace must never leave a Vite dev server holding a port.
+    const preview = createPreviewManager({ bus });
+
     let swapping = false;
     const app = createApp({
       bus,
       token,
       uiDir,
+      preview,
       version: readPackageVersion(),
       importer: { previewImport, runImport },
       getWorkspaceRoot: () => activeRoot,
@@ -103,6 +109,9 @@ export async function startAceServer(opts: StartAceServerOptions): Promise<AceSe
       url: `http://127.0.0.1:${port}`,
       port,
       async close() {
+        // First: the preview dev server has its own port and its own file
+        // watcher — release both before tearing the session down.
+        await preview.dispose();
         const closeHttp = () =>
           new Promise<void>((resolve, reject) => {
             server.close((err) => (err ? reject(err) : resolve()));

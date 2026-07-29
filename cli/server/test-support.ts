@@ -197,6 +197,7 @@ export interface MakeAppOptions {
   importer?: CreateAppOptions['importer'];
   swapWorkspace?: CreateAppOptions['swapWorkspace'];
   setSwapping?: CreateAppOptions['setSwapping'];
+  preview?: CreateAppOptions['preview'];
 }
 
 /**
@@ -222,6 +223,7 @@ export function makeApp(opts: MakeAppOptions): {
     isSwapping: opts.isSwapping ?? (() => false),
     bus,
     ...(opts.engines ? { engines: opts.engines } : {}),
+    ...(opts.preview ? { preview: opts.preview } : {}),
     ...(opts.swapWorkspace ? { swapWorkspace: opts.swapWorkspace } : {}),
     ...(opts.setSwapping ? { setSwapping: opts.setSwapping } : {}),
   });

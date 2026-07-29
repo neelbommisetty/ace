@@ -45,10 +45,15 @@ const PACKAGE_JSON_TEMPLATE = {
     '@testing-library/react': '^16.3.2',
     '@types/react': '^19.2.14',
     '@types/react-dom': '^19.2.3',
+    // vite + plugin-react power the live preview pane (NEE-348). `ace init`
+    // merges missing devDependencies into an existing package.json, so
+    // pre-existing workspaces pick these up by re-running init.
+    '@vitejs/plugin-react': '^6.0.3',
     'happy-dom': '^20.6.1',
     'react': '^19.2.4',
     'react-dom': '^19.2.4',
     'typescript': '^5.9.3',
+    'vite': '^8.1.5',
     'vitest': '^4.0.18',
   },
 };

@@ -448,6 +448,27 @@ export interface WorkspaceSwitchResult {
 }
 
 // ---------------------------------------------------------------------------
+// Live preview (NEE-348) — the per-workspace Vite dev server behind the ace
+// server. `GET /api/preview` returns the current PreviewStatus; `POST
+// /api/preview/open` lazily starts the server and resolves with the terminal
+// status ('ready' or 'failed').
+// ---------------------------------------------------------------------------
+
+export type PreviewState = 'stopped' | 'starting' | 'ready' | 'failed';
+
+export interface PreviewStatus {
+  state: PreviewState;
+  /**
+   * Base origin of the dev server (`http://127.0.0.1:<port>`) when state is
+   * 'ready', null otherwise. The preview pane loads
+   * `${url}/preview/<category>/<slug>/` in its iframe.
+   */
+  url: string | null;
+  /** Human-readable failure reason when state is 'failed', null otherwise. */
+  reason: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // SSE events — sent on GET /api/events. `event:` field is the name below,
 // `data:` is the JSON payload.
 // ---------------------------------------------------------------------------
@@ -504,6 +525,12 @@ export interface SseEventMap {
   'probes-started': { probeJobId: string; questionId: string };
   'probes-done': { probeJobId: string; questionId: string; probeSet: ProbeSetRow };
   'probes-error': { probeJobId: string; questionId: string; message: string };
+  /**
+   * Live preview lifecycle (NEE-348). The full status object every time —
+   * the pane renders whatever arrives (starting spinner, ready iframe,
+   * failure reason, stopped placeholder) without needing a follow-up fetch.
+   */
+  'preview-status': PreviewStatus;
   'brainstorm-started': { sessionId: string };
   'brainstorm-done': { sessionId: string; turn: BrainstormTurn };
   'brainstorm-error': { sessionId: string; message: string };

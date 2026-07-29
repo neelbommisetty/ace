@@ -182,6 +182,9 @@ export function registerResetRoutes(app: Hono, ctx: RouteContext): void {
         requestId,
         engines: ctx.engines,
         drainRequests: ctx.waitForRequestDrain,
+        // NEE-348: a switched-away workspace must not leave its live-preview
+        // dev server holding a port.
+        stopPreview: (oldRoot) => ctx.preview.stopForWorkspace(oldRoot),
       });
       return c.json({
         workspaceRoot: result.workspaceRoot,
