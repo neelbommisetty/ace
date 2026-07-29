@@ -36,8 +36,36 @@ interface UnloadStash {
   at: number;
 }
 
+/**
+ * Stash keys carry a per-tab discriminator: two tabs closing with the same
+ * file dirty must park two entries, not overwrite each other's only surviving
+ * copy (the whole point of the stash is that the fire-and-forget flush may
+ * never land). sessionStorage keeps the id stable across bfcache restores of
+ * the same tab while staying distinct per tab. "Duplicate Tab" copies
+ * sessionStorage and therefore shares the id — accepted: that narrow case
+ * degrades to the single-key behaviour, never below it.
+ */
+let mintedTabId: string | null = null;
+function getTabId(): string {
+  if (mintedTabId != null) return mintedTabId;
+  try {
+    const existing = window.sessionStorage.getItem('ace-tab-id');
+    if (existing != null && existing !== '') return (mintedTabId = existing);
+    const fresh = crypto.randomUUID();
+    window.sessionStorage.setItem('ace-tab-id', fresh);
+    return (mintedTabId = fresh);
+  } catch {
+    // storage disabled — a process-local id still separates live tabs
+    return (mintedTabId = Math.random().toString(36).slice(2));
+  }
+}
+
+function stashPrefixFor(relPath: string): string {
+  return `${UNLOAD_STASH_PREFIX}${relPath}::`;
+}
+
 function stashKey(relPath: string): string {
-  return `${UNLOAD_STASH_PREFIX}${relPath}`;
+  return `${stashPrefixFor(relPath)}${getTabId()}`;
 }
 
 /** Best-effort: a full or disabled localStorage must never break the unload path. */
@@ -63,15 +91,7 @@ function clearUnloadStash(relPath: string): void {
   }
 }
 
-/** Reads and REMOVES the stash for `relPath`; a single restore attempt is all it gets. */
-function takeUnloadStash(relPath: string): UnloadStash | null {
-  let raw: string | null = null;
-  try {
-    raw = window.localStorage.getItem(stashKey(relPath));
-    if (raw != null) window.localStorage.removeItem(stashKey(relPath));
-  } catch {
-    return null;
-  }
+function parseStash(raw: string | null): UnloadStash | null {
   if (raw == null) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<UnloadStash>;
@@ -83,6 +103,41 @@ function takeUnloadStash(relPath: string): UnloadStash | null {
       savedHash: parsed.savedHash,
       at: parsed.at,
     };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Takes (reads and REMOVES) the NEWEST stash for `relPath`, across every tab
+ * that parked one; a single restore attempt is all any entry gets. Other tabs'
+ * older stashes with DISTINCT content are deliberately left in place — each
+ * surfaces on a later mount through this same path, so a version is only ever
+ * dropped once it matched disk, matched the restored text, or expired. There
+ * is one buffer, so restore is one-at-a-time by construction.
+ */
+function takeUnloadStash(relPath: string): UnloadStash | null {
+  const prefix = stashPrefixFor(relPath);
+  try {
+    const drop: string[] = [];
+    const found: Array<{ key: string; entry: UnloadStash }> = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const key = window.localStorage.key(i);
+      if (key == null || !key.startsWith(prefix)) continue;
+      const entry = parseStash(window.localStorage.getItem(key));
+      if (entry == null) drop.push(key);
+      else found.push({ key, entry });
+    }
+    found.sort((a, b) => b.entry.at - a.entry.at);
+    const best = found.length > 0 ? found[0] : null;
+    if (best != null) {
+      drop.push(best.key);
+      for (const other of found.slice(1)) {
+        if (other.entry.content === best.entry.content) drop.push(other.key);
+      }
+    }
+    for (const key of drop) window.localStorage.removeItem(key);
+    return best == null ? null : best.entry;
   } catch {
     return null;
   }

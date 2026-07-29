@@ -717,10 +717,28 @@ describe('useFileBuffers overlapping same-tab saves (NEE-359)', () => {
 // (or a dropped request) took the closing tab's last edits with it — even
 // though the leave guard had just prompted about them.
 describe('useFileBuffers unload stash (NEE-358)', () => {
-  const KEY = 'ace-unload-buffer:solution.ts';
+  // Stash keys are per-tab (`ace-unload-buffer:<relPath>::<tabId>`) so that
+  // two tabs closing with the same file dirty never overwrite each other's
+  // only surviving copy. Seeds simulate other tabs; reads scan the prefix.
+  const STASH_PREFIX = 'ace-unload-buffer:solution.ts::';
 
-  function seedStash(entry: Record<string, unknown>) {
-    window.localStorage.setItem(KEY, JSON.stringify(entry));
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  function seedStash(entry: Record<string, unknown>, tabId = 'tab-seeded') {
+    window.localStorage.setItem(`${STASH_PREFIX}${tabId}`, JSON.stringify(entry));
+  }
+
+  function readStashes(): Array<Record<string, unknown>> {
+    const out: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const key = window.localStorage.key(i);
+      if (key?.startsWith(STASH_PREFIX)) {
+        out.push(JSON.parse(window.localStorage.getItem(key) ?? 'null') as Record<string, unknown>);
+      }
+    }
+    return out;
   }
 
   function firePageHide() {
@@ -741,7 +759,9 @@ describe('useFileBuffers unload stash (NEE-358)', () => {
     firePageHide();
 
     expect(flushFileSave).toHaveBeenCalledWith('solution.ts', 'my last keystrokes', 'hash-solution.ts');
-    expect(JSON.parse(window.localStorage.getItem(KEY) ?? 'null')).toMatchObject({
+    const stashes = readStashes();
+    expect(stashes).toHaveLength(1);
+    expect(stashes[0]).toMatchObject({
       attemptId: 'att-1',
       content: 'my last keystrokes',
       savedHash: 'hash-solution.ts',
@@ -765,7 +785,9 @@ describe('useFileBuffers unload stash (NEE-358)', () => {
     firePageHide();
 
     expect(flushFileSave).not.toHaveBeenCalled();
-    expect(JSON.parse(window.localStorage.getItem(KEY) ?? 'null')).toMatchObject({
+    const stashes = readStashes();
+    expect(stashes).toHaveLength(1);
+    expect(stashes[0]).toMatchObject({
       content: 'my unsaved work',
     });
   });
@@ -789,7 +811,7 @@ describe('useFileBuffers unload stash (NEE-358)', () => {
         savedHash: 'hash-solution.ts',
       });
     });
-    expect(window.localStorage.getItem(KEY)).toBeNull();
+    expect(readStashes()).toHaveLength(0);
   });
 
   it('restores it as a conflict when disk moved on since — both versions survive', async () => {
@@ -824,7 +846,7 @@ describe('useFileBuffers unload stash (NEE-358)', () => {
     });
     expect(first.result.current.files['solution.ts'].saveState).toBe('saved');
     expect(first.result.current.files['solution.ts'].conflict).toBe(false);
-    expect(window.localStorage.getItem(KEY)).toBeNull();
+    expect(readStashes()).toHaveLength(0);
     first.unmount();
 
     // A fresh attempt may have reset the file to its stub; text typed under the
@@ -840,7 +862,30 @@ describe('useFileBuffers unload stash (NEE-358)', () => {
       expect(result.current.files['solution.ts'].loaded).toBe(true);
     });
     expect(result.current.files['solution.ts'].buffer).toBe('// solution.ts');
-    expect(window.localStorage.getItem(KEY)).toBeNull();
+    expect(readStashes()).toHaveLength(0);
+  });
+
+  it('two tabs closing with the same file dirty: newest restores, the other survives for a later mount', async () => {
+    const now = Date.now();
+    seedStash(
+      { attemptId: 'att-1', content: "tab A's version", savedHash: 'hash-solution.ts', at: now - 5000 },
+      'tab-a',
+    );
+    seedStash(
+      { attemptId: 'att-1', content: "tab B's version", savedHash: 'hash-solution.ts', at: now },
+      'tab-b',
+    );
+
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].buffer).toBe("tab B's version");
+    });
+
+    // Tab A's copy was NOT silently discarded: it stays parked under its own
+    // per-tab key and surfaces on a later mount through the same restore path.
+    const left = readStashes();
+    expect(left).toHaveLength(1);
+    expect(left[0]).toMatchObject({ content: "tab A's version" });
   });
 });
 
