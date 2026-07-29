@@ -8,6 +8,7 @@ import { CATEGORY_SLUGS } from './categories.js';
 import type {
   chatObject as ChatObjectFn,
   chatObjectStream as ChatObjectStreamFn,
+  chatStream as ChatStreamFn,
   getModelId as GetModelIdFn,
   withResponseActivityTap as WithResponseActivityTapFn,
 } from './llm.js';
@@ -29,12 +30,15 @@ vi.mock('ai', async (importOriginal) => {
 // (same pattern used by cli/server/workspace-reset.test.ts).
 let chatObject: typeof ChatObjectFn;
 let chatObjectStream: typeof ChatObjectStreamFn;
+let chatStream: typeof ChatStreamFn;
 let getModelId: typeof GetModelIdFn;
 let withResponseActivityTap: typeof WithResponseActivityTapFn;
 
 beforeAll(async () => {
   process.env.ACE_E2E_MOCK_LLM = '1';
-  ({ chatObject, chatObjectStream, getModelId, withResponseActivityTap } = await import('./llm.js'));
+  ({ chatObject, chatObjectStream, chatStream, getModelId, withResponseActivityTap } = await import(
+    './llm.js'
+  ));
 });
 
 // Mirrors cli/lib/gen-pipeline.ts's GeneratedQuestionSchema (kept local: a
@@ -220,6 +224,30 @@ describe('chatObjectStream mock mode', () => {
       },
     });
     expect(result.title).toBe('Two Sum');
+  });
+});
+
+describe('chatStream onStreamActivity (NEE-361)', () => {
+  it('fires onStreamActivity once in mock mode, same contract as chatObjectStream', async () => {
+    const activity = vi.fn();
+    const stream = await chatStream('openai', [], { onStreamActivity: activity });
+    const chunks: string[] = [];
+    for await (const chunk of stream) chunks.push(chunk);
+
+    expect(activity).toHaveBeenCalledTimes(1);
+    expect(chunks).toEqual(['OK']);
+  });
+
+  it('swallows onStreamActivity throws — same contract as chatObjectStream', async () => {
+    const stream = await chatStream('openai', [], {
+      onStreamActivity: () => {
+        throw new Error('logging bug');
+      },
+    });
+    const chunks: string[] = [];
+    for await (const chunk of stream) chunks.push(chunk);
+
+    expect(chunks).toEqual(['OK']);
   });
 });
 

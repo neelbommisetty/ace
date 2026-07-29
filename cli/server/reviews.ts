@@ -453,6 +453,10 @@ export function createReviewEngine(opts: {
   ): Promise<void> {
     const { jobId } = job;
     let pending = '';
+    // Declared here (not inside the outer try below) so the catch path can
+    // still salvage it — a stream that streamed real body text before
+    // stalling out must not lose that text just because the job errored.
+    let fullText = '';
     // One activity-log run per review job (NEE-271). Created before anything
     // can fail, so even a missing API key leaves a (zero-step) errored run
     // behind for Activity to render. Recording is best-effort throughout and
@@ -495,6 +499,11 @@ export function createReviewEngine(opts: {
 
       // A silently-stalled provider connection would otherwise hold the
       // per-question in-flight slot (and its 409) until server restart.
+      // lastChunkAt is reset on raw response bytes (onStreamActivity below,
+      // NEE-361), NOT merely on text chunks — a buffering local proxy can
+      // hold back every text delta for a whole turn while still forwarding
+      // bytes, and a long adaptive-thinking pause on a healthy paid review
+      // can likewise go well past this window with zero text output.
       const abort = new AbortController();
       let lastChunkAt = Date.now();
       const watchdog = setInterval(() => {
@@ -514,14 +523,15 @@ export function createReviewEngine(opts: {
         prompt: maskedPrompt,
       });
 
-      let fullText = '';
       try {
         const stream = await chatStream(provider, messages, {
           abortSignal: abort.signal,
           purpose: 'review',
+          onStreamActivity: () => {
+            lastChunkAt = Date.now();
+          },
         });
         for await (const chunk of stream) {
-          lastChunkAt = Date.now();
           fullText += chunk;
           pending += chunk;
           // The body travels twice on purpose (review-chunk here plus the
@@ -647,7 +657,21 @@ export function createReviewEngine(opts: {
       // chunks, so flush whatever is buffered before announcing the error.
       flushChunks();
       if (!inFlight.isDisposed()) {
-        const message = err instanceof Error ? err.message : String(err);
+        let message = err instanceof Error ? err.message : String(err);
+        // The abort/error can land mid-stream with real (paid-for) review
+        // text already accumulated — e.g. the watchdog aborting a stalled
+        // connection after the model wrote a partial body. Same salvage
+        // convention as the db-write failure path above (.ace/tmp is wiped
+        // at boot, so salvage lives directly under .ace/).
+        if (fullText.length > 0) {
+          const salvagePath = path.join(workspaceRoot, '.ace', `review-salvage-${jobId}.md`);
+          try {
+            fs.writeFileSync(salvagePath, fullText, 'utf8');
+            message = `${message}; partial review text salvaged to ${salvagePath}`;
+          } catch {
+            // disk itself is failing; the SSE chunks are the last copy
+          }
+        }
         run.fail(message);
         bus.emit('review-error', { jobId, questionId: question.id, message });
       }

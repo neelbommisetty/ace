@@ -38,6 +38,11 @@ const DisputeResultSchema = z.object({
 
 type DisputeResult = z.infer<typeof DisputeResultSchema>;
 
+// 180s: same idle-window contract as the review watchdog (reviews.ts) —
+// mirrors STREAM_IDLE_TIMEOUT_MS there, kept local since the two engines
+// don't otherwise share constants.
+const STREAM_IDLE_TIMEOUT_MS = 180_000;
+
 /** Returns an actionable error when the run is not disputable, else null. */
 export function getDisputeGuardError(question: QuestionRow, run: TestRunRow): string | null {
   if (run.questionId !== question.id) return 'test run does not belong to this question';
@@ -184,9 +189,19 @@ ${buildFailureOutput(run)}
         });
       }
 
-      // Bound the single-shot call so a stalled connection can't hold the
-      // per-question in-flight slot (and its 409) until server restart.
-      const abort = AbortSignal.timeout(180_000);
+      // A fixed AbortSignal.timeout(180_000) used to bound this call, but
+      // that caps a genuinely healthy call the same as a stalled one — a
+      // buffering local proxy or a long adaptive-thinking pause can
+      // legitimately run past 180s with no output. Same liveness-based
+      // watchdog as the review engine (reviews.ts, NEE-361): reset on raw
+      // response bytes (onStreamActivity), not a hard call-duration cap.
+      const abort = new AbortController();
+      let lastActivityAt = Date.now();
+      const watchdog = setInterval(() => {
+        if (Date.now() - lastActivityAt > STREAM_IDLE_TIMEOUT_MS) {
+          abort.abort(new Error('dispute analysis stalled — no output for 3 minutes'));
+        }
+      }, 15_000);
       // DisputeResultSchema is entirely wire-safe (fixedTestCode already
       // reaches the browser via the apply flow) and the prompt is the user's
       // own failing tests and output — both recorded as-is. The recorder
@@ -204,13 +219,18 @@ ${buildFailureOutput(run)}
       let result: DisputeResult;
       try {
         result = await chatObjectStream(provider, messages, DisputeResultSchema, {
-          abortSignal: abort,
+          abortSignal: abort.signal,
           purpose: 'dispute',
           onPartial: (partial) => step.partial(partial),
+          onStreamActivity: () => {
+            lastActivityAt = Date.now();
+          },
         });
       } catch (err) {
         step.fail(err instanceof Error ? err.message : String(err));
         throw err;
+      } finally {
+        clearInterval(watchdog);
       }
       step.done(result.verdict);
       // A paid call that resolved after dispose() — see
