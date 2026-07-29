@@ -3,11 +3,16 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import chalk from 'chalk';
 import { getQuestionsDir, isWorkspaceInitialized } from '../lib/paths.js';
+import { copyStarterPack } from '../lib/starter-pack.js';
 
-function parseArgs(args: string[]): { force: boolean; skipInstall: boolean } {
+function parseArgs(args: string[]): { force: boolean; skipInstall: boolean; samples: boolean } {
   return {
     force: args.includes('--force'),
     skipInstall: args.includes('--skip-install'),
+    // A fresh workspace gets the bundled starter questions so the first
+    // `ace ui` is practisable with no API key (NEE-301). `--no-samples`
+    // reproduces the old behaviour: an empty questions/ tree.
+    samples: !args.includes('--no-samples'),
   };
 }
 
@@ -66,7 +71,7 @@ const TSCONFIG_TEMPLATE = {
 };
 
 export async function run(args: string[]): Promise<void> {
-  const { force, skipInstall } = parseArgs(args);
+  const { force, skipInstall, samples } = parseArgs(args);
   const root = process.cwd();
   const shouldSkipInstall =
     skipInstall || process.env.ACE_SKIP_INSTALL === '1' || process.env.ACE_SKIP_INSTALL === 'true';
@@ -88,6 +93,31 @@ export async function run(args: string[]): Promise<void> {
   if (!fs.existsSync(questionsDir)) {
     fs.mkdirSync(questionsDir, { recursive: true });
     changes.push('Created questions/');
+  }
+
+  // Starter pack — copied before npm install so the summary below is the last
+  // thing between the user and a workspace they can actually open.
+  let installedSamples = 0;
+  if (samples) {
+    try {
+      const pack = copyStarterPack(root);
+      installedSamples = pack.installed.length;
+      if (pack.installed.length > 0) {
+        changes.push(
+          `Added ${pack.installed.length} starter question${pack.installed.length === 1 ? '' : 's'}`,
+        );
+      }
+      if (pack.unavailable.length > 0) {
+        console.warn(
+          chalk.yellow(
+            `Warning: ${pack.unavailable.length} starter question(s) missing from this install`,
+          ),
+        );
+      }
+    } catch {
+      // A broken pack must not fail the init — the workspace itself is fine.
+      console.warn(chalk.yellow('Warning: could not copy the starter questions'));
+    }
   }
 
   // Create or merge package.json
@@ -179,11 +209,22 @@ export async function run(args: string[]): Promise<void> {
 
   console.log();
 
-  // Print next steps
+  // Print next steps. The app comes FIRST and needs no key: with the starter
+  // pack on disk there is something to practise immediately, and Settings
+  // inside the app is a better place to paste a key than a second CLI command.
   console.log(chalk.bold('Next steps:'));
-  console.log(chalk.dim('  1. Configure API keys:'));
-  console.log(chalk.dim('     ace setup'));
-  console.log(chalk.dim('  2. Open the app and generate your first question:'));
+  console.log(chalk.dim('  1. Open the app:'));
   console.log(chalk.dim('     ace ui'));
+  if (installedSamples > 0) {
+    console.log(
+      chalk.dim(
+        `  2. Pick one of the ${installedSamples} starter questions and start practising.`,
+      ),
+    );
+    console.log(chalk.dim('  3. To generate your own questions, add an API key in Settings.'));
+  } else {
+    console.log(chalk.dim('  2. Add an API key in Settings, then generate your first question.'));
+    console.log(chalk.dim('     (Or add the bundled starter questions from the Library.)'));
+  }
   console.log();
 }

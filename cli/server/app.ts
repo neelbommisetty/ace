@@ -192,6 +192,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   routes.registerAiRoutes(app, ctx);
   routes.registerHistoryRoutes(app, ctx);
   routes.registerSettingsRoutes(app, ctx);
+  routes.registerStarterPackRoutes(app, ctx);
   routes.registerResetRoutes(app, ctx);
   routes.registerSseRoutes(app, ctx);
   routes.registerStaticRoutes(app, ctx);

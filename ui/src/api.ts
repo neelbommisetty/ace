@@ -19,6 +19,7 @@ import type {
   RecentWorkspace,
   ReviewRow,
   SettingsInfo,
+  StarterPackInstallResult,
   TestRunRow,
   TestRunTrigger,
   WorkspaceInfo,
@@ -324,6 +325,16 @@ export function putSettings(body: {
   defaultProvider?: 'openai' | 'anthropic';
 }): Promise<SettingsInfo> {
   return request('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
+}
+
+// ---- starter pack (NEE-301) -------------------------------------------------
+
+/**
+ * Copies the bundled starter questions into the active workspace. Safe to
+ * call twice — the server skips questions that already exist on disk.
+ */
+export function installStarterPack(): Promise<StarterPackInstallResult> {
+  return request('/api/starter-pack', { method: 'POST' });
 }
 
 export function resetWorkspace(

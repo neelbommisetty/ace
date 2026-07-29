@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { getGenerationJobs, getQuestions, getWorkspace } from '../api';
+import { getGenerationJobs, getQuestions, getSettings, getWorkspace, installStarterPack } from '../api';
 import { ImportBanner } from '../components/ImportBanner';
 import { QuestionTable } from '../components/QuestionTable';
 import { ResumeCard } from '../components/ResumeCard';
 import { CATEGORY_SLUGS, categoryShortName } from '../lib/categories';
 import { openWorkspaceSwitchDialog } from '../lib/switchSignal';
 import { useSseEvent } from '../sse';
-import type { QuestionStatus, QuestionWithStats, WorkspaceInfo } from '../types';
+import type { QuestionStatus, QuestionWithStats, SettingsInfo, WorkspaceInfo } from '../types';
 
 type StatusFilter = 'all' | QuestionStatus;
 
@@ -17,6 +17,13 @@ export function Library() {
   const [error, setError] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  // Null until the settings fetch lands (or if it fails). Only a CONFIRMED
+  // keyless workspace repoints the empty-state CTA at Settings — while the
+  // answer is unknown, /new stays the primary action and NewQuestion's own
+  // keyless notice remains the backstop.
+  const [settings, setSettings] = useState<SettingsInfo | null>(null);
+  const [addingSamples, setAddingSamples] = useState(false);
+  const [samplesNote, setSamplesNote] = useState<string | null>(null);
   // Tracked by job id (not a running +/-1 counter) so a missed/reordered SSE
   // event can't permanently skew the count, and so the seed fetch below can
   // merge with — rather than clobber — whatever the live SSE handlers have
@@ -42,6 +49,48 @@ export function Library() {
 
   useEffect(() => {
     refetch();
+  }, [refetch]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getSettings()
+      .then((info) => {
+        if (!cancelled) setSettings(info);
+      })
+      .catch(() => {
+        // Best effort: an unknown provider state keeps the default CTA.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const keyless =
+    settings != null &&
+    !settings.mockMode &&
+    !settings.openai.configured &&
+    !settings.anthropic.configured;
+
+  const addStarterQuestions = useCallback(() => {
+    setAddingSamples(true);
+    setSamplesNote(null);
+    installStarterPack()
+      .then((result) => {
+        if (result.installed.length === 0) {
+          setSamplesNote(
+            result.unavailable.length > 0
+              ? 'The starter questions are missing from this ACE install.'
+              : 'The starter questions are already in this workspace.',
+          );
+        }
+        refetch();
+      })
+      .catch((e: unknown) => {
+        setSamplesNote(e instanceof Error ? e.message : 'Could not add the starter questions');
+      })
+      .finally(() => {
+        setAddingSamples(false);
+      });
   }, [refetch]);
 
   useEffect(() => {
@@ -190,11 +239,26 @@ export function Library() {
               <div className="empty-state">
                 <p className="empty-title">No questions yet</p>
                 <p className="empty-hint">
-                  Describe what you want to practice and ACE will generate it for you.
+                  {keyless
+                    ? 'Generating questions needs a provider API key. The bundled starter questions need nothing at all.'
+                    : 'Describe what you want to practice and ACE will generate it for you.'}
                 </p>
-                <Link className="btn btn-accent" to="/new">
-                  Create your first question
-                </Link>
+                <div className="empty-actions">
+                  {keyless ? (
+                    <Link className="btn btn-accent" to="/settings">
+                      Add an API key
+                    </Link>
+                  ) : (
+                    <Link className="btn btn-accent" to="/new">
+                      Create your first question
+                    </Link>
+                  )}
+                  {/* Always available — no key, no network, no cost. */}
+                  <button className="btn" onClick={addStarterQuestions} disabled={addingSamples}>
+                    {addingSamples ? 'Adding…' : 'Add starter questions'}
+                  </button>
+                </div>
+                {samplesNote != null && <p className="empty-note">{samplesNote}</p>}
               </div>
             ) : visible.length === 0 ? (
               <div className="empty-state">

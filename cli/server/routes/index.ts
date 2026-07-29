@@ -11,5 +11,6 @@ export { registerResetRoutes } from './reset.js';
 export { registerReviewRoutes } from './reviews.js';
 export { registerSettingsRoutes } from './settings.js';
 export { registerSseRoutes } from './sse.js';
+export { registerStarterPackRoutes } from './starter-pack.js';
 export { registerStaticRoutes } from './static.js';
 export { registerWorkspaceRoutes } from './workspace.js';

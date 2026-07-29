@@ -21,7 +21,7 @@ ${chalk.bold.cyan('ace')} — Frontend Interview Prep CLI
 ${chalk.bold('Commands:')}
 
   ${chalk.green('setup')}      Configure API keys (stored in ~/.ace)
-  ${chalk.green('init')}       Initialize workspace with questions/ and test config
+  ${chalk.green('init')}       Initialize workspace with starter questions and test config
   ${chalk.green('ui')}         Launch the ACE web app
 
 ${chalk.bold('Getting started:')}
@@ -35,6 +35,9 @@ ${chalk.bold('Getting started:')}
 
   ${chalk.dim('# Initialize without installing workspace dependencies')}
   ace init --skip-install
+
+  ${chalk.dim('# Start with an empty library instead of the bundled starter questions')}
+  ace init --no-samples
 
   ${chalk.dim('# Pick a port, or skip opening a browser tab')}
   ace ui --port 4300

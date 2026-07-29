@@ -52,11 +52,18 @@ Global configuration lives under `~/.ace/`, per-workspace state under `<workspac
 
 ```bash
 npm install -g ace-interview-prep
-ace setup
 mkdir practice && cd practice
 ace init
 ace ui
 ```
+
+`ace init` copies a small hand-authored starter pack (six questions across JS/TS,
+LeetCode, React, and system design) into the new workspace, so the first `ace ui`
+opens a library you can practise in immediately — no API key, no LLM call. Pass
+`ace init --no-samples` for an empty workspace; an existing workspace can adopt
+the pack later from the Library's "Add starter questions" action. Add provider
+credentials with `ace setup` (or in the app's Settings screen) when you want ACE
+to generate questions and review your solutions.
 
 `ace setup` stores provider credentials in `~/.ace/config.json` and validates them before saving. If both providers are valid, it also records a default provider. Useful variants:
 

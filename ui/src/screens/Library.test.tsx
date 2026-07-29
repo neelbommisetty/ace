@@ -1,10 +1,17 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useEffect, useRef } from 'react';
 import { MemoryRouter } from 'react-router';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerWorkspaceSwitchOpener } from '../lib/switchSignal';
 import { Library } from './Library';
-import type { GenerationJobRow, QuestionWithStats, SseEventMap, SseEventName, WorkspaceInfo } from '../types';
+import type {
+  GenerationJobRow,
+  QuestionWithStats,
+  SettingsInfo,
+  SseEventMap,
+  SseEventName,
+  WorkspaceInfo,
+} from '../types';
 
 // Same seam as App.test.tsx / GenerationJobStrip.test.tsx: `useSseEvent`
 // registers into a module-level handler registry that `emitSse` can drive
@@ -37,15 +44,25 @@ vi.mock('../sse', () => ({
   },
 }));
 
-const { getWorkspace, getQuestions, getGenerationJobs } = vi.hoisted(() => ({
-  getWorkspace: vi.fn(),
-  getQuestions: vi.fn(),
-  getGenerationJobs: vi.fn(),
-}));
+const { getWorkspace, getQuestions, getGenerationJobs, getSettings, installStarterPack } =
+  vi.hoisted(() => ({
+    getWorkspace: vi.fn(),
+    getQuestions: vi.fn(),
+    getGenerationJobs: vi.fn(),
+    getSettings: vi.fn(),
+    installStarterPack: vi.fn(),
+  }));
 
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>();
-  return { ...actual, getWorkspace, getQuestions, getGenerationJobs };
+  return {
+    ...actual,
+    getWorkspace,
+    getQuestions,
+    getGenerationJobs,
+    getSettings,
+    installStarterPack,
+  };
 });
 
 function emit<K extends SseEventName>(name: K, payload: SseEventMap[K]) {
@@ -118,6 +135,26 @@ function renderLibrary() {
   );
 }
 
+function settings(overrides: Partial<SettingsInfo> = {}): SettingsInfo {
+  return {
+    openai: { configured: true, masked: '...abcd', baseUrl: null },
+    anthropic: { configured: false, masked: null, baseUrl: null },
+    defaultProvider: 'openai',
+    mockMode: false,
+    ...overrides,
+  };
+}
+
+const KEYLESS: SettingsInfo = settings({
+  openai: { configured: false, masked: null, baseUrl: null },
+  defaultProvider: null,
+});
+
+beforeEach(() => {
+  getSettings.mockResolvedValue(settings());
+  installStarterPack.mockResolvedValue({ installed: [], skipped: [], unavailable: [] });
+});
+
 afterEach(() => {
   vi.clearAllMocks();
   sseHandlers.clear();
@@ -153,6 +190,98 @@ describe('Library', () => {
     expect(screen.queryByText(/ace generate/)).toBeNull();
     const cta = screen.getByRole('link', { name: 'Create your first question' });
     expect(cta).toHaveAttribute('href', '/new');
+  });
+
+  // NEE-301: the first-run dead end. With no provider configured, sending the
+  // user to /new sends them to a disabled form, so the primary CTA has to be
+  // Settings — and the starter pack has to be reachable either way.
+  it('points the primary empty-state CTA at Settings when no provider is configured', async () => {
+    getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+    getQuestions.mockResolvedValue([]);
+    getGenerationJobs.mockResolvedValue({ jobs: [] });
+    getSettings.mockResolvedValue(KEYLESS);
+    renderLibrary();
+
+    const cta = await screen.findByRole('link', { name: 'Add an API key' });
+    expect(cta).toHaveAttribute('href', '/settings');
+    expect(screen.queryByRole('link', { name: 'Create your first question' })).toBeNull();
+  });
+
+  it('keeps the /new CTA while the provider state is still unknown', async () => {
+    getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+    getQuestions.mockResolvedValue([]);
+    getGenerationJobs.mockResolvedValue({ jobs: [] });
+    getSettings.mockRejectedValue(new Error('offline'));
+    renderLibrary();
+
+    await screen.findByText('No questions yet');
+    expect(screen.getByRole('link', { name: 'Create your first question' })).toHaveAttribute(
+      'href',
+      '/new',
+    );
+  });
+
+  it.each([
+    ['configured', settings()],
+    ['keyless', KEYLESS],
+  ])('offers "Add starter questions" when %s', async (_label, settingsInfo) => {
+    getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+    getQuestions.mockResolvedValue([]);
+    getGenerationJobs.mockResolvedValue({ jobs: [] });
+    getSettings.mockResolvedValue(settingsInfo);
+    renderLibrary();
+
+    expect(await screen.findByRole('button', { name: 'Add starter questions' })).toBeInTheDocument();
+  });
+
+  it('installs the starter pack and refetches the library', async () => {
+    getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+    getQuestions.mockResolvedValue([]);
+    getGenerationJobs.mockResolvedValue({ jobs: [] });
+    getSettings.mockResolvedValue(KEYLESS);
+    installStarterPack.mockResolvedValue({
+      installed: ['js-ts/debounce-with-cancel'],
+      skipped: [],
+      unavailable: [],
+    });
+    renderLibrary();
+
+    const button = await screen.findByRole('button', { name: 'Add starter questions' });
+    getQuestions.mockResolvedValue([question({ title: 'Debounce with Cancel and Flush' })]);
+    fireEvent.click(button);
+
+    expect(installStarterPack).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText('Debounce with Cancel and Flush')).toBeInTheDocument();
+  });
+
+  it('explains a no-op install instead of looking broken', async () => {
+    getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+    getQuestions.mockResolvedValue([]);
+    getGenerationJobs.mockResolvedValue({ jobs: [] });
+    installStarterPack.mockResolvedValue({
+      installed: [],
+      skipped: ['js-ts/debounce-with-cancel'],
+      unavailable: [],
+    });
+    renderLibrary();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add starter questions' }));
+
+    expect(
+      await screen.findByText('The starter questions are already in this workspace.'),
+    ).toBeInTheDocument();
+  });
+
+  it('surfaces an install failure', async () => {
+    getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+    getQuestions.mockResolvedValue([]);
+    getGenerationJobs.mockResolvedValue({ jobs: [] });
+    installStarterPack.mockRejectedValue(new Error('no workspace mounted'));
+    renderLibrary();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add starter questions' }));
+
+    expect(await screen.findByText('no workspace mounted')).toBeInTheDocument();
   });
 
   it('shows a generating pill seeded from a running job and hides it once done', async () => {

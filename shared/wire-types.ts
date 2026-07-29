@@ -241,6 +241,19 @@ export interface SettingsInfo {
   mockMode: boolean;
 }
 
+/**
+ * POST /api/starter-pack — per-question outcome of copying the bundled
+ * starter pack into the active workspace (NEE-301). Ids are "<category>/<slug>".
+ */
+export interface StarterPackInstallResult {
+  /** Copied by this call. */
+  installed: string[];
+  /** Already present on disk; left exactly as they were. */
+  skipped: string[];
+  /** Missing from the packaged tree — a broken install, not a user error. */
+  unavailable: string[];
+}
+
 export type HistoryItem =
   | { type: 'review'; at: string; question: QuestionRow; review: ReviewRow }
   | { type: 'dispute'; at: string; question: QuestionRow; dispute: DisputeRow };

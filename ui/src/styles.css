@@ -2393,6 +2393,22 @@ code {
   margin-top: 14px;
 }
 
+/* Row of empty-state actions: the primary CTA plus the always-available
+   "Add starter questions" escape hatch (NEE-301). */
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+  align-items: center;
+}
+
+.empty-note {
+  color: var(--dim);
+  font-size: 12.5px;
+  margin: 12px 0 0;
+}
+
 .toast {
   position: fixed;
   bottom: 20px;

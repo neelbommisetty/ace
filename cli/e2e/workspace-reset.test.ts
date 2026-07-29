@@ -181,10 +181,17 @@ async function connectSse(baseUrl: string, token: string): Promise<SseClient> {
  * question dir on disk to reset — not the generation pipeline. The values
  * mirror what the old `ACE_MOCK_LLM_MODE=generate` payload produced, so the
  * scaffolded files are byte-identical to what this suite ran against before.
+ *
+ * `--no-samples` (NEE-301) keeps this suite's arithmetic about ONE question:
+ * the reset assertions count questions and restored files, and the starter
+ * pack `ace init` now installs by default would drown that signal.
  */
 function seedWorkspace(): { root: string; home: string; cleanup: () => void } {
   const { root, home, cleanup } = createTempWorkspace();
-  const initResult = runAce(['init', '--skip-install'], { cwd: root, env: { HOME: home } });
+  const initResult = runAce(['init', '--skip-install', '--no-samples'], {
+    cwd: root,
+    env: { HOME: home },
+  });
   expect(initResult.status).toBe(0);
   scaffoldQuestionAt(root, {
     title: 'Two Sum',
