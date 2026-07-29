@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { getCategoryConfig, getSuggestedTime, isDesignCategory } from './categories.js';
+import { getCategoryConfig, getSuggestedTime, hasTests } from './categories.js';
 import { getQuestionsDir } from './paths.js';
 import { STARTER_PACK, copyStarterPack, getStarterPackDir } from './starter-pack.js';
 
@@ -41,7 +41,7 @@ describe('starter pack contents', () => {
     const categories = new Set(STARTER_PACK.map((q) => q.category));
     expect(categories.size).toBeGreaterThanOrEqual(5);
     // A design question exercises the notes.md / no-test layout.
-    expect(STARTER_PACK.some((q) => isDesignCategory(q.category))).toBe(true);
+    expect(STARTER_PACK.some((q) => !hasTests(getCategoryConfig(q.category)))).toBe(true);
   });
 
   it.each(STARTER_PACK.map((q) => [`${q.category}/${q.slug}`, q] as const))(
@@ -54,8 +54,8 @@ describe('starter pack contents', () => {
       for (const file of [...config.solutionFiles, ...config.testFiles]) {
         expect(fs.existsSync(path.join(dir, file))).toBe(true);
       }
-      if (isDesignCategory(question.category)) {
-        // Design questions carry notes.md and no test file at all.
+      if (!hasTests(config)) {
+        // Design/behavioral questions carry a prose file and no test file.
         expect(config.testFiles).toEqual([]);
       } else {
         expect(config.testFiles.length).toBeGreaterThan(0);
@@ -88,7 +88,7 @@ describe('starter pack contents', () => {
 
   it('ships a hidden reference solution for every coding question', () => {
     for (const question of STARTER_PACK) {
-      if (isDesignCategory(question.category)) continue;
+      if (!hasTests(getCategoryConfig(question.category))) continue;
       const reference = path.join(packDir, question.category, question.slug, '.reference.md');
       expect(fs.existsSync(reference)).toBe(true);
     }
@@ -108,7 +108,7 @@ describe('copyStarterPack', () => {
     for (const question of STARTER_PACK) {
       const dir = path.join(getQuestionsDir(root), question.category, question.slug);
       expect(fs.existsSync(path.join(dir, 'README.md'))).toBe(true);
-      if (!isDesignCategory(question.category)) {
+      if (hasTests(getCategoryConfig(question.category))) {
         // Dotfiles are easy to lose in a naive copy; the debrief needs this one.
         expect(fs.existsSync(path.join(dir, '.reference.md'))).toBe(true);
       }
