@@ -510,6 +510,10 @@ function RoomInner({
                 justDoneId={review.justDoneId}
                 settings={review.settings}
                 onRequest={readonly ? undefined : review.requestReview}
+                probeSets={review.probeSets}
+                probesRunning={review.probesRunning}
+                probeNotice={review.probeNotice}
+                onRequestProbes={readonly ? undefined : review.requestProbes}
                 onCollapse={() => setAiOpen(false)}
               />
             </div>

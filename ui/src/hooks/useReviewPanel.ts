@@ -1,9 +1,18 @@
 import { useCallback, useRef, useState, type RefObject } from 'react';
-import { ApiError, getDisputes, getReviews, getSettings, startReview } from '../api';
+import {
+  ApiError,
+  getDisputes,
+  getProbeSets,
+  getReviews,
+  getSettings,
+  startProbes,
+  startReview,
+} from '../api';
 import type { ReviewNotice, ReviewStream } from '../components/AiPanel';
 import { useSseEvent } from '../sse';
 import type {
   DisputeRow,
+  ProbeSetRow,
   QuestionFileInfo,
   QuestionRow,
   ReviewRow,
@@ -14,8 +23,9 @@ import { useCancellableEffect } from './useCancellableEffect';
 import { useLatestRef } from './useLatestRef';
 
 /**
- * The Room's AI-review + dispute slice: review rows, the live review stream,
- * notices, dispute rows, the dispute modal, and their SSE handlers.
+ * The Room's AI-review + dispute + follow-up-probes slice: review rows, the
+ * live review stream, notices, dispute rows, the dispute modal, probe sets,
+ * and their SSE handlers.
  */
 export function useReviewPanel({
   question,
@@ -27,7 +37,7 @@ export function useReviewPanel({
   question: QuestionRow;
   flushSaves: () => Promise<void>;
   editorFiles: QuestionFileInfo[];
-  loadFileInto: (relPath: string) => Promise<void>;
+  loadFileInto: (relPath: string, opts?: { onlyIfClean?: boolean }) => Promise<void>;
   startRunRef: RefObject<(trigger: TestRunTrigger) => void>;
 }) {
   const questionId = question.id;
@@ -38,6 +48,11 @@ export function useReviewPanel({
   const [reviewStream, setReviewStream] = useState<ReviewStream | null>(null);
   const [reviewNotice, setReviewNotice] = useState<ReviewNotice | null>(null);
   const [justDoneId, setJustDoneId] = useState<string | null>(null);
+  const [probeSets, setProbeSets] = useState<ProbeSetRow[]>([]);
+  const [probeJobId, setProbeJobId] = useState<string | null>(null);
+  const [probeNotice, setProbeNotice] = useState<ReviewNotice | null>(null);
+  const editorFilesRef = useLatestRef(editorFiles);
+  const loadFileIntoRef = useLatestRef(loadFileInto);
   // Provider/keyless + model-map state for the AiPanel gating and disclosure
   // (NEE-303) — same getSettings() NewQuestion already calls, fetched here so
   // Room doesn't need its own copy just to thread it one level down.
@@ -55,6 +70,11 @@ export function useReviewPanel({
       getDisputes(question.category, question.slug)
         .then((rows) => {
           if (!cancelled()) setDisputes(rows);
+        })
+        .catch(() => {});
+      getProbeSets(question.category, question.slug)
+        .then((rows) => {
+          if (!cancelled()) setProbeSets(rows);
         })
         .catch(() => {});
     },
@@ -169,6 +189,56 @@ export function useReviewPanel({
     void Promise.all(reloads).then(() => startRunRef.current('manual'));
   }, [question.category, question.slug, editorFiles, loadFileInto, startRunRef]);
 
+  // ---- follow-up probes (NEE-345) ------------------------------------------
+  // No composer, no message history, no turn list, no probes-chunk SSE event
+  // — one bounded structured call per attempt, mirroring the dispute engine.
+  // Answers are typed directly in the Monaco editor (story.md), never here.
+  const requestProbes = useCallback(() => {
+    setProbeNotice(null);
+    void (async () => {
+      try {
+        // Probes read the story from disk — flush dirty buffers first,
+        // exactly as requestReview does.
+        await flushSavesRef.current();
+        const { probeJobId: jobId } = await startProbes(question.category, question.slug);
+        setProbeJobId(jobId);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 503) {
+          setProbeNotice({ kind: 'no-key', message: e.message });
+        } else {
+          setProbeNotice({
+            kind: 'error',
+            message: e instanceof Error ? e.message : 'Failed to request follow-up probes',
+          });
+        }
+      }
+    })();
+  }, [question.category, question.slug, flushSavesRef]);
+
+  useSseEvent('probes-started', (p) => {
+    if (p.questionId !== questionId) return;
+    setProbeJobId(p.probeJobId);
+    setProbeNotice(null);
+  });
+
+  useSseEvent('probes-done', (p) => {
+    if (p.questionId !== questionId) return;
+    setProbeJobId(null);
+    setProbeSets((cur) => [p.probeSet, ...cur.filter((s) => s.id !== p.probeSet.id)]);
+    // The server's own write is echo-suppressed (writeWorkspaceFile
+    // registers it) — no file-changed event arrives for the append. Reload
+    // the story buffer explicitly; onlyIfClean routes a raced dirty buffer
+    // into the existing conflict banner instead of clobbering it.
+    const story = editorFilesRef.current.find((f) => f.kind === 'solution');
+    if (story) loadFileIntoRef.current(story.relPath, { onlyIfClean: true }).catch(() => {});
+  });
+
+  useSseEvent('probes-error', (p) => {
+    if (p.questionId !== questionId) return;
+    setProbeJobId(null);
+    setProbeNotice({ kind: 'error', message: p.message });
+  });
+
   return {
     reviews,
     disputes,
@@ -181,5 +251,9 @@ export function useReviewPanel({
     openDispute,
     closeDispute,
     handleDisputeApplied,
+    probeSets,
+    probesRunning: probeJobId != null,
+    probeNotice,
+    requestProbes,
   };
 }

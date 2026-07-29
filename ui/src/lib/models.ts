@@ -35,6 +35,7 @@ export const PURPOSE_LABELS: Record<LLMPurpose, string> = {
   review: 'Request review',
   'edge-audit': 'Edge audit',
   dispute: 'Dispute a failing test',
+  probe: 'Follow-up probes',
   'review-extract': 'Score extraction',
 };
 
@@ -44,5 +45,6 @@ export const PURPOSE_ORDER: LLMPurpose[] = [
   'review',
   'edge-audit',
   'dispute',
+  'probe',
   'review-extract',
 ];

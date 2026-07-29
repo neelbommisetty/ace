@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Link } from 'react-router';
+import { isProseAnswer, lookupCategoryConfig } from '@shared/categories';
 import { getDebrief, type DebriefResponse } from '../api';
 import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { relTime } from '../lib/format';
 import { isKeyless, modelLabel, resolvedModelFor } from '../lib/models';
-import type { QuestionRow, ReviewRow, SettingsInfo } from '../types';
+import type { ProbeSetRow, QuestionRow, ReviewRow, SettingsInfo } from '../types';
 import { DimensionBars, ReviewBadge } from './ReviewBadge';
 
 export interface ReviewStream {
@@ -28,6 +29,10 @@ export function AiPanel({
   justDoneId,
   settings,
   onRequest,
+  probeSets,
+  probesRunning,
+  probeNotice,
+  onRequestProbes,
   onCollapse,
 }: {
   question: QuestionRow;
@@ -44,6 +49,12 @@ export function AiPanel({
   settings: SettingsInfo | null;
   /** Absent in the readonly reference mode — hides the "Request review" action. */
   onRequest?: () => void;
+  /** Follow-up probes (NEE-345) — defaults keep every existing call site (and test) unaffected. */
+  probeSets?: ProbeSetRow[];
+  probesRunning?: boolean;
+  probeNotice?: ReviewNotice | null;
+  /** Absent in the readonly reference mode, exactly like onRequest — hides the probes button. */
+  onRequestProbes?: () => void;
   onCollapse: () => void;
 }) {
   const running = stream != null && stream.error == null;
@@ -57,6 +68,15 @@ export function AiPanel({
   const keyless = isKeyless(settings);
   const canRequest = settingsLoaded && !keyless;
   const reviewModel = resolvedModelFor(settings, 'review');
+
+  // Follow-up probes (NEE-345): gated identically to Review, PLUS a
+  // category-capability check — the feature only makes sense for prose
+  // answers (story.md/notes.md), never a coding question's solution file.
+  const config = lookupCategoryConfig(question.category);
+  const proseCategory = config != null && isProseAnswer(config);
+  const probeModel = resolvedModelFor(settings, 'probe');
+  const canRequestProbes = proseCategory && settingsLoaded && !keyless;
+  const primaryFile = config?.solutionFiles[0] ?? 'the story file';
 
   // Debrief (interviewer packet + reference solution) — server-gated: the
   // endpoint 404s until the first review exists, and manual/pre-overhaul
@@ -117,6 +137,27 @@ export function AiPanel({
                 : reviewModel != null
                   ? `Request review · ${modelLabel(reviewModel)}`
                   : 'Request review'}
+            </button>
+          )}
+          {onRequestProbes && canRequestProbes && (
+            <button
+              className="btn btn-small"
+              disabled={probesRunning || (probeSets != null && probeSets.length > 0)}
+              onClick={onRequestProbes}
+              title={
+                probeSets != null && probeSets.length > 0
+                  ? 'Follow-up probes already generated for this attempt'
+                  : probeModel != null
+                    ? `Costs one LLM call · ${modelLabel(probeModel)}`
+                    : 'runs an LLM to draft follow-up questions — needs an API key in Settings'
+              }
+            >
+              {probesRunning && <span className="pulse-dot" />}
+              {probesRunning
+                ? 'Drafting probes…'
+                : probeModel != null
+                  ? `Follow-up probes · ${modelLabel(probeModel)}`
+                  : 'Follow-up probes'}
             </button>
           )}
           <button className="icon-btn" onClick={onCollapse} title="Collapse AI panel">
@@ -188,6 +229,31 @@ export function AiPanel({
                 </div>
               </details>
             )}
+          </div>
+        )}
+        {proseCategory && ((onRequestProbes && keyless) || probeNotice?.kind === 'no-key') && (
+          <div className="ai-notice">
+            No LLM API key configured —{' '}
+            <Link className="ai-notice-link" to="/settings">
+              add one in Settings
+            </Link>{' '}
+            to request follow-up probes.
+          </div>
+        )}
+        {probeNotice?.kind === 'error' && <div className="error-note">{probeNotice.message}</div>}
+        {probeSets != null && probeSets.length > 0 && (
+          <div className="review-card" data-testid="probe-panel">
+            <h3 className="activity-heading">Follow-up probes</h3>
+            <p className="pane-hint">
+              answer these in <code>{primaryFile}</code> ↓
+            </p>
+            <ul className="activity-list">
+              {probeSets[0].probes.map((probe, i) => (
+                <li key={i} className="probe-item">
+                  {probe.question}
+                </li>
+              ))}
+            </ul>
           </div>
         )}
         {past.length > 0 && (

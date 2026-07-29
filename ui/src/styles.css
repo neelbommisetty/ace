@@ -1731,6 +1731,31 @@ code {
   color: var(--accent);
 }
 
+/* follow-up probes (NEE-345) — a read-only list, deliberately no textarea:
+ * answers are typed in the Monaco editor, not here. */
+
+.pane-hint {
+  color: var(--faint);
+  font-size: 12px;
+  margin: 0 0 8px;
+}
+
+.pane-hint code {
+  font-family: var(--mono);
+  color: var(--dim);
+}
+
+.probe-item {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--panel-2);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.probe-item:last-child {
+  border-bottom: none;
+}
+
 .verdict-badge {
   display: inline-block;
   font-size: 11px;

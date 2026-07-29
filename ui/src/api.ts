@@ -13,6 +13,7 @@ import type {
   HistoryItem,
   ImportPreviewItem,
   ImportResult,
+  ProbeSetRow,
   QuestionDetail,
   QuestionRow,
   QuestionWithStats,
@@ -336,6 +337,16 @@ export function applyDispute(id: string): Promise<{ dispute: DisputeRow }> {
 /** `question` is embedded (NEE-306) — mirrors getReview's direct-load shape. */
 export function getDispute(id: string): Promise<DisputeRow & { question: QuestionRow }> {
   return request(`/api/disputes/${encodeURIComponent(id)}`);
+}
+
+// ---- follow-up probes (NEE-345) ---------------------------------------------
+
+export function startProbes(category: string, slug: string): Promise<{ probeJobId: string }> {
+  return request(questionPath(category, slug, '/probes'), { method: 'POST' });
+}
+
+export function getProbeSets(category: string, slug: string): Promise<ProbeSetRow[]> {
+  return request(questionPath(category, slug, '/probes'));
 }
 
 export function startFreshAttempt(
