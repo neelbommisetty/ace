@@ -37,10 +37,19 @@ import type {
   TestRunSummary,
   TestRunTrigger,
 } from './types.js';
+import { CATEGORIES, CATEGORY_SLUGS, hasTests } from '../lib/categories.js';
 import { nowIso, uuidv7 } from './ids.js';
 import { MIGRATIONS } from './migrations.js';
 
 const SCHEMA_VERSION_KEY = 'schema_version';
+
+/**
+ * Category slugs with an empty `testFiles` (design/behavioral, NEE-353) —
+ * these can never produce a test run, so `listQuestions` derives their
+ * `solved` status from a completed review instead. Computed once from
+ * `CATEGORIES` so the SQL below never hardcodes a slug.
+ */
+const NO_TEST_CATEGORY_SLUGS = CATEGORY_SLUGS.filter((slug) => !hasTests(CATEGORIES[slug]));
 
 // node:sqlite returns rows as null-prototype objects; values are
 // string | number | null for our schema.
@@ -359,6 +368,16 @@ class SqliteAceDb implements AceDb {
       "SELECT t.%COL% FROM test_runs t WHERE t.question_id = q.id " +
       "AND t.status IN ('done', 'compile-error') " +
       'ORDER BY t.at DESC, t.id DESC LIMIT 1';
+    // Categories with no test suite (design/behavioral, NEE-353) can never
+    // produce a test run, so their `solved` status comes from having at
+    // least one review instead — reviews are only ever persisted in full
+    // (createReview inserts one row, atomically, once the streamed body is
+    // complete; there is no pending/partial row), so "has a review row" IS
+    // "has a completed review". The slug set is a bound parameter, not
+    // interpolated, so this SQL never hardcodes a category.
+    const noTestPlaceholders = NO_TEST_CATEGORY_SLUGS.map(() => '?').join(', ');
+    const categoryHasNoTests =
+      NO_TEST_CATEGORY_SLUGS.length > 0 ? `q.category IN (${noTestPlaceholders})` : '0';
     const rows = this.stmt(
       `SELECT q.*,
         (SELECT COUNT(*) FROM attempts a WHERE a.question_id = q.id) AS attempt_count,
@@ -368,10 +387,12 @@ class SqliteAceDb implements AceDb {
         (${latestDone.replace('%COL%', 'total')}) AS last_done_total,
         (${latestDone.replace('%COL%', 'at')}) AS last_done_at,
         (${latestDone.replace('%COL%', 'status')}) AS last_done_status,
-        (SELECT MAX(t.at) FROM test_runs t WHERE t.question_id = q.id) AS last_run_at
+        (SELECT MAX(t.at) FROM test_runs t WHERE t.question_id = q.id) AS last_run_at,
+        (${categoryHasNoTests}) AS category_has_no_tests,
+        EXISTS (SELECT 1 FROM reviews rv WHERE rv.question_id = q.id) AS has_review
       FROM questions q
       ORDER BY q.category, q.slug`,
-    ).all() as SqlRow[];
+    ).all(...NO_TEST_CATEGORY_SLUGS) as SqlRow[];
 
     return rows.map((r) => {
       const attemptCount = r.attempt_count as number;
@@ -384,8 +405,24 @@ class SqliteAceDb implements AceDb {
               status: (r.last_done_status as 'done' | 'compile-error') ?? 'done',
             }
           : null;
+      const categoryHasNoTests = r.category_has_no_tests === 1;
+      const hasReview = r.has_review === 1;
       let status: QuestionStatus = 'not-attempted';
-      if (lastRun && lastRun.status === 'done' && lastRun.total > 0 && lastRun.passed === lastRun.total) {
+      if (categoryHasNoTests) {
+        // No test suite exists to derive status from — a completed review
+        // is the only signal (NEE-353). The review's verdict is irrelevant:
+        // any completed review means the question has been assessed.
+        if (hasReview) {
+          status = 'solved';
+        } else if (attemptCount > 0) {
+          status = 'in-progress';
+        }
+      } else if (
+        lastRun &&
+        lastRun.status === 'done' &&
+        lastRun.total > 0 &&
+        lastRun.passed === lastRun.total
+      ) {
         status = 'solved';
       } else if (attemptCount > 0) {
         status = 'in-progress';

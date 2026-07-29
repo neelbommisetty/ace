@@ -749,6 +749,77 @@ describe('question stats', () => {
   });
 });
 
+// NEE-353: categories with testFiles: [] (design-fe/design-be/design-full,
+// behavioral) can never produce a test run, so listQuestions derives their
+// `solved` status from a completed review instead. Coding categories keep
+// the pre-existing test-run-only derivation, asserted unchanged above.
+describe('question stats — no-test categories (NEE-353)', () => {
+  it('a behavioral question is not-attempted until an attempt exists, in-progress once attempted, solved once reviewed', () => {
+    const q = makeQuestion({ category: 'behavioral', slug: 'greatest-failure' });
+    expect(db.listQuestions()[0].stats.status).toBe('not-attempted');
+
+    db.createAttempt(q.id, { startedAt: '2026-07-01T09:00:00.000Z' });
+    expect(db.listQuestions()[0].stats.status).toBe('in-progress');
+
+    db.createReview({
+      questionId: q.id,
+      attemptId: null,
+      bodyMd: 'Solid story, clear ownership.',
+      verdict: 'Hire',
+      source: 'user',
+    });
+    expect(db.listQuestions()[0].stats.status).toBe('solved');
+  });
+
+  it('a design question reads solved from a review regardless of verdict (design semantics change is intentional)', () => {
+    const q = makeQuestion({ category: 'design-fe', slug: 'infinite-scroll' });
+    db.createAttempt(q.id);
+    db.createReview({
+      questionId: q.id,
+      attemptId: null,
+      bodyMd: 'Missed several trade-offs.',
+      verdict: 'No Hire',
+      source: 'user',
+    });
+    expect(db.listQuestions()[0].stats.status).toBe('solved');
+  });
+
+  it('a no-test question with zero attempts and zero reviews is not-attempted, never solved', () => {
+    const q = makeQuestion({ category: 'design-be', slug: 'rate-limiter' });
+    expect(db.listQuestions().find((x) => x.id === q.id)?.stats.status).toBe('not-attempted');
+  });
+
+  it('never produces a test run for a no-test category, so lastRun always stays null', () => {
+    const q = makeQuestion({ category: 'behavioral', slug: 'conflict-story' });
+    db.createAttempt(q.id);
+    db.createReview({ questionId: q.id, attemptId: null, bodyMd: 'Good.', source: 'user' });
+    const stats = db.listQuestions().find((x) => x.id === q.id)!.stats;
+    expect(stats.status).toBe('solved');
+    expect(stats.lastRun).toBeNull();
+  });
+
+  it('a coding question status is unchanged across not-attempted / in-progress / solved even with a review present', () => {
+    const q = makeQuestion({ category: 'js-ts', slug: 'debounce-with-review' });
+    expect(db.listQuestions()[0].stats.status).toBe('not-attempted');
+
+    const attempt = db.createAttempt(q.id);
+    expect(db.listQuestions()[0].stats.status).toBe('in-progress');
+
+    // A review alone must never solve a coding question — only a fully
+    // passing test run does.
+    db.createReview({ questionId: q.id, attemptId: null, bodyMd: 'Looks fine.', source: 'user' });
+    expect(db.listQuestions()[0].stats.status).toBe('in-progress');
+
+    const run = db.createTestRun({ questionId: q.id, attemptId: attempt.id, trigger: 'manual' });
+    db.finishTestRun(run.id, {
+      status: 'done',
+      summary: { total: 2, passed: 2, failed: 0, skipped: 0, durationMs: 10 },
+      results: [],
+    });
+    expect(db.listQuestions()[0].stats.status).toBe('solved');
+  });
+});
+
 describe('reviews and meta', () => {
   it('auto-increments review versions per question', () => {
     const q = makeQuestion();
