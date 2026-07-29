@@ -160,6 +160,16 @@ export function isDesignCategory(slug: CategorySlug): boolean {
   return CATEGORIES[slug].type === 'design';
 }
 
+/** True when this category has a sandbox-verifiable test suite. */
+export function hasTests(config: CategoryConfig): boolean {
+  return config.testFiles.length > 0;
+}
+
+/** True when the candidate's answer is a single markdown document, not code. */
+export function isProseAnswer(config: CategoryConfig): boolean {
+  return config.solutionFiles.length > 0 && config.solutionFiles.every((f) => f.endsWith('.md'));
+}
+
 export function slugify(text: string): string {
   return text
     .toLowerCase()

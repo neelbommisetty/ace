@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Handlebars from 'handlebars';
 import type { CategorySlug, Difficulty } from './categories.js';
-import { getCategoryConfig, getSuggestedTime, isDesignCategory } from './categories.js';
+import { getCategoryConfig, getSuggestedTime, hasTests } from './categories.js';
 import { createScorecard, writeScorecardAt } from './scorecard.js';
 import { getQuestionsDir as getQuestionsDirPath } from './paths.js';
 import { getImportMetaDirname } from './import-meta.js';
@@ -84,41 +84,37 @@ export function scaffoldQuestionAt(
   fs.writeFileSync(path.join(questionDir, 'README.md'), readmeTemplate(templateData));
   files.push('README.md');
 
-  if (isDesignCategory(opts.category)) {
-    // Design question: notes.md
-    const notesTemplate = loadTemplate(path.join(TEMPLATES_DIR, 'design', 'notes.md.hbs'));
-    fs.writeFileSync(path.join(questionDir, 'notes.md'), notesTemplate(templateData));
-    files.push('notes.md');
-  } else {
-    // Coding question: solution + test files
-    const templateDir = path.join(TEMPLATES_DIR, config.templateDir);
+  // Solution + test files. The generic loop covers design too: design
+  // declares templateDir: 'design' + solutionFiles: ['notes.md'], and
+  // cli/templates/design/notes.md.hbs is the exact file this joins —
+  // there is nothing design-specific left to special-case here.
+  const templateDir = path.join(TEMPLATES_DIR, config.templateDir);
 
-    for (const solutionFile of config.solutionFiles) {
-      const templateFile = solutionFile + '.hbs';
-      const templatePath = path.join(templateDir, templateFile);
+  for (const solutionFile of config.solutionFiles) {
+    const templateFile = solutionFile + '.hbs';
+    const templatePath = path.join(templateDir, templateFile);
 
-      if (fs.existsSync(templatePath)) {
-        const tmpl = loadTemplate(templatePath);
-        fs.writeFileSync(path.join(questionDir, solutionFile), tmpl(templateData));
-        files.push(solutionFile);
-      } else if (opts.solutionCode) {
-        fs.writeFileSync(path.join(questionDir, solutionFile), opts.solutionCode);
-        files.push(solutionFile);
-      }
+    if (fs.existsSync(templatePath)) {
+      const tmpl = loadTemplate(templatePath);
+      fs.writeFileSync(path.join(questionDir, solutionFile), tmpl(templateData));
+      files.push(solutionFile);
+    } else if (opts.solutionCode) {
+      fs.writeFileSync(path.join(questionDir, solutionFile), opts.solutionCode);
+      files.push(solutionFile);
     }
+  }
 
-    for (const testFile of config.testFiles) {
-      const templateFile = testFile + '.hbs';
-      const templatePath = path.join(templateDir, templateFile);
+  for (const testFile of config.testFiles) {
+    const templateFile = testFile + '.hbs';
+    const templatePath = path.join(templateDir, templateFile);
 
-      if (fs.existsSync(templatePath)) {
-        const tmpl = loadTemplate(templatePath);
-        fs.writeFileSync(path.join(questionDir, testFile), tmpl(templateData));
-        files.push(testFile);
-      } else if (opts.testCode) {
-        fs.writeFileSync(path.join(questionDir, testFile), opts.testCode);
-        files.push(testFile);
-      }
+    if (fs.existsSync(templatePath)) {
+      const tmpl = loadTemplate(templatePath);
+      fs.writeFileSync(path.join(questionDir, testFile), tmpl(templateData));
+      files.push(testFile);
+    } else if (opts.testCode) {
+      fs.writeFileSync(path.join(questionDir, testFile), opts.testCode);
+      files.push(testFile);
     }
   }
 
@@ -129,7 +125,7 @@ export function scaffoldQuestionAt(
     fs.writeFileSync(path.join(questionDir, '.interviewer.md'), opts.interviewerPacket);
     files.push('.interviewer.md');
   }
-  if (opts.referenceSolutionMd && !isDesignCategory(opts.category)) {
+  if (opts.referenceSolutionMd && hasTests(config)) {
     fs.writeFileSync(path.join(questionDir, '.reference.md'), opts.referenceSolutionMd);
     files.push('.reference.md');
   }

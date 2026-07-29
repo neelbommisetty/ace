@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getCategoryConfig, isDesignCategory, type CategorySlug, type Difficulty } from './categories.js';
+import { getCategoryConfig, hasTests, type CategorySlug, type Difficulty } from './categories.js';
 import { verifyGeneratedQuestion, type VerifyFn } from './gen-verify.js';
 import {
   chatObjectStream,
@@ -366,8 +366,8 @@ export async function generateVerifiedQuestion(
   const onProgress = opts.onProgress ?? (() => {});
   const onStageResult = opts.onStageResult ?? (() => {});
   const steps = opts.steps ?? NULL_STEPS;
-  const design = isDesignCategory(params.category);
   const config = getCategoryConfig(params.category);
+  const design = !hasTests(config);
 
   const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 

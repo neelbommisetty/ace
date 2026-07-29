@@ -1,7 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { isDesignCategory, lookupCategoryConfig, type CategoryConfig } from '../lib/categories.js';
+import {
+  isDesignCategory,
+  isProseAnswer,
+  lookupCategoryConfig,
+  type CategoryConfig,
+} from '../lib/categories.js';
 import { chatObject, chatStream, getModelId, type LLMMessage } from '../lib/llm.js';
 import { readFileOr } from '../lib/read-file-or.js';
 import { buildQuestionSection, buildSystemPrompt } from '../lib/prompt-builder.js';
@@ -130,8 +135,8 @@ export function getReviewGuardError(question: QuestionRow, db?: AceDb): string |
   const config = lookupCategoryConfig(question.category);
   if (!config) return `unknown category "${question.category}"`;
 
-  if (isDesignCategory(config.slug)) {
-    const notes = readFileOr(path.join(question.dirPath, 'notes.md'));
+  if (isProseAnswer(config)) {
+    const notes = readFileOr(path.join(question.dirPath, config.solutionFiles[0]));
     if (!hasMeaningfulNotes(notes)) {
       return 'notes.md has no design notes yet — write your design before requesting a review';
     }
@@ -180,7 +185,7 @@ function buildReviewMessages(
 
   let userContent: string;
   if (kind === 'design') {
-    const notes = readFileOr(path.join(question.dirPath, 'notes.md'));
+    const notes = readFileOr(path.join(question.dirPath, config.solutionFiles[0]));
     const designSubType =
       question.category === 'design-fe'
         ? 'frontend'

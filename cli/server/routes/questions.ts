@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Hono } from 'hono';
-import { lookupCategoryConfig } from '../../lib/categories.js';
+import { isProseAnswer, lookupCategoryConfig } from '../../lib/categories.js';
 import { toWorkspaceRelPath } from '../files.js';
 import { questionLookup } from '../route-helpers.js';
 import type { QuestionDetail, QuestionFileInfo } from '../types.js';
@@ -27,11 +27,12 @@ export function registerQuestionRoutes(app: Hono, ctx: RouteContext): void {
     const config = lookupCategoryConfig(question.category);
     const files: QuestionFileInfo[] = [];
     if (config) {
+      const solutionKind = isProseAnswer(config) ? 'notes' : 'solution';
       for (const name of config.solutionFiles) {
         files.push({
           name,
           relPath: toWorkspaceRelPath(workspaceRoot, path.join(question.dirPath, name)),
-          kind: name === 'notes.md' ? 'notes' : 'solution',
+          kind: solutionKind,
           readonly: false,
         });
       }

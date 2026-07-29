@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { lookupCategoryConfig, type CategoryConfig } from '../lib/categories.js';
+import { hasTests, lookupCategoryConfig, type CategoryConfig } from '../lib/categories.js';
 import { getImportMetaDirname } from '../lib/import-meta.js';
 import { chatObjectStream, type LLMMessage } from '../lib/llm.js';
 import { readFileOr } from '../lib/read-file-or.js';
@@ -43,7 +43,7 @@ export function getDisputeGuardError(question: QuestionRow, run: TestRunRow): st
   if (run.questionId !== question.id) return 'test run does not belong to this question';
   const config = lookupCategoryConfig(question.category);
   if (!config) return `unknown category "${question.category}"`;
-  if (config.testFiles.length === 0) {
+  if (!hasTests(config)) {
     return 'this question has no test files — there is nothing to dispute';
   }
   if (run.status !== 'done') {
