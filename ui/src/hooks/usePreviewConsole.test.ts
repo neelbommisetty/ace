@@ -38,6 +38,9 @@ describe('usePreviewConsole (NEE-351)', () => {
     postFromPreview({ source: 'not-ace-preview', kind: 'console-error', text: 'x', file: null, line: null });
     postFromPreview({ source: 'ace-preview', kind: 'console-error', text: 42, file: null, line: null });
     postFromPreview({ source: 'ace-preview', kind: 'console-error' }); // missing text
+    // An unrecognised kind is dropped, not rendered with an undefined label —
+    // the iframe is untrusted, so only the closed set is accepted (NEE-351).
+    postFromPreview({ source: 'ace-preview', kind: 'evil-kind', text: 'x', file: null, line: null });
     postFromPreview('just a string');
     postFromPreview(null);
     expect(result.current.entries).toEqual([]);

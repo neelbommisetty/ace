@@ -478,14 +478,21 @@ export interface PreviewStatus {
 // rendered — as plain text, never markup.
 // ---------------------------------------------------------------------------
 
-export type PreviewConsoleKind =
-  | 'console-log'
-  | 'console-warn'
-  | 'console-error'
-  | 'window-error'
-  | 'unhandled-rejection'
-  | 'vite-error'
-  | 'rate-limited';
+/** The closed set of preview console kinds. Exported as a runtime value so the
+ * postMessage receiver can drop any kind outside it (NEE-351: the iframe is
+ * untrusted, so an unrecognised message is discarded, not rendered). Keep in
+ * lockstep with the union below. */
+export const PREVIEW_CONSOLE_KINDS = [
+  'console-log',
+  'console-warn',
+  'console-error',
+  'window-error',
+  'unhandled-rejection',
+  'vite-error',
+  'rate-limited',
+] as const;
+
+export type PreviewConsoleKind = (typeof PREVIEW_CONSOLE_KINDS)[number];
 
 export interface PreviewConsoleMessage {
   source: 'ace-preview';

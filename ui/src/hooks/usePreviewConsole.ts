@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { PREVIEW_CONSOLE_KINDS } from '@shared/wire-types';
 import type { PreviewConsoleKind, PreviewConsoleMessage } from '../types';
+
+const KNOWN_KINDS: ReadonlySet<string> = new Set(PREVIEW_CONSOLE_KINDS);
 
 export interface PreviewConsoleEntry {
   id: number;
@@ -23,7 +26,9 @@ function isPreviewConsoleMessage(data: unknown): data is PreviewConsoleMessage {
   if (typeof data !== 'object' || data === null) return false;
   const d = data as Record<string, unknown>;
   if (d.source !== 'ace-preview') return false;
-  if (typeof d.kind !== 'string') return false;
+  // Closed set, not just "a string" (NEE-351): an unrecognised kind is dropped
+  // rather than rendered with an undefined label — the iframe is untrusted.
+  if (typeof d.kind !== 'string' || !KNOWN_KINDS.has(d.kind)) return false;
   if (typeof d.text !== 'string') return false;
   if (d.file !== null && typeof d.file !== 'string') return false;
   if (d.line !== null && typeof d.line !== 'number') return false;
