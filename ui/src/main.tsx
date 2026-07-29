@@ -6,7 +6,7 @@ import './styles.css';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
-import { clearStaleReloadGuard, triggerStaleReload } from './stale-reload';
+import { scheduleGuardClear, triggerStaleReload } from './stale-reload';
 
 // A rebuild rewrites dist/assets with new content hashes; an already-open
 // tab still requests lazy chunks under the old hashed names and Vite fires
@@ -28,7 +28,8 @@ createRoot(root).render(
   </StrictMode>,
 );
 
-// Reaching this point means the current bundle loaded and rendered
-// successfully, so any stale-reload guard from an earlier recovery no
-// longer applies — clear it so a later rebuild can trigger its own reload.
-clearStaleReloadGuard(window.sessionStorage);
+// The current bundle loaded and rendered, but that alone doesn't prove
+// recovery: a restored .ts question still has to construct Monaco workers
+// asynchronously, and a genuinely-missing chunk needs the chance to fail
+// (and re-set the guard) before we clear it — see scheduleGuardClear.
+scheduleGuardClear(window.sessionStorage, window, setTimeout);

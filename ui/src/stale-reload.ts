@@ -56,3 +56,43 @@ export function triggerStaleReload(
 export function clearStaleReloadGuard(storage: ReloadGuardStorage): void {
   storage.removeItem(GUARD_KEY);
 }
+
+/** Exposed for tests: the subset of `Window` `scheduleGuardClear` needs. */
+export interface GuardClearWindow {
+  document: { readyState: DocumentReadyState };
+  addEventListener(
+    type: 'load',
+    listener: () => void,
+    options?: { once?: boolean },
+  ): void;
+}
+
+/**
+ * `createRoot(...).render(...)` returning does not mean the page has
+ * "recovered" from a stale-deploy symptom — it only means the *main* bundle
+ * loaded. A route that reopens straight into a `.ts` question (which is
+ * exactly the state a post-reload page restores itself into) still has to
+ * construct Monaco's workers on mount, asynchronously, well after that
+ * synchronous render call returns. Clearing the guard immediately would
+ * race that construction: if it then fails (a genuinely-missing chunk, not
+ * a transient one), `triggerStaleReload` sees a clear guard and treats it as
+ * a brand-new symptom, reloading again — forever.
+ *
+ * Defer the clear until `window.load` (all initial resources settled) plus
+ * an extra delay, so any worker/chunk fetches kicked off by the initial view
+ * have had a chance to fail — and re-set the guard themselves — before we'd
+ * otherwise wipe it.
+ */
+export function scheduleGuardClear(
+  storage: ReloadGuardStorage,
+  win: GuardClearWindow,
+  scheduleTimeout: (callback: () => void, delayMs: number) => void,
+  delayMs = 3000,
+): void {
+  const clearAfterDelay = () => scheduleTimeout(() => clearStaleReloadGuard(storage), delayMs);
+  if (win.document.readyState === 'complete') {
+    clearAfterDelay();
+  } else {
+    win.addEventListener('load', clearAfterDelay, { once: true });
+  }
+}
