@@ -1,7 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { isProseAnswer, lookupCategoryConfig, type CategoryConfig } from '../lib/categories.js';
+import {
+  isProseAnswer,
+  lookupCategoryConfig,
+  type CategoryConfig,
+  type QuestionType,
+} from '../lib/categories.js';
 import { getImportMetaDirname } from '../lib/import-meta.js';
 import { chatObjectStream, getModelId, type LLMMessage, type LLMProvider } from '../lib/llm.js';
 import { readFileOr } from '../lib/read-file-or.js';
@@ -113,6 +118,46 @@ export function hasProbeSetForAttempt(
     .some((p) => p.attemptId === attemptId && p.appliedAt != null);
 }
 
+/** Per-type framing for the probe prompt (NEE-362). */
+interface ProbeFrame {
+  /** Fills probe.md's `{{type-frame}}` slot — what a sharp derived follow-up
+   *  should target for this question type. */
+  typeFrame: string;
+  /** Section heading over the candidate's prose in the user message —
+   *  mirrors reviews.ts's REVIEW_KIND headings ('Candidate's Design Notes'
+   *  vs 'Candidate's Story'), which this used to unconditionally diverge
+   *  from by always sending 'Candidate's Story' regardless of category. */
+  sectionHeading: string;
+}
+
+/**
+ * Probe-prompt framing, per question type — a Record (mirrors REVIEW_KIND in
+ * reviews.ts) so widening QuestionType with a new prose-answer type forces a
+ * decision here at compile time instead of silently inheriting behavioral's
+ * frame, which is exactly the bug this ticket fixes for 'design'. Follow-up
+ * probes are prose-only — getProbeGuardError 400s non-prose categories
+ * before the engine's `start()` is ever reached — so 'coding' has no real
+ * frame; runJob throws defensively if it's ever selected anyway.
+ */
+const PROBE_FRAME: Record<QuestionType, ProbeFrame | null> = {
+  behavioral: {
+    typeFrame:
+      'a vague claim, an unquantified outcome, a "we" that hides what they ' +
+      'personally did, a skipped trade-off, or a suspiciously clean ' +
+      'narrative with no friction. Read the story closely enough to name ' +
+      'the specific gap.',
+    sectionHeading: "Candidate's Story",
+  },
+  design: {
+    typeFrame:
+      "an unstated trade-off, a missing failure mode, an unexplored scale " +
+      "limit, or capacity math that's hand-waved rather than worked " +
+      'through. Read the notes closely enough to name the specific gap.',
+    sectionHeading: "Candidate's Design Notes",
+  },
+  coding: null,
+};
+
 // ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
@@ -170,10 +215,18 @@ export function createProbeEngine(opts: {
       const provider = resolveProvider();
       if (!provider) throw new Error('no LLM API key configured — add one in Settings');
 
+      // Follow-up probes are prose-only (getProbeGuardError rejects
+      // non-prose categories at the route before start() is ever reached),
+      // so 'coding' never actually lands here — see PROBE_FRAME's comment.
+      const frame = PROBE_FRAME[config.type];
+      if (!frame) {
+        throw new Error(`follow-up probes are not available for question type "${config.type}"`);
+      }
+
       const readme = readFileOr(path.join(question.dirPath, 'README.md'));
       const primary = config.solutionFiles[0];
-      const storyAbs = path.join(question.dirPath, primary);
-      const story = readFileOr(storyAbs);
+      const answerAbs = path.join(question.dirPath, primary);
+      const answer = readFileOr(answerAbs);
 
       // Absent .probes.md (every manual/pre-M7/starter-pack question until
       // NEE-347 ships banks) degrades to zero bank items — every probe the
@@ -182,13 +235,15 @@ export function createProbeEngine(opts: {
       const bankSection =
         bank.length > 0
           ? bank.map((q, i) => `${i + 1}. ${q}`).join('\n')
-          : '(none — derive every probe from the story below)';
+          : '(none — derive every probe from the answer below)';
 
-      const systemPrompt = fs.readFileSync(path.join(PROMPTS_DIR, 'features/probe.md'), 'utf8');
+      const systemPrompt = fs
+        .readFileSync(path.join(PROMPTS_DIR, 'features/probe.md'), 'utf8')
+        .replace('{{type-frame}}', frame.typeFrame);
       const userContent = `${buildQuestionSection(readme)}
 
-## Candidate's Story
-${story}
+## ${frame.sectionHeading}
+${answer}
 
 ## Probe Bank
 ${bankSection}`;
@@ -237,25 +292,26 @@ ${bankSection}`;
         model: getModelId(provider, 'probe'),
       });
 
-      // Re-read story.md now, right before computing the append (NEE-357):
-      // the LLM call above took 10-60s, and the file autosaves every 600ms —
-      // `story` above is a pre-call snapshot that may be badly stale by now.
-      // appendProbesToStory is pure specifically so it can be re-run against
-      // whatever is on disk this instant instead of clobbering it with what
-      // was there when the call started. The snapshot below records this
-      // SAME fresh read, not the stale pre-call one, so it's an actual
-      // recovery point rather than a copy of already-known-stale content.
-      const freshStory = readFileOr(storyAbs);
-      const hash = saveBlob(workspaceRoot, freshStory);
+      // Re-read the answer file now, right before computing the append
+      // (NEE-357): the LLM call above took 10-60s, and the file autosaves
+      // every 600ms — `answer` above is a pre-call snapshot that may be
+      // badly stale by now. appendProbesToStory is pure specifically so it
+      // can be re-run against whatever is on disk this instant instead of
+      // clobbering it with what was there when the call started. The
+      // snapshot below records this SAME fresh read, not the stale pre-call
+      // one, so it's an actual recovery point rather than a copy of
+      // already-known-stale content.
+      const freshAnswer = readFileOr(answerAbs);
+      const hash = saveBlob(workspaceRoot, freshAnswer);
       db.addSnapshot({
         questionId: question.id,
         attemptId,
-        relPath: toWorkspaceRelPath(workspaceRoot, storyAbs),
+        relPath: toWorkspaceRelPath(workspaceRoot, answerAbs),
         hash,
         trigger: 'probe-append',
       });
-      const updated = appendProbesToStory(freshStory, result.probes);
-      writeWorkspaceFile(workspaceRoot, toWorkspaceRelPath(workspaceRoot, storyAbs), updated);
+      const updated = appendProbesToStory(freshAnswer, result.probes);
+      writeWorkspaceFile(workspaceRoot, toWorkspaceRelPath(workspaceRoot, answerAbs), updated);
 
       probeSet = db.markProbeSetApplied(probeSet.id);
       aiRun.done();

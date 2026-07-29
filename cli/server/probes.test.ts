@@ -72,6 +72,29 @@ function writeQuestion(
   });
 }
 
+/** Scaffolds a design question (notes.md) on disk and upserts its row. */
+function writeDesignQuestion(slug: string, opts: { notes?: string } = {}): QuestionRow {
+  const { dir } = scaffoldQuestionAt(tempRoot, {
+    title: 'Design a Rate Limiter',
+    slug,
+    category: 'design-be',
+    difficulty: 'medium',
+    description: 'Design a distributed rate limiter for a public API.',
+  });
+  if (opts.notes !== undefined) {
+    fs.writeFileSync(path.join(dir, 'notes.md'), opts.notes, 'utf8');
+  }
+  return db.upsertQuestion({
+    category: 'design-be',
+    slug,
+    title: 'Design a Rate Limiter',
+    difficulty: 'medium',
+    suggestedMinutes: 40,
+    dirPath: dir,
+    source: 'manual',
+  });
+}
+
 interface FakeLlmOpts {
   abortSignal?: AbortSignal;
   purpose?: string;
@@ -407,7 +430,7 @@ describe('createProbeEngine', () => {
 
     const userMessage = calls[0].messages.find((m) => m.role === 'user')!;
     expect(userMessage.content).toContain('## Probe Bank');
-    expect(userMessage.content).toContain('(none — derive every probe from the story below)');
+    expect(userMessage.content).toContain('(none — derive every probe from the answer below)');
   });
 
   it('uses the .probes.md bank when NEE-343 shipped one', async () => {
@@ -594,6 +617,78 @@ describe('createProbeEngine', () => {
     expect(engine.isAnyRunning()).toBe(true);
     engine.start(q2, null);
     expect(engine.isAnyRunning()).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Type-aware framing (NEE-362): design probes used to be sent under the
+// behavioral-only prompt frame with a 'Candidate's Story' heading regardless
+// of category. Each question type must get its own frame paragraph and its
+// own section heading, matching the review path's REVIEW_KIND split.
+// ---------------------------------------------------------------------------
+
+const REAL_NOTES =
+  '## Overview\nToken-bucket limiter, one bucket per API key, backed by Redis.\n\n## Trade-offs\nWe chose Redis over an in-memory counter for cross-instance consistency.\n';
+
+describe('probe framing by question type (NEE-362)', () => {
+  it('design questions use the design frame paragraph and the "Candidate\'s Design Notes" heading', async () => {
+    const question = writeDesignQuestion('rate-limiter-design-frame', { notes: REAL_NOTES });
+    const { llm, calls } = makeFakeLlm([() => TWO_PROBES]);
+    const engine = createProbeEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+    });
+
+    const done = waitFor('probes-done');
+    engine.start(question, null);
+    await done;
+
+    const userMessage = calls[0].messages.find((m) => m.role === 'user')!;
+    const systemMessage = calls[0].messages.find((m) => m.role === 'system')!;
+
+    expect(userMessage.content).toContain("## Candidate's Design Notes");
+    expect(userMessage.content).not.toContain("## Candidate's Story");
+    expect(userMessage.content).toContain(REAL_NOTES.trim());
+
+    // The design frame paragraph landed in the system prompt (slot filled,
+    // not left as a literal "{{type-frame}}"), and the behavioral-only
+    // framing ("a 'we' that hides what they personally did") is absent.
+    expect(systemMessage.content).toContain('capacity math');
+    expect(systemMessage.content).not.toContain('{{type-frame}}');
+    expect(systemMessage.content).not.toContain(
+      'a "we" that hides what they personally did',
+    );
+  });
+
+  it('behavioral questions are unchanged: the behavioral frame paragraph and "Candidate\'s Story" heading', async () => {
+    const question = writeQuestion('conflict-behavioral-frame', { story: REAL_STORY });
+    const { llm, calls } = makeFakeLlm([() => TWO_PROBES]);
+    const engine = createProbeEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+    });
+
+    const done = waitFor('probes-done');
+    engine.start(question, null);
+    await done;
+
+    const userMessage = calls[0].messages.find((m) => m.role === 'user')!;
+    const systemMessage = calls[0].messages.find((m) => m.role === 'system')!;
+
+    expect(userMessage.content).toContain("## Candidate's Story");
+    expect(userMessage.content).not.toContain("## Candidate's Design Notes");
+
+    expect(systemMessage.content).toContain(
+      'a "we" that hides what they personally did',
+    );
+    expect(systemMessage.content).not.toContain('capacity math');
+    expect(systemMessage.content).not.toContain('{{type-frame}}');
   });
 });
 
