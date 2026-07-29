@@ -229,7 +229,18 @@ export function useReviewPanel({
     // registers it) — no file-changed event arrives for the append. Reload
     // the story buffer explicitly; onlyIfClean routes a raced dirty buffer
     // into the existing conflict banner instead of clobbering it.
-    const story = editorFilesRef.current.find((f) => f.kind === 'solution');
+    //
+    // Resolved by structural identity, not a category-specific FileKind
+    // literal: `kind` is 'notes' for prose categories on the wire (see
+    // questions.ts's solutionKind), so matching 'solution' here can never
+    // fire for the only categories probes ever run on — and matching
+    // 'notes' instead would just be the same brittle coupling one value
+    // over. Every category's primary answer file is instead its one
+    // editable, non-test file (test files are always readonly, and prose
+    // categories — the only ones probes reach — have no test files at
+    // all): the same "primary file" notion useFileBuffers already uses to
+    // pick the default active tab (see firstEditable there).
+    const story = editorFilesRef.current.find((f) => !f.readonly);
     if (story) loadFileIntoRef.current(story.relPath, { onlyIfClean: true }).catch(() => {});
   });
 
