@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Editor, { type OnMount } from '@monaco-editor/react';
 import { EDITOR_APPEARANCE, EDITOR_THEME } from '../editor-options';
+import { useLatestRef } from '../hooks/useLatestRef';
 import { agoShort } from '../lib/format';
 import type { QuestionFileInfo } from '../types';
 import { ConflictBanner } from './ConflictBanner';
@@ -52,6 +53,15 @@ export function EditorPane({
 }) {
   const activeFile = files[active];
 
+  // Monaco-react keeps ONE Editor instance alive across tab switches and just
+  // swaps its model — see the onChange handler below for why we resolve the
+  // emitting file from this ref instead of trusting the `active` closure.
+  const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+  // Latest `files` by render time, so ANY pending onDidChangeModelContent
+  // listener — this render's or a stale one from the previous commit — sees
+  // the current readonly flags when it runs during the passive-effect phase.
+  const filesRef = useLatestRef(files);
+
   return (
     <div className="editor-pane">
       <div className="file-tabs">
@@ -95,9 +105,28 @@ export function EditorPane({
             path={`file:///${activeFile.info.relPath}`}
             value={activeFile.buffer}
             theme={EDITOR_THEME}
-            onMount={onMount}
+            onMount={(editor, monacoInstance) => {
+              editorRef.current = editor;
+              onMount(editor, monacoInstance);
+            }}
             onChange={(value) => {
-              if (value != null) onChange(active, value);
+              if (value == null) return;
+              // NEE-334: don't attribute by the 'active' prop closed over at
+              // subscribe time — during a tab-switch commit the model swap
+              // effect runs before monaco-react resubscribes onChange, so a
+              // still-mounted listener from the PREVIOUS render can fire here
+              // with 'active' pointing at the tab we just switched AWAY from.
+              // Resolve the real file from the editor's current model URI
+              // instead, and refuse anything we can't map to a known,
+              // non-readonly file (this also catches the upstream monaco-react
+              // bug where switching to a readonly tab calls setValue() without
+              // the preventTriggerChangeEvent suppression it uses elsewhere).
+              const uriPath = editorRef.current?.getModel?.()?.uri.path;
+              if (uriPath == null) return;
+              const relPath = uriPath.startsWith('/') ? uriPath.slice(1) : uriPath;
+              const info = filesRef.current[relPath]?.info;
+              if (info == null || info.readonly) return;
+              onChange(relPath, value);
             }}
             options={{ ...EDITOR_OPTIONS, readOnly: activeFile.info.readonly }}
             loading={<div className="pane-empty">Starting editor…</div>}

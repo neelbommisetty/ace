@@ -224,6 +224,11 @@ export function useFileBuffers({
       // Belt-and-suspenders: every file is readonly in this mode so Monaco
       // shouldn't fire onChange at all, but guard against attempt.id anyway.
       if (attempt == null) return;
+      // Defense in depth (NEE-334): EditorPane resolves relPath from the
+      // emitting model's own URI and already drops readonly targets, but
+      // refuse them here too so a misattributed or otherwise-stray change
+      // can never mark a readonly file's buffer dirty or schedule a save.
+      if (filesRef.current[relPath]?.info.readonly) return;
       updateFile(relPath, (f) => ({
         buffer: value,
         saveState:

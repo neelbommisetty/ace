@@ -49,9 +49,16 @@ vi.mock('@monaco-editor/react', () => ({
     onMount?: (editor: unknown, monaco: unknown) => void;
   }) => {
     // Room's handleEditorMount registers Cmd+Enter / Cmd+S editor commands —
-    // give it just enough of a fake editor/monaco to not throw.
+    // give it just enough of a fake editor/monaco to not throw. getModel()
+    // mirrors EditorPane's onChange (NEE-334), which resolves the emitting
+    // file from the editor's current model URI — same "file:///<relPath>" ->
+    // "/<relPath>" shape monaco's Uri.parse produces.
     props.onMount?.(
-      { addCommand: () => {}, focus: () => {} },
+      {
+        addCommand: () => {},
+        focus: () => {},
+        getModel: () => ({ uri: { path: props.path?.replace(/^file:\/\//, '') ?? '' } }),
+      },
       { KeyMod: { CtrlCmd: 1 }, KeyCode: { Enter: 1, KeyS: 1 } },
     );
     return (

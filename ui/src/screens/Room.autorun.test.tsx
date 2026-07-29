@@ -38,8 +38,16 @@ vi.mock('@monaco-editor/react', () => ({
     onChange?: (value: string) => void;
     onMount?: (editor: unknown, monaco: unknown) => void;
   }) => {
+    // EditorPane's onChange (NEE-334) resolves the emitting file from the
+    // editor's current model URI rather than trusting a closed-over prop, so
+    // the fake editor needs a getModel() that mirrors the real path — same
+    // "file:///<relPath>" -> "/<relPath>" shape monaco's Uri.parse produces.
     props.onMount?.(
-      { addCommand: () => {}, focus: () => {} },
+      {
+        addCommand: () => {},
+        focus: () => {},
+        getModel: () => ({ uri: { path: props.path?.replace(/^file:\/\//, '') ?? '' } }),
+      },
       { KeyMod: { CtrlCmd: 1 }, KeyCode: { Enter: 1, KeyS: 1 } },
     );
     return (
