@@ -19,6 +19,8 @@ export function TestConsole({
   runError,
   autorun,
   onToggleAutorun,
+  formatBeforeRun,
+  onToggleFormatBeforeRun,
   onRun,
   onStop,
   onCollapse,
@@ -31,6 +33,10 @@ export function TestConsole({
   runError: string | null;
   autorun: boolean;
   onToggleAutorun: () => void;
+  /** 'ace-format-before-run' toggle (NEE-331): format dirty editable buffers
+   * through the editor action before Run sees them. */
+  formatBeforeRun: boolean;
+  onToggleFormatBeforeRun: () => void;
   onRun: () => void;
   /** Stops the in-flight run (NEE-295). */
   onStop: () => void;
@@ -84,6 +90,13 @@ export function TestConsole({
                 its title tooltip) stays, so the setting is still reachable
                 even once its label is hidden */}
             <span className="autorun-label">auto-run on save</span>
+          </label>
+          <label
+            className="autorun-toggle"
+            title="Format dirty files before Run (NEE-331) — never fires from the background autosave"
+          >
+            <input type="checkbox" checked={formatBeforeRun} onChange={onToggleFormatBeforeRun} />
+            <span className="autorun-label">format before run</span>
           </label>
           {running ? (
             <button

@@ -7,6 +7,8 @@ import * as monaco from 'monaco-editor';
 import { loader } from '@monaco-editor/react';
 import editorWorker from 'monaco-editor/editor/editor.worker.js?worker';
 import tsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker';
+import cssWorker from 'monaco-editor/language/css/css.worker.js?worker';
+import htmlWorker from 'monaco-editor/language/html/html.worker.js?worker';
 import { EDITOR_THEME } from './editor-options';
 import { triggerStaleReload } from './stale-reload';
 
@@ -44,10 +46,26 @@ function newWorkerWithStaleReloadGuard(create: () => Worker): Worker {
   return worker;
 }
 
+// NEE-331: CSS/HTML document formatting (Shift+Alt+F, and the room's new
+// Cmd+S / format-before-run) runs on the css/html language-service workers,
+// same as TS/JS already did — without a dedicated worker script here these
+// labels fell through to the plain `editorWorker`, which doesn't implement
+// the CSSWorker/HTMLWorker RPC methods those providers call, so every
+// hover/completion/format request for a .css/.html file would silently
+// reject. Routing them to their own worker bundles (mirroring the ts/js
+// case below) is the fix; TS/JS formatting was already reachable via its
+// range-formatting provider (monaco synthesizes a whole-document formatter
+// from it), so nothing else here needed to change.
 self.MonacoEnvironment = {
   getWorker(_workerId: string, label: string): Worker {
     if (label === 'typescript' || label === 'javascript' || label === 'ts') {
       return newWorkerWithStaleReloadGuard(() => new tsWorker());
+    }
+    if (label === 'css' || label === 'less' || label === 'scss') {
+      return newWorkerWithStaleReloadGuard(() => new cssWorker());
+    }
+    if (label === 'html' || label === 'handlebars' || label === 'razor') {
+      return newWorkerWithStaleReloadGuard(() => new htmlWorker());
     }
     return newWorkerWithStaleReloadGuard(() => new editorWorker());
   },

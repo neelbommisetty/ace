@@ -138,6 +138,11 @@ function RoomInner({
   const readonly = attempt == null;
 
   const [autorun, setAutorun] = useLocalStorageState('ace-autorun', false);
+  // NEE-331: format dirty editable buffers before Run — opt-in, next to autorun.
+  const [formatBeforeRun, setFormatBeforeRun] = useLocalStorageState(
+    'ace-format-before-run',
+    false,
+  );
 
   // startRun is minted by useTestRuns below, which itself needs flushSaves
   // from useFileBuffers — break the render-order cycle with a ref.
@@ -152,6 +157,8 @@ function RoomInner({
     hasTests,
     initialLastRun: detail.lastRun,
     flushSaves,
+    files: buffers.files,
+    formatBeforeRun,
   });
   startRunRef.current = runs.startRun;
 
@@ -362,6 +369,8 @@ function RoomInner({
                   runError={runs.runError}
                   autorun={autorun}
                   onToggleAutorun={() => setAutorun((v) => !v)}
+                  formatBeforeRun={formatBeforeRun}
+                  onToggleFormatBeforeRun={() => setFormatBeforeRun((v) => !v)}
                   onRun={() => runs.startRun('manual')}
                   onStop={runs.stopRun}
                   onCollapse={() => setConsoleOpen(false)}
@@ -465,7 +474,7 @@ function RoomInner({
 
 const SHORTCUT_ROWS: Array<{ keys: string; desc: string }> = [
   { keys: '⌘/Ctrl + Enter', desc: 'Run tests' },
-  { keys: '⌘/Ctrl + S', desc: 'Flush saves' },
+  { keys: '⌘/Ctrl + S', desc: 'Format + save' },
   { keys: 'Alt + P', desc: 'Toggle problem pane' },
   { keys: 'Alt + I', desc: 'Toggle AI panel' },
   { keys: 'Alt + C', desc: 'Toggle console' },

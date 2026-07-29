@@ -9,6 +9,8 @@ const baseProps = {
   runError: null,
   autorun: false,
   onToggleAutorun: vi.fn(),
+  formatBeforeRun: false,
+  onToggleFormatBeforeRun: vi.fn(),
   onRun: vi.fn(),
   onStop: vi.fn(),
   onCollapse: vi.fn(),

@@ -12,6 +12,8 @@ import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
  * - 'ace-autorun'  auto-run tests on save; default false
  * - 'ace-ai-open'  AI review panel visible; default true when the window is
  *   wide enough to fit it (NEE-290), collapsed by default below that
+ * - 'ace-format-before-run'  format dirty editable buffers before Run
+ *   (NEE-331); default false — opt-in, next to the auto-run checkbox
  *
  * See `useLocalStorageNumber` below for the room's pane-splitter width/height
  * keys (NEE-305) — a boolean encoding doesn't fit those.
