@@ -9,7 +9,14 @@ import { CategoryChip, DifficultyChip } from './Chip';
  * nothing, so "hidden when there's no unsolved question left" is the
  * caller's responsibility, not this component's.
  */
-export function PracticeNextCard({ suggestion }: { suggestion: PracticeNextSuggestion }) {
+export function PracticeNextCard({
+  suggestion,
+  linkQuery,
+}: {
+  suggestion: PracticeNextSuggestion;
+  /** The Library's current filter/search/sort query string (NEE-310), minus the leading '?'. */
+  linkQuery?: string;
+}) {
   const { question, reason } = suggestion;
   return (
     <div className="practice-next-card">
@@ -22,7 +29,10 @@ export function PracticeNextCard({ suggestion }: { suggestion: PracticeNextSugge
           <span className="resume-detail">{reason}</span>
         </span>
       </div>
-      <Link className="btn btn-accent" to={`/q/${question.category}/${question.slug}`}>
+      <Link
+        className="btn btn-accent"
+        to={`/q/${question.category}/${question.slug}${linkQuery ? `?${linkQuery}` : ''}`}
+      >
         Start →
       </Link>
     </div>

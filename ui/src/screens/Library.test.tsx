@@ -654,6 +654,22 @@ describe('Library', () => {
       expect(startLink).toHaveAttribute('href', '/q/js-ts/unsolved-question');
     });
 
+    it('carries the current filter/search/sort query string onto the Start link', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue([
+        question({ id: 'q-unsolved', slug: 'unsolved-question', title: 'Unsolved Question' }),
+      ]);
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibrary(['/?category=js-ts&difficulty=hard&sort=title&dir=asc']);
+
+      expect(await screen.findByText('Practice next')).toBeInTheDocument();
+      const startLink = screen.getByRole('link', { name: 'Start →' });
+      expect(startLink).toHaveAttribute(
+        'href',
+        '/q/js-ts/unsolved-question?category=js-ts&difficulty=hard&sort=title&dir=asc',
+      );
+    });
+
     it('hides the card entirely once every question is solved', async () => {
       getWorkspace.mockResolvedValue(WORKSPACE_INFO);
       getQuestions.mockResolvedValue([

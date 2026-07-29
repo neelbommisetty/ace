@@ -340,7 +340,9 @@ export function Library() {
                 linkQuery={linkQuery}
               />
             )}
-            {practiceNext != null && <PracticeNextCard suggestion={practiceNext} />}
+            {practiceNext != null && (
+              <PracticeNextCard suggestion={practiceNext} linkQuery={linkQuery} />
+            )}
           </div>
         )}
         {questions != null && (
