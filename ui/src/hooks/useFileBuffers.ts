@@ -8,6 +8,18 @@ import { useLatestRef } from './useLatestRef';
 
 const SAVE_DEBOUNCE_MS = 600;
 
+/** Reload GETs still outstanding, keyed by relPath (NEE-355). */
+type ReloadMap = Map<string, Set<Promise<void>>>;
+
+function isReloading(map: ReloadMap, relPath: string): boolean {
+  return (map.get(relPath)?.size ?? 0) > 0;
+}
+
+/** Every reload GET still outstanding, across all files. */
+function allReloads(map: ReloadMap): Array<Promise<void>> {
+  return [...map.values()].flatMap((set) => [...set]);
+}
+
 function initialFileState(info: QuestionFileInfo): FileState {
   return {
     info,
@@ -82,30 +94,87 @@ export function useFileBuffers({
     [filesRef],
   );
 
+  // ---- reload/autosave interlock (NEE-355) --------------------------------
+  /**
+   * Reload GETs currently in flight, per relPath. A reload is not atomic —
+   * it spans the round trip — and both the autosave debounce and a save
+   * already in flight can land inside that window, so every path that writes
+   * a buffer has to know one is open.
+   */
+  const reloadsInFlight = useRef<ReloadMap>(new Map());
+  /** Saves that bailed because a reload was open; re-issued when it closes. */
+  const savesDeferredByReload = useRef(new Set<string>());
+  /** Set below, once saveFile exists — the deferred re-issue needs it. */
+  const saveFileRef = useRef<(relPath: string, opts?: { autorun?: boolean }) => void>(() => {});
+
   /**
    * Fetches `relPath` from disk and adopts it as the buffer + saved state.
    * With `onlyIfClean`, a buffer that went dirty since the caller looked is
    * left alone and flagged as a conflict instead of being clobbered.
+   *
+   * Two races made this lossy before NEE-355, and both are closed here:
+   *
+   *  1. The cleanliness check ran when the GET RESOLVED, not when it was
+   *     issued. Reload requested -> keystroke -> the 600ms debounce fires
+   *     before the GET returns -> saveFile sees a dirty, unconflicted buffer
+   *     and PUTs the STALE text over disk -> the late reload now finds a
+   *     clean buffer and adopts the content it just clobbered. Registering
+   *     the reload here, before the GET goes out, lets saveFile stand down
+   *     for the whole window (it defers, so nothing is dropped) — and it
+   *     covers every loadFileInto caller at once rather than one call site.
+   *  2. A reload issued while a PUT was in flight applied the GET's PRE-write
+   *     body over the just-saved buffer, reverting the text and staling
+   *     savedHash. Capturing savedHash/savedContent at ISSUE time and
+   *     refusing to apply a result whose basis moved underneath closes that.
    */
   const loadFileInto = useCallback(
-    (relPath: string, opts?: { onlyIfClean?: boolean }) =>
-      getFile(relPath).then(({ content, hash }) => {
-        updateFile(relPath, (cur) =>
-          opts?.onlyIfClean && cur.buffer !== cur.savedContent
-            ? { conflict: true }
-            : {
-                buffer: content,
-                savedContent: content,
-                savedHash: hash,
-                saveState: 'saved',
-                conflict: false,
-                loaded: true,
-                loadError: null,
-                saveError: null,
-              },
-        );
-      }),
-    [updateFile],
+    (relPath: string, opts?: { onlyIfClean?: boolean }): Promise<void> => {
+      const at = filesRef.current[relPath];
+      const issuedHash = at?.savedHash ?? '';
+      const issuedSaved = at?.savedContent ?? '';
+
+      const settle = () => {
+        const set = reloadsInFlight.current.get(relPath);
+        set?.delete(promise);
+        if (set != null && set.size === 0) reloadsInFlight.current.delete(relPath);
+        if (isReloading(reloadsInFlight.current, relPath)) return;
+        if (savesDeferredByReload.current.delete(relPath)) saveFileRef.current(relPath);
+      };
+
+      const promise: Promise<void> = getFile(relPath).then(
+        ({ content, hash }) => {
+          updateFile(relPath, (cur) => {
+            // Race 2: a write landed while this GET was in flight, so its
+            // body is pre-write. Applying it would revert disk content on the
+            // next keystroke; drop the stale result instead.
+            if (cur.savedHash !== issuedHash || cur.savedContent !== issuedSaved) return {};
+            return opts?.onlyIfClean && cur.buffer !== cur.savedContent
+              ? { conflict: true }
+              : {
+                  buffer: content,
+                  savedContent: content,
+                  savedHash: hash,
+                  saveState: 'saved',
+                  conflict: false,
+                  loaded: true,
+                  loadError: null,
+                  saveError: null,
+                };
+          });
+          settle();
+        },
+        (err: unknown) => {
+          settle();
+          throw err;
+        },
+      );
+
+      const set = reloadsInFlight.current.get(relPath) ?? new Set<Promise<void>>();
+      set.add(promise);
+      reloadsInFlight.current.set(relPath, set);
+      return promise;
+    },
+    [filesRef, updateFile],
   );
 
   useCancellableEffect((cancelled) => {
@@ -183,6 +252,14 @@ export function useFileBuffers({
     async (relPath: string, opts?: { autorun?: boolean }) => {
       const f = filesRef.current[relPath];
       if (!f || !f.loaded || f.info.readonly || f.conflict) return;
+      // A reload GET is open for this file (NEE-355): what disk holds right
+      // now is precisely what we don't know, so writing would be writing over
+      // an unread version — the same reason a conflict blocks the save above.
+      // Park it rather than drop it; the reload re-issues it when it closes.
+      if (isReloading(reloadsInFlight.current, relPath)) {
+        savesDeferredByReload.current.add(relPath);
+        return;
+      }
       if (f.buffer === f.savedContent) return;
       const content = f.buffer;
       updateFile(relPath, { saveState: 'saving', saveError: null });
@@ -220,6 +297,8 @@ export function useFileBuffers({
     [filesRef, updateFile, hasTests, autorunRef, startRunRef, endSaveWindow],
   );
 
+  saveFileRef.current = (relPath, opts) => void saveFile(relPath, opts);
+
   const scheduleSave = useCallback(
     (relPath: string) => {
       const timers = saveTimers.current;
@@ -236,7 +315,14 @@ export function useFileBuffers({
     [saveFile],
   );
 
-  const flushSaves = useCallback((): Promise<void> => {
+  const flushSaves = useCallback(async (): Promise<void> => {
+    // Let any open reload GET land first (NEE-355). A save issued underneath
+    // one stands down, so flushing into that window would resolve having
+    // written nothing — and flushSaves is exactly what a paid review/probe
+    // call awaits before reading the file off disk.
+    const open = allReloads(reloadsInFlight.current);
+    if (open.length > 0) await Promise.allSettled(open);
+
     const pending: Array<Promise<void>> = [];
     const flushed = new Set<string>();
     const timers = saveTimers.current;
@@ -253,7 +339,7 @@ export function useFileBuffers({
         pending.push(saveFile(relPath, { autorun: false }));
       }
     }
-    return Promise.all(pending).then(() => undefined);
+    await Promise.all(pending);
   }, [saveFile, filesRef]);
   const flushSavesRef = useLatestRef(flushSaves);
 

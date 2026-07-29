@@ -339,6 +339,172 @@ describe('useFileBuffers stale-write 409 (NEE-359)', () => {
   });
 });
 
+// NEE-355: a reload is not atomic — it spans a GET round trip — and the
+// autosave debounce can fire inside that window in either order. Both
+// directions are held-promise tests: the GET is kept pending across the event
+// that used to lose data.
+describe('useFileBuffers reload/autosave interlock (NEE-355)', () => {
+  it('direction 1: a debounce firing under an open reload does not PUT the stale buffer', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    // A file-changed on a clean buffer issues a reload; hold its GET open.
+    const reload = deferred<{ path: string; content: string; hash: string }>();
+    getFile.mockReturnValueOnce(reload.promise);
+    fireSse('file-changed', { relPath: 'solution.ts', hash: 'hash-after-server-append' });
+    await waitFor(() => {
+      expect(getFile).toHaveBeenCalledTimes(2);
+    });
+
+    // ...then the user types and the 600ms debounce elapses, all while the
+    // reload's GET is still in flight. This is the window that used to PUT
+    // the pre-append buffer and then adopt what it had just clobbered.
+    act(() => {
+      result.current.handleChange('solution.ts', 'typed while the reload was open');
+    });
+    await new Promise((r) => setTimeout(r, 700));
+    expect(putFile).not.toHaveBeenCalled();
+
+    // The reload lands last and finds a dirty buffer: conflict, not clobber.
+    await act(async () => {
+      reload.resolve({
+        path: 'solution.ts',
+        content: '// solution.ts\n\n## Follow-ups\n',
+        hash: 'hash-after-server-append',
+      });
+      await reload.promise;
+    });
+
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].conflict).toBe(true);
+    });
+    expect(result.current.files['solution.ts'].buffer).toBe('typed while the reload was open');
+    // and the server's append is still what disk holds — nothing overwrote it
+    expect(putFile).not.toHaveBeenCalled();
+  });
+
+  it('direction 1: the save deferred by the reload is re-issued, not dropped', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    const reload = deferred<{ path: string; content: string; hash: string }>();
+    getFile.mockReturnValueOnce(reload.promise);
+    fireSse('file-changed', { relPath: 'solution.ts', hash: 'hash-elsewhere' });
+    await waitFor(() => {
+      expect(getFile).toHaveBeenCalledTimes(2);
+    });
+
+    act(() => {
+      result.current.handleChange('solution.ts', 'typed while the reload was open');
+    });
+    await new Promise((r) => setTimeout(r, 700));
+    expect(putFile).not.toHaveBeenCalled();
+
+    // The reload fails, so nothing was adopted and the buffer is still the
+    // only copy of the user's text — the deferred save has to happen.
+    await act(async () => {
+      reload.reject(new Error('offline'));
+      await reload.promise.catch(() => {});
+    });
+
+    await waitFor(() => {
+      expect(putFile).toHaveBeenCalledWith('solution.ts', 'typed while the reload was open', {
+        savedHash: 'hash-solution.ts',
+      });
+    });
+  });
+
+  it('direction 2: a reload resolving after a PUT does not apply its pre-write body', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    // A save goes out and is held open.
+    const put = deferred<{ hash: string }>();
+    putFile.mockReturnValueOnce(put.promise);
+    act(() => {
+      result.current.handleChange('solution.ts', 'my new text');
+    });
+    await waitFor(() => {
+      expect(putFile).toHaveBeenCalledTimes(1);
+    });
+
+    // A reload is issued while that PUT is still in flight (what the
+    // probes-done / file-changed handlers do), and is also held open.
+    const reload = deferred<{ path: string; content: string; hash: string }>();
+    getFile.mockReturnValueOnce(reload.promise);
+    let reloadDone!: Promise<void>;
+    act(() => {
+      reloadDone = result.current.loadFileInto('solution.ts', { onlyIfClean: true });
+    });
+
+    // The PUT resolves first: the buffer is now "clean" against its own
+    // just-saved content, which is exactly what made the late GET look safe
+    // to apply.
+    await act(async () => {
+      put.resolve({ hash: 'hash-after-put' });
+      await put.promise;
+    });
+    expect(result.current.files['solution.ts'].savedHash).toBe('hash-after-put');
+
+    // The GET's body predates the write. Applying it would revert the text
+    // and stale savedHash, so the next keystroke would re-save the revert.
+    await act(async () => {
+      reload.resolve({ path: 'solution.ts', content: '// solution.ts', hash: 'hash-solution.ts' });
+      await reloadDone;
+    });
+
+    expect(result.current.files['solution.ts'].buffer).toBe('my new text');
+    expect(result.current.files['solution.ts'].savedContent).toBe('my new text');
+    expect(result.current.files['solution.ts'].savedHash).toBe('hash-after-put');
+    expect(result.current.files['solution.ts'].conflict).toBe(false);
+  });
+
+  it('flushSaves waits for an open reload instead of resolving having written nothing', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    const reload = deferred<{ path: string; content: string; hash: string }>();
+    getFile.mockReturnValueOnce(reload.promise);
+    fireSse('file-changed', { relPath: 'solution.ts', hash: 'hash-elsewhere' });
+    await waitFor(() => {
+      expect(getFile).toHaveBeenCalledTimes(2);
+    });
+
+    act(() => {
+      result.current.handleChange('solution.ts', 'text a paid call must see');
+    });
+
+    let flushed = false;
+    let flushDone!: Promise<void>;
+    act(() => {
+      flushDone = result.current.flushSaves().then(() => {
+        flushed = true;
+      });
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(flushed).toBe(false);
+
+    await act(async () => {
+      reload.reject(new Error('offline'));
+      await reload.promise.catch(() => {});
+      await flushDone;
+    });
+
+    expect(flushed).toBe(true);
+    expect(putFile).toHaveBeenCalledWith('solution.ts', 'text a paid call must see', {
+      savedHash: 'hash-solution.ts',
+    });
+  });
+});
+
 describe('useFileBuffers hasTests derivation', () => {
   it('derives hasTests: false from a file set with no kind "test" entries (design/behavioral)', async () => {
     const storyInfo = fileInfo({
