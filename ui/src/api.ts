@@ -303,8 +303,15 @@ export function getReviews(category: string, slug: string): Promise<ReviewRow[]>
   return request(questionPath(category, slug, '/reviews'));
 }
 
-/** snapshotContent is present when the reviewed-code blob still exists on disk. */
-export function getReview(id: string): Promise<ReviewRow & { snapshotContent?: string | null }> {
+/**
+ * snapshotContent is present when the reviewed-code blob still exists on
+ * disk. `question` is embedded (NEE-306) so a direct load of
+ * /history/review/:id (including a reload) has everything the detail view
+ * needs in one round trip.
+ */
+export function getReview(
+  id: string,
+): Promise<ReviewRow & { snapshotContent?: string | null; question: QuestionRow }> {
   return request(`/api/reviews/${encodeURIComponent(id)}`);
 }
 
@@ -324,6 +331,11 @@ export function getDisputes(category: string, slug: string): Promise<DisputeRow[
 
 export function applyDispute(id: string): Promise<{ dispute: DisputeRow }> {
   return request(`/api/disputes/${encodeURIComponent(id)}/apply`, { method: 'POST' });
+}
+
+/** `question` is embedded (NEE-306) — mirrors getReview's direct-load shape. */
+export function getDispute(id: string): Promise<DisputeRow & { question: QuestionRow }> {
+  return request(`/api/disputes/${encodeURIComponent(id)}`);
 }
 
 export function startFreshAttempt(

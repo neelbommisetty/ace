@@ -40,6 +40,18 @@ export function registerDisputeRoutes(app: Hono, ctx: RouteContext): void {
     return c.json(db.listDisputes(c.get('question').id));
   });
 
+  // Direct-load fetch by id (NEE-306): mirrors GET /api/reviews/:id, with the
+  // owning question embedded so a reload of /history/dispute/:id has
+  // everything the detail view needs in one round trip.
+  app.get('/api/disputes/:id', (c) => {
+    const { db } = ctx.requireSession();
+    const dispute = db.getDispute(c.req.param('id'));
+    if (!dispute) return c.json({ error: 'dispute not found' }, 404);
+    const question = db.getQuestionById(dispute.questionId);
+    if (!question) return c.json({ error: 'question not found for dispute' }, 404);
+    return c.json({ ...dispute, question });
+  });
+
   app.post('/api/disputes/:id/apply', (c) => {
     const { db } = ctx.requireSession();
     const dispute = db.getDispute(c.req.param('id'));

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { useSearchParams } from 'react-router';
-import { getFile, getHistory, getReview, getReviews } from '../api';
+import { Link, useParams, useSearchParams } from 'react-router';
+import { getDispute, getFile, getHistory, getReview, getReviews } from '../api';
 import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { DisputeResult } from '../components/DisputeModal';
 import { CategoryChip } from '../components/Chip';
@@ -85,31 +85,6 @@ export function History() {
   // client-side slice of the newest page.
   const visible = items;
 
-  const [selected, setSelected] = useState<HistoryItem | null>(null);
-
-  if (selected != null) {
-    return (
-      <div className="history">
-        <header className="topbar">
-          <div className="topbar-left">
-            <button className="btn btn-small" onClick={() => setSelected(null)}>
-              ← History
-            </button>
-            <h1 className="topbar-title">{selected.question.title}</h1>
-            <CategoryChip category={selected.question.category} />
-          </div>
-        </header>
-        <div className="library-scroll">
-          {selected.type === 'review' ? (
-            <ReviewDetail question={selected.question} review={selected.review} />
-          ) : (
-            <DisputeDetail dispute={selected.dispute} />
-          )}
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="history">
       <header className="topbar">
@@ -188,7 +163,7 @@ export function History() {
               <HistoryCard
                 key={item.type === 'review' ? `r-${item.review.id}` : `d-${item.dispute.id}`}
                 item={item}
-                onOpen={() => setSelected(item)}
+                search={searchParams.toString()}
               />
             ))}
           </ul>
@@ -198,13 +173,17 @@ export function History() {
   );
 }
 
-function HistoryCard({ item, onOpen }: { item: HistoryItem; onOpen: () => void }) {
+/** `search` is the parent list's current `?q=&category=…` — carried onto the
+ * detail link so '← History' and browser Back land back on this same
+ * filtered list (NEE-306). */
+function HistoryCard({ item, search }: { item: HistoryItem; search: string }) {
   if (item.type === 'review') {
     const { review, question } = item;
     const lines = firstImprovementLines(review.bodyMd);
+    const to = `/history/review/${review.id}${search ? `?${search}` : ''}`;
     return (
       <li>
-        <button type="button" className="history-card" onClick={onOpen}>
+        <Link className="history-card" to={to}>
           <div className="history-card-main">
             <div className="history-card-head">
               <span className="history-card-title">{question.title}</span>
@@ -225,14 +204,15 @@ function HistoryCard({ item, onOpen }: { item: HistoryItem; onOpen: () => void }
             <CategoryChip category={question.category} />
             <span className="activity-when">{relTime(item.at)}</span>
           </div>
-        </button>
+        </Link>
       </li>
     );
   }
   const { dispute, question } = item;
+  const to = `/history/dispute/${dispute.id}${search ? `?${search}` : ''}`;
   return (
     <li>
-      <button type="button" className="history-card" onClick={onOpen}>
+      <Link className="history-card" to={to}>
         <div className="history-card-main">
           <div className="history-card-head">
             <span className="history-card-title">{question.title}</span>
@@ -249,8 +229,110 @@ function HistoryCard({ item, onOpen }: { item: HistoryItem; onOpen: () => void }
           <CategoryChip category={question.category} />
           <span className="activity-when">{relTime(item.at)}</span>
         </div>
-      </button>
+      </Link>
     </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Routed detail (NEE-306): /history/review/:id and /history/dispute/:id.
+// Fetches the review/dispute (+ its owning question) by id directly — the
+// same code path whether reached by clicking a card or landing here on a
+// fresh reload/shared link.
+// ---------------------------------------------------------------------------
+
+type DetailData =
+  | { type: 'review'; question: QuestionRow; review: ReviewRow }
+  | { type: 'dispute'; question: QuestionRow; dispute: DisputeRow };
+
+/** Rendered at /history/review/:id or /history/dispute/:id — `type` comes from which route matched (see App.tsx), not parsed out of the URL. */
+export function HistoryDetail({ type }: { type: 'review' | 'dispute' }) {
+  const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const [data, setData] = useState<DetailData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useCancellableEffect(
+    (cancelled) => {
+      setData(null);
+      setError(null);
+      if (!id) return;
+      const onError = (e: unknown) => {
+        if (!cancelled()) setError(e instanceof Error ? e.message : `Failed to load ${type}`);
+      };
+      if (type === 'review') {
+        getReview(id)
+          .then((row) => {
+            if (!cancelled()) setData({ type: 'review', question: row.question, review: row });
+          })
+          .catch(onError);
+      } else {
+        getDispute(id)
+          .then((row) => {
+            if (!cancelled()) setData({ type: 'dispute', question: row.question, dispute: row });
+          })
+          .catch(onError);
+      }
+    },
+    [type, id],
+  );
+
+  const search = searchParams.toString();
+  const backTo = `/history${search ? `?${search}` : ''}`;
+
+  if (error != null) {
+    return (
+      <div className="history">
+        <header className="topbar">
+          <div className="topbar-left">
+            <Link className="btn btn-small" to={backTo}>
+              ← History
+            </Link>
+          </div>
+        </header>
+        <div className="library-scroll">
+          <div className="error-note">{error}</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (data == null) {
+    return (
+      <div className="history">
+        <header className="topbar">
+          <div className="topbar-left">
+            <Link className="btn btn-small" to={backTo}>
+              ← History
+            </Link>
+          </div>
+        </header>
+        <div className="library-scroll">
+          <div className="pane-empty">Loading…</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="history">
+      <header className="topbar">
+        <div className="topbar-left">
+          <Link className="btn btn-small" to={backTo}>
+            ← History
+          </Link>
+          <h1 className="topbar-title">{data.question.title}</h1>
+          <CategoryChip category={data.question.category} />
+        </div>
+      </header>
+      <div className="library-scroll">
+        {data.type === 'review' ? (
+          <ReviewDetail question={data.question} review={data.review} />
+        ) : (
+          <DisputeDetail dispute={data.dispute} />
+        )}
+      </div>
+    </div>
   );
 }
 

@@ -35,10 +35,14 @@ export function registerReviewRoutes(app: Hono, ctx: RouteContext): void {
     const { db } = ctx.requireSession();
     const review = db.getReview(c.req.param('id'));
     if (!review) return c.json({ error: 'review not found' }, 404);
+    const question = db.getQuestionById(review.questionId);
+    if (!question) return c.json({ error: 'question not found for review' }, 404);
     const snapshotContent = review.snapshotHash
       ? readBlob(ctx.requireWorkspaceRoot(), review.snapshotHash)
       : null;
-    return c.json({ ...review, snapshotContent });
+    // `question` embedded (NEE-306) so a reload of /history/review/:id has
+    // everything the detail view needs without a second round trip.
+    return c.json({ ...review, snapshotContent, question });
   });
 
   // Post-review debrief: the hidden interviewer packet + reference solution

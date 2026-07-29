@@ -6,7 +6,7 @@ import { WorkspacePicker, WorkspaceSwitchDialog } from './components/WorkspacePi
 import { consumeSuppressForReset, isSuppressArmed } from './lib/resetSuppress';
 import { registerWorkspaceSwitchOpener } from './lib/switchSignal';
 import { Activity } from './screens/Activity';
-import { History } from './screens/History';
+import { History, HistoryDetail } from './screens/History';
 import { Library } from './screens/Library';
 import { NewQuestion } from './screens/NewQuestion';
 import { NotFound } from './screens/NotFound';
@@ -170,6 +170,8 @@ export function App() {
             <Route path="/new" element={<NewQuestion />} />
             <Route path="/q/:category/:slug" element={<Room />} />
             <Route path="/history" element={<History />} />
+            <Route path="/history/review/:id" element={<HistoryDetail type="review" />} />
+            <Route path="/history/dispute/:id" element={<HistoryDetail type="dispute" />} />
             <Route path="/activity" element={<Activity />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<NotFound />} />

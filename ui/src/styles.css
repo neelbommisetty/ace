@@ -2934,9 +2934,10 @@ code {
   }
 }
 
-/* NEE-292: Library rows + History cards are keyboard-focusable now — the
- * title cell is a real <Link> and each history card body is a <button>.
- * Give both a visible focus-visible ring (theme has none by default). */
+/* NEE-292/NEE-306: Library rows + History cards are keyboard-focusable —
+ * the title cell and each history card are real <Link>s (routed to
+ * /history/review|dispute/:id since NEE-306). Give both a visible
+ * focus-visible ring (theme has none by default). */
 .row-link {
   display: block;
   color: inherit;
@@ -2955,6 +2956,7 @@ code {
   font: inherit;
   color: inherit;
   text-align: left;
+  text-decoration: none;
   appearance: none;
 }
 
