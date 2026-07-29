@@ -51,6 +51,19 @@ function makeQuestion(): QuestionRow {
   });
 }
 
+/** Same as `makeQuestion`, but for a no-test category (NEE-353). */
+function makeProseQuestion(category: string, slug: string): QuestionRow {
+  return ws.session.db.upsertQuestion({
+    category,
+    slug,
+    title: slug,
+    difficulty: 'medium',
+    suggestedMinutes: 20,
+    dirPath: path.join(ws.root, 'questions', category, slug),
+    source: 'manual',
+  });
+}
+
 /** Creates and finishes a 'done' test run, stamped `at` = now. */
 function makeDoneRun(questionId: string, summary: TestRunSummary): void {
   const run = ws.session.db.createTestRun({ questionId, attemptId: null, trigger: 'manual' });
@@ -245,5 +258,127 @@ describe('POST /api/questions/:category/:slug/attempts', () => {
     const body = (await res.json()) as { attempt: AttemptRow };
     expect(body.attempt.number).toBe(1);
     expect(body.attempt.endedAt).toBeNull();
+  });
+});
+
+// NEE-353: no-test categories (design/behavioral, testFiles: []) can never
+// produce a test run, so isQuestionSolved/isAttemptSolved (app.ts) derive
+// solved from a completed review instead — the same rule listQuestions
+// applies (db.ts). These route-level tests exercise the actual regression:
+// before this fix, isQuestionSolved/isAttemptSolved stayed on the
+// test-run-only definition even though listQuestions had already moved to
+// the review-based one, so a reviewed prose question read 'solved' in the
+// Library but PATCH .../attempts could never accept reason: 'solved' for it
+// and POST .../attempts never returned { readonly: true }.
+describe('prose (no-test category) solved derivation — PATCH/POST /api/attempts (NEE-353)', () => {
+  it('a reviewed behavioral question ends solved and reopens readonly', async () => {
+    const q = makeProseQuestion('behavioral', 'greatest-failure');
+    const attempt = ws.session.db.createAttempt(q.id);
+    ws.session.db.createReview({
+      questionId: q.id,
+      attemptId: null,
+      bodyMd: 'Solid story, clear ownership.',
+      verdict: 'Hire',
+      source: 'user',
+    });
+
+    const fetch = buildApp();
+
+    // The end-verify route accepts reason: 'solved' now that a review exists.
+    const endRes = await patchAttempt(fetch, attempt.id, { end: { reason: 'solved' } });
+    expect(endRes.status).toBe(200);
+    const endBody = (await endRes.json()) as { attempt: AttemptRow };
+    expect(endBody.attempt.endedAt).not.toBeNull();
+    expect(endBody.attempt.endReason).toBe('solved');
+
+    // Reopening the question (no active attempt left) returns the readonly
+    // reference view instead of minting a fresh, editable attempt.
+    const postRes = await postAttempts(fetch, q.category, q.slug);
+    expect(postRes.status).toBe(200);
+    const postBody = (await postRes.json()) as {
+      attempt: AttemptRow | null;
+      readonly?: boolean;
+      latestAttempt?: AttemptRow | null;
+    };
+    expect(postBody.attempt).toBeNull();
+    expect(postBody.readonly).toBe(true);
+    expect(postBody.latestAttempt?.id).toBe(attempt.id);
+  });
+
+  it('a reviewed design question ends solved and reopens readonly (deliberate design-semantics change: solved comes from any completed review, not a verdict)', async () => {
+    const q = makeProseQuestion('design-fe', 'infinite-scroll');
+    const attempt = ws.session.db.createAttempt(q.id);
+    // A 'No Hire' verdict still counts as a *completed* review — solved
+    // status tracks "has this been assessed", not "did it pass".
+    ws.session.db.createReview({
+      questionId: q.id,
+      attemptId: null,
+      bodyMd: 'Missed several trade-offs.',
+      verdict: 'No Hire',
+      source: 'user',
+    });
+
+    const fetch = buildApp();
+    const endRes = await patchAttempt(fetch, attempt.id, { end: { reason: 'solved' } });
+    expect(endRes.status).toBe(200);
+    const endBody = (await endRes.json()) as { attempt: AttemptRow };
+    expect(endBody.attempt.endedAt).not.toBeNull();
+    expect(endBody.attempt.endReason).toBe('solved');
+
+    const postRes = await postAttempts(fetch, q.category, q.slug);
+    expect(postRes.status).toBe(200);
+    const postBody = (await postRes.json()) as { attempt: AttemptRow | null; readonly?: boolean };
+    expect(postBody.attempt).toBeNull();
+    expect(postBody.readonly).toBe(true);
+  });
+
+  it('an attempted-but-unreviewed prose question is not solved: end reason "solved" is ignored and the attempt stays open/editable', async () => {
+    const q = makeProseQuestion('behavioral', 'conflict-story');
+    const attempt = ws.session.db.createAttempt(q.id);
+
+    const fetch = buildApp();
+    const endRes = await patchAttempt(fetch, attempt.id, { end: { reason: 'solved' } });
+    expect(endRes.status).toBe(200);
+    const endBody = (await endRes.json()) as { attempt: AttemptRow };
+    expect(endBody.attempt.endedAt).toBeNull();
+    expect(endBody.attempt.endReason).toBeNull();
+
+    // Reopening resumes the still-active, editable attempt rather than going
+    // readonly.
+    const postRes = await postAttempts(fetch, q.category, q.slug);
+    const postBody = (await postRes.json()) as { attempt: AttemptRow; readonly?: boolean };
+    expect(postBody.attempt.id).toBe(attempt.id);
+    expect(postBody.readonly).toBeUndefined();
+  });
+
+  it('a review recorded before the attempt started must not close that attempt as solved (recency)', async () => {
+    const q = makeProseQuestion('behavioral', 'proud-moment');
+
+    // A prior attempt gets reviewed and superseded by a fresh one, the same
+    // way a stale passing test run is guarded against for coding questions.
+    ws.session.db.createAttempt(q.id);
+    const review = ws.session.db.createReview({
+      questionId: q.id,
+      attemptId: null,
+      bodyMd: 'Fine.',
+      verdict: 'Hire',
+      source: 'user',
+    });
+
+    // Strictly later in real time, a fresh re-attempt starts (createAttempt
+    // auto-supersedes the still-open firstAttempt). Both createAttempt and
+    // createReview stamp with nowIso() (millisecond resolution), so a short
+    // real delay guarantees the new attempt's startedAt sorts after the old
+    // review's `at`.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const secondAttempt = ws.session.db.createAttempt(q.id);
+    expect(secondAttempt.startedAt > review.at).toBe(true);
+
+    const fetch = buildApp();
+    const res = await patchAttempt(fetch, secondAttempt.id, { end: { reason: 'solved' } });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { attempt: AttemptRow };
+    expect(body.attempt.endedAt).toBeNull();
+    expect(body.attempt.endReason).toBeNull();
   });
 });

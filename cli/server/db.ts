@@ -47,7 +47,10 @@ const SCHEMA_VERSION_KEY = 'schema_version';
  * Category slugs with an empty `testFiles` (design/behavioral, NEE-353) —
  * these can never produce a test run, so `listQuestions` derives their
  * `solved` status from a completed review instead. Computed once from
- * `CATEGORIES` so the SQL below never hardcodes a slug.
+ * `CATEGORIES` so the SQL below never hardcodes a slug. `isQuestionSolved` /
+ * `isAttemptSolved` (app.ts) encode the identical no-test-category rule
+ * per-question via `hasTests`/`lookupCategoryConfig` instead of this
+ * precomputed set — keep both sites in sync if the rule ever changes.
  */
 const NO_TEST_CATEGORY_SLUGS = CATEGORY_SLUGS.filter((slug) => !hasTests(CATEGORIES[slug]));
 
@@ -817,6 +820,13 @@ class SqliteAceDb implements AceDb {
       'SELECT * FROM reviews WHERE question_id = ? ORDER BY version DESC',
     ).all(questionId) as SqlRow[];
     return rows.map(rowToReview);
+  }
+
+  getLatestReview(questionId: string): ReviewRow | null {
+    const r = this.stmt(
+      'SELECT * FROM reviews WHERE question_id = ? ORDER BY version DESC LIMIT 1',
+    ).get(questionId) as SqlRow | undefined;
+    return r ? rowToReview(r) : null;
   }
 
   // -- disputes -------------------------------------------------------------

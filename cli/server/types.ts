@@ -148,6 +148,13 @@ export interface AceDb {
   getReview(id: string): ReviewRow | null;
   /** All versions for a question, newest first. */
   listReviews(questionId: string): ReviewRow[];
+  /**
+   * Newest review for a question, or null if none — same "a review row
+   * exists" signal `listQuestions` uses to derive `solved` for no-test
+   * categories (NEE-353), so solve-detection here and question-status
+   * derivation there never disagree.
+   */
+  getLatestReview(questionId: string): ReviewRow | null;
 
   createDispute(d: {
     questionId: string;

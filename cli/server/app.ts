@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { Hono } from 'hono';
+import { hasTests, lookupCategoryConfig } from '../lib/categories.js';
 import { ScopeError } from './files.js';
 import * as routes from './routes/index.js';
 import type { EngineFactories, WorkspaceSession } from './session.js';
@@ -35,26 +36,63 @@ export interface CreateAppOptions {
 }
 
 const HOST_RE = /^(127\.0\.0\.1|localhost)(:\d+)?$/;
+
 /**
- * Question-level solved check: the latest *completed* run (by the same
- * ORDER BY as `listQuestions`' latestDone subquery) exists and passed
- * everything. Deliberately NOT the 'all_green' attempt event (runner.ts):
- * that event persists after later failing runs, so it would report solved
- * while the question's derived status reads in-progress — this predicate
- * keeps end-verify and status derivation consistent.
+ * True when the question's category has a sandbox-verifiable test suite.
+ * Mirrors `NO_TEST_CATEGORY_SLUGS` / `category_has_no_tests` in db.ts's
+ * `listQuestions` (NEE-353) — same source of truth (`hasTests` over
+ * `CATEGORIES`), just evaluated per-question instead of precomputed as a
+ * bound-parameter slug set. An unresolvable question/category defaults to
+ * `true` (the test-run definition) rather than silently downgrading to
+ * review-only.
+ */
+function hasTestsForQuestion(db: AceDb, questionId: string): boolean {
+  const question = db.getQuestionById(questionId);
+  const config = question ? lookupCategoryConfig(question.category) : null;
+  return config ? hasTests(config) : true;
+}
+
+/**
+ * Question-level solved check. Two branches, matching `listQuestions`'
+ * status derivation in db.ts exactly (see `hasTestsForQuestion` above) so
+ * the two never drift:
+ *
+ *  - Test categories: the latest *completed* run (by the same ORDER BY as
+ *    `listQuestions`' latestDone subquery) exists and passed everything.
+ *    Deliberately NOT the 'all_green' attempt event (runner.ts): that event
+ *    persists after later failing runs, so it would report solved while the
+ *    question's derived status reads in-progress — this predicate keeps
+ *    end-verify and status derivation consistent.
+ *  - No-test categories (design/behavioral, testFiles: []): a test run can
+ *    never exist, so solved instead means "at least one review has been
+ *    recorded" — same rule `listQuestions` applies via its `has_review`
+ *    subquery.
  */
 export function isQuestionSolved(db: AceDb, questionId: string): boolean {
+  if (!hasTestsForQuestion(db, questionId)) {
+    return db.getLatestReview(questionId) != null;
+  }
   const run = db.getLatestCompletedTestRun(questionId);
   return run != null && run.total != null && run.total > 0 && run.passed === run.total;
 }
 
 /**
- * Attempt-scoped solved check: the question is solved AND the passing run
- * does not predate the attempt being ended. This is what stops a stale green
- * run left over from a previous attempt (e.g. before a fresh re-attempt was
- * started) from closing a new attempt as 'solved' the instant it's created.
+ * Attempt-scoped solved check. Two branches, mirroring `isQuestionSolved`:
+ *
+ *  - Test categories: the question is solved AND the passing run does not
+ *    predate the attempt being ended. This is what stops a stale green run
+ *    left over from a previous attempt (e.g. before a fresh re-attempt was
+ *    started) from closing a new attempt as 'solved' the instant it's
+ *    created.
+ *  - No-test categories: the equivalent recency guard — the latest review
+ *    must not predate the attempt's `startedAt`, so a review written for an
+ *    earlier attempt can't instantly close a freshly started one.
  */
 export function isAttemptSolved(db: AceDb, attempt: AttemptRow): boolean {
+  if (!hasTestsForQuestion(db, attempt.questionId)) {
+    const review = db.getLatestReview(attempt.questionId);
+    return review != null && review.at >= attempt.startedAt;
+  }
   if (!isQuestionSolved(db, attempt.questionId)) return false;
   const run = db.getLatestCompletedTestRun(attempt.questionId);
   return run != null && run.at >= attempt.startedAt;
