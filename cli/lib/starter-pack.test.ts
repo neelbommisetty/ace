@@ -112,6 +112,17 @@ describe('copyStarterPack', () => {
         // Dotfiles are easy to lose in a naive copy; the debrief needs this one.
         expect(fs.existsSync(path.join(dir, '.reference.md'))).toBe(true);
       }
+
+      // The general form of that trap, so a new dotfile is covered the day it
+      // ships rather than the day someone notices it missing: whatever the
+      // packaged question carries, the copy carries. Losing .probes.md would
+      // leave every starter question's probe bank empty with no error anywhere.
+      const packed = fs
+        .readdirSync(path.join(packDir, question.category, question.slug))
+        .filter((name) => name.startsWith('.'));
+      expect(fs.readdirSync(dir).filter((name) => name.startsWith('.')).sort()).toEqual(
+        packed.sort(),
+      );
     }
   });
 
