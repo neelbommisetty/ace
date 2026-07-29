@@ -71,6 +71,15 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /**
+     * Machine-readable discriminator from the error body, when the route
+     * sends one. Two different 409s reach the file-save path — a stale
+     * `savedHash` precondition ('stale-write', NEE-359) and a save aimed at a
+     * workspace that has since been switched away ('workspace-changed',
+     * NEE-164) — and they want different handling, so callers branch on this
+     * rather than on the prose message.
+     */
+    readonly code: string | null = null,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -95,10 +104,22 @@ export function setWorkspaceAnchor(root: string | null): void {
   workspaceAnchor = root;
 }
 
-function fileWriteBody(relPath: string, content: string): Record<string, unknown> {
-  return workspaceAnchor == null
-    ? { path: relPath, content }
-    : { path: relPath, content, expectedRoot: workspaceAnchor };
+/**
+ * `savedHash` (NEE-359) is the disk hash this tab last saw for the file; the
+ * server rejects the write with 409 `stale-write` when disk has moved on
+ * since. Omit it to force the write (conflict resolution's "Keep mine").
+ */
+function fileWriteBody(
+  relPath: string,
+  content: string,
+  savedHash?: string,
+): Record<string, unknown> {
+  return {
+    path: relPath,
+    content,
+    ...(workspaceAnchor == null ? {} : { expectedRoot: workspaceAnchor }),
+    ...(savedHash == null ? {} : { savedHash }),
+  };
 }
 
 function doFetch(path: string, init: RequestInit | undefined, bearer: string | null): Promise<Response> {
@@ -113,13 +134,15 @@ function doFetch(path: string, init: RequestInit | undefined, bearer: string | n
 
 async function toApiError(res: Response): Promise<ApiError> {
   let message = `${res.status} ${res.statusText}`;
+  let code: string | null = null;
   try {
-    const body = (await res.json()) as { error?: string };
+    const body = (await res.json()) as { error?: string; code?: string };
     if (body && typeof body.error === 'string') message = body.error;
+    if (body && typeof body.code === 'string') code = body.code;
   } catch {
     // non-JSON error body; keep the status text
   }
-  return new ApiError(res.status, message);
+  return new ApiError(res.status, message, code);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -266,15 +289,24 @@ export function getFile(relPath: string): Promise<{ path: string; content: strin
   return request(`/api/file?path=${encodeURIComponent(relPath)}`);
 }
 
-/** Fire-and-forget file save for pagehide. */
-export function flushFileSave(relPath: string, content: string): void {
-  keepalive('/api/file', 'PUT', fileWriteBody(relPath, content));
+/**
+ * Fire-and-forget file save for pagehide. Carries `savedHash` when the caller
+ * knows it: an unload flush is exactly the case with no client left to see a
+ * conflict banner, so it must not be the one write that silently clobbers
+ * another tab's newer content.
+ */
+export function flushFileSave(relPath: string, content: string, savedHash?: string): void {
+  keepalive('/api/file', 'PUT', fileWriteBody(relPath, content, savedHash));
 }
 
-export function putFile(relPath: string, content: string): Promise<{ hash: string }> {
+export function putFile(
+  relPath: string,
+  content: string,
+  opts?: { savedHash?: string },
+): Promise<{ hash: string }> {
   return request('/api/file', {
     method: 'PUT',
-    body: JSON.stringify(fileWriteBody(relPath, content)),
+    body: JSON.stringify(fileWriteBody(relPath, content, opts?.savedHash)),
   });
 }
 

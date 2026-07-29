@@ -10,20 +10,6 @@ export class ScopeError extends Error {
   }
 }
 
-const RECENT_WRITE_TTL_MS = 5000;
-
-/**
- * Files recently written by the server, keyed by POSIX relPath. The watcher
- * consults this to suppress echo events for our own writes.
- */
-export const recentWrites = new Map<string, { hash: string; at: number }>();
-
-function pruneRecentWrites(now: number = Date.now()): void {
-  for (const [key, entry] of recentWrites) {
-    if (now - entry.at > RECENT_WRITE_TTL_MS) recentWrites.delete(key);
-  }
-}
-
 export function sha1(content: string): string {
   return crypto.createHash('sha1').update(content, 'utf8').digest('hex');
 }
@@ -75,20 +61,22 @@ export function readWorkspaceFile(
   return { content, hash: sha1(content) };
 }
 
+/**
+ * Writes `content` and returns its hash.
+ *
+ * NEE-359: writes are NOT registered anywhere for echo suppression any more.
+ * Suppression used to live here (a process-global `recentWrites` map the
+ * watcher consulted), which meant a write by ANY client — or by the server
+ * itself — silenced the `file-changed` broadcast for EVERY connected tab, not
+ * just the one that issued it. A second tab then never learned the file had
+ * moved, stayed "saved" on stale content, and its next keystroke PUT the
+ * whole stale buffer over the first tab's work. The watcher now broadcasts
+ * unconditionally; per-tab echo suppression is the client's own
+ * `hash === savedHash` check, which is correctly per-tab by construction.
+ */
 export function writeWorkspaceFile(root: string, rel: string, content: string): string {
   const abs = resolveWorkspacePath(root, rel);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   fs.writeFileSync(abs, content, 'utf8');
-
-  const hash = sha1(content);
-  pruneRecentWrites();
-  recentWrites.set(toWorkspaceRelPath(root, abs), { hash, at: Date.now() });
-  return hash;
-}
-
-/** True when the watcher should suppress an event for this relPath+hash. */
-export function isRecentWrite(relPath: string, hash: string): boolean {
-  pruneRecentWrites();
-  const entry = recentWrites.get(relPath);
-  return entry !== undefined && entry.hash === hash;
+  return sha1(content);
 }

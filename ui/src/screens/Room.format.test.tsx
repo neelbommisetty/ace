@@ -338,7 +338,9 @@ describe('Room Cmd+S: format then flush (NEE-331)', () => {
       expect(formatDocSpy).toHaveBeenCalledWith('/solution.ts');
     });
     await waitFor(() => {
-      expect(putFile).toHaveBeenCalledWith('solution.ts', '/* formatted */const x=1');
+      expect(putFile).toHaveBeenCalledWith('solution.ts', '/* formatted */const x=1', {
+        savedHash: 'hash-solution.ts',
+      });
     });
   });
 
@@ -390,7 +392,9 @@ describe('Room format-before-run toggle (NEE-331)', () => {
       expect(startTestRun).toHaveBeenCalledWith('att-1', 'manual');
     });
     // format happened before the run saw the file
-    expect(putFile).toHaveBeenCalledWith('solution.ts', '/* formatted */const y=2');
+    expect(putFile).toHaveBeenCalledWith('solution.ts', '/* formatted */const y=2', {
+      savedHash: 'hash-solution.ts',
+    });
   });
 
   it('does not format before Run when the toggle is off', async () => {
@@ -414,7 +418,10 @@ describe('Room background autosave never formats (NEE-331)', () => {
     fireEvent.change(editor, { target: { value: '// edited, unformatted' } });
 
     await waitFor(
-      () => expect(putFile).toHaveBeenCalledWith('solution.ts', '// edited, unformatted'),
+      () =>
+        expect(putFile).toHaveBeenCalledWith('solution.ts', '// edited, unformatted', {
+          savedHash: 'hash-solution.ts',
+        }),
       { timeout: 2000 },
     );
     expect(formatDocSpy).not.toHaveBeenCalled();

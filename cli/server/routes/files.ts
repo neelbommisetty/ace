@@ -68,11 +68,33 @@ export function registerFileRoutes(app: Hono, ctx: RouteContext): void {
     const expectedRoot = body.expectedRoot;
     if (typeof expectedRoot === 'string' && expectedRoot !== workspaceRoot) {
       return c.json(
-        { error: `workspace changed: this save targeted ${expectedRoot}` },
+        { error: `workspace changed: this save targeted ${expectedRoot}`, code: 'workspace-changed' },
         409,
       );
     }
     const abs = resolveWorkspacePath(workspaceRoot, rel); // throws ScopeError → 400
+    // Optimistic concurrency (NEE-359): `savedHash` is the disk hash the
+    // client believes it is editing on top of. If disk has moved since —
+    // another tab saved, or the server appended follow-up probes / applied a
+    // dispute fix — this PUT would silently discard that write, so reject it
+    // and let the client surface its conflict banner instead. Omitting
+    // `savedHash` keeps the old last-write-wins behavior (the keepalive
+    // pagehide flush and non-UI callers), so the precondition is opt-in.
+    const savedHash = body.savedHash;
+    if (typeof savedHash === 'string') {
+      const current = readWorkspaceFile(workspaceRoot, rel);
+      // A missing file has no writer to lose — recreate it rather than 409.
+      if (current !== null && current.hash !== savedHash) {
+        return c.json(
+          {
+            error: 'file changed on disk since you last loaded it',
+            code: 'stale-write',
+            hash: current.hash,
+          },
+          409,
+        );
+      }
+    }
     const hash = writeWorkspaceFile(workspaceRoot, rel, content);
     snapshotOnWrite(ctx, toWorkspaceRelPath(workspaceRoot, abs), content, hash);
     return c.json({ hash });

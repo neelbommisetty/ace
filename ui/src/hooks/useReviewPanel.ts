@@ -191,8 +191,10 @@ export function useReviewPanel({
   const handleDisputeApplied = useCallback(() => {
     setDisputeModal(null);
     getDisputes(question.category, question.slug).then(setDisputes).catch(() => {});
-    // The server's own write is echo-suppressed — no file-changed event will
-    // arrive. Reload the test buffers explicitly, then rerun.
+    // A file-changed broadcast for the server's own write does now reach us
+    // (NEE-359 removed the process-global echo suppression), but it is
+    // watcher-debounced and arrives whenever it arrives — reload the test
+    // buffers explicitly so the rerun below is guaranteed to see the fix.
     const reloads = editorFiles
       .filter((f) => f.kind === 'test')
       .map((info) => loadFileInto(info.relPath).catch(() => {}));
@@ -235,10 +237,11 @@ export function useReviewPanel({
     if (p.questionId !== questionId) return;
     setProbeJobId(null);
     setProbeSets((cur) => [p.probeSet, ...cur.filter((s) => s.id !== p.probeSet.id)]);
-    // The server's own write is echo-suppressed (writeWorkspaceFile
-    // registers it) — no file-changed event arrives for the append. Reload
-    // the story buffer explicitly; onlyIfClean routes a raced dirty buffer
-    // into the existing conflict banner instead of clobbering it.
+    // The append does now also raise a file-changed broadcast (NEE-359), but
+    // only once the watcher's awaitWriteFinish settles — reload the story
+    // buffer explicitly so it is on screen the moment the probes are;
+    // onlyIfClean routes a raced dirty buffer into the existing conflict
+    // banner instead of clobbering it.
     //
     // Resolved by structural identity, not a category-specific FileKind
     // literal: `kind` is 'notes' for prose categories on the wire (see

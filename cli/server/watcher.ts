@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { watch } from 'chokidar';
 import { getQuestionsDir } from '../lib/paths.js';
-import { isRecentWrite, sha1, toWorkspaceRelPath } from './files.js';
+import { sha1, toWorkspaceRelPath } from './files.js';
 import type { Bus } from './sse.js';
 
 const RECONCILE_DEBOUNCE_MS = 500;
@@ -36,7 +36,11 @@ export function startWatcher(opts: WatcherOptions): { close(): Promise<void> } {
     }
     const hash = sha1(content);
     const relPath = toWorkspaceRelPath(workspaceRoot, absPath);
-    if (isRecentWrite(relPath, hash)) return; // echo of our own PUT /api/file
+    // NEE-359: broadcast unconditionally. Suppressing "our own" writes here
+    // was process-global — it silenced the event for every subscriber, so a
+    // second tab never learned about the first tab's save (or about the
+    // server's own probe/dispute appends) and went on to overwrite them.
+    // Each client suppresses its own echo locally via hash === savedHash.
     bus.emit('file-changed', { relPath, hash });
   };
 

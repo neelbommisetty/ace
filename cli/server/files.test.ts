@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ScopeError,
   readWorkspaceFile,
-  recentWrites,
   resolveWorkspacePath,
   sha1,
   writeWorkspaceFile,
@@ -16,12 +15,10 @@ let root: string;
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'ace-files-'));
   fs.mkdirSync(path.join(root, 'questions', 'js-ts', 'debounce'), { recursive: true });
-  recentWrites.clear();
 });
 
 afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
-  recentWrites.clear();
 });
 
 describe('resolveWorkspacePath', () => {
@@ -73,16 +70,6 @@ describe('readWorkspaceFile / writeWorkspaceFile', () => {
     expect(file).not.toBeNull();
     expect(file!.content).toBe(content);
     expect(file!.hash).toBe(hash);
-  });
-
-  it('records the write in recentWrites keyed by POSIX relPath', () => {
-    const rel = 'questions/js-ts/debounce/solution.ts';
-    const hash = writeWorkspaceFile(root, rel, 'hello');
-
-    const entry = recentWrites.get(rel);
-    expect(entry).toBeDefined();
-    expect(entry!.hash).toBe(hash);
-    expect(Math.abs(Date.now() - entry!.at)).toBeLessThan(1000);
   });
 
   it('creates missing parent directories on write', () => {

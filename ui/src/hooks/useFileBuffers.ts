@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import { flushFileSave, getFile, postAttemptEvent, putFile } from '../api';
+import { ApiError, flushFileSave, getFile, postAttemptEvent, putFile } from '../api';
 import type { FileState } from '../components/EditorPane';
 import { useSseEvent } from '../sse';
 import type { AttemptRow, QuestionDetail, QuestionFileInfo, TestRunTrigger } from '../types';
@@ -59,16 +59,25 @@ export function useFileBuffers({
   const firstEditable = editorFiles.find((f) => !f.readonly) ?? editorFiles[0];
   const [activeTab, setActiveTab] = useState<string>(firstEditable?.relPath ?? '');
 
+  /**
+   * Applies a patch against `filesRef` EAGERLY and hands React the finished
+   * map, rather than going through a setState updater. The buffer machinery
+   * is a set of interlocked async paths (autosave PUTs, reload GETs, SSE
+   * file-changed) that each decide what to do by reading `filesRef.current`
+   * right after another path wrote to it; with an updater, that read races
+   * React's render scheduling and can see pre-patch state. Assigning first
+   * makes the ref authoritative the instant the patch is applied — the
+   * ordering every one of those interlocks assumes.
+   */
   const updateFile = useCallback(
     (relPath: string, patch: Partial<FileState> | ((f: FileState) => Partial<FileState>)) => {
-      setFiles((prev) => {
-        const f = prev[relPath];
-        if (!f) return prev;
-        const p = typeof patch === 'function' ? patch(f) : patch;
-        const next = { ...prev, [relPath]: { ...f, ...p } };
-        filesRef.current = next;
-        return next;
-      });
+      const cur = filesRef.current[relPath];
+      if (!cur) return;
+      const p = typeof patch === 'function' ? patch(cur) : patch;
+      if (Object.keys(p).length === 0) return; // no-op patch: don't churn a render
+      const next = { ...filesRef.current, [relPath]: { ...cur, ...p } };
+      filesRef.current = next;
+      setFiles(next);
     },
     [filesRef],
   );
@@ -111,6 +120,54 @@ export function useFileBuffers({
     // editorFiles is stable per mount (RoomInner is keyed by question+attempt)
   }, []);
 
+  // ---- external file changes ----------------------------------------------
+  /** relPaths with a PUT currently in flight. */
+  const savesInFlight = useRef(new Set<string>());
+  /** file-changed events parked until the in-flight PUT for that path settles. */
+  const deferredExternal = useRef(new Map<string, string>());
+
+  /**
+   * Reacts to a `file-changed` broadcast. Since NEE-359 the server no longer
+   * suppresses echoes process-wide (that suppression silenced OTHER tabs too),
+   * so this is also where THIS tab's own writes come back — deduped locally by
+   * hash, which is per-tab correct by construction.
+   */
+  const applyExternalChange = useCallback(
+    (relPath: string, hash: string) => {
+      const f = filesRef.current[relPath];
+      if (!f || !f.loaded) return;
+      if (savesInFlight.current.has(relPath)) {
+        // Our own PUT hasn't returned yet, so `savedHash` isn't authoritative:
+        // this is most likely that write's own echo, and if it isn't, the
+        // PUT's savedHash precondition will 409 and route us to the conflict
+        // banner anyway. Re-run the check once the save settles.
+        deferredExternal.current.set(relPath, hash);
+        return;
+      }
+      if (hash === f.savedHash) return; // echo of our own write
+      if (f.buffer === f.savedContent) {
+        // clean buffer → silently pick up the disk version
+        loadFileInto(relPath, { onlyIfClean: true }).catch(() => {});
+      } else {
+        updateFile(relPath, { conflict: true });
+      }
+    },
+    [filesRef, loadFileInto, updateFile],
+  );
+  const applyExternalChangeRef = useLatestRef(applyExternalChange);
+
+  /** Ends the in-flight-write window for `relPath` and drains any parked event. */
+  const endSaveWindow = useCallback(
+    (relPath: string) => {
+      savesInFlight.current.delete(relPath);
+      const parked = deferredExternal.current.get(relPath);
+      if (parked == null) return;
+      deferredExternal.current.delete(relPath);
+      applyExternalChangeRef.current(relPath, parked);
+    },
+    [applyExternalChangeRef],
+  );
+
   // ---- autosave -----------------------------------------------------------
   const autorunRef = useLatestRef(autorun);
   const saveTimers = useRef(new Map<string, number>());
@@ -129,8 +186,9 @@ export function useFileBuffers({
       if (f.buffer === f.savedContent) return;
       const content = f.buffer;
       updateFile(relPath, { saveState: 'saving', saveError: null });
+      savesInFlight.current.add(relPath);
       try {
-        const { hash } = await putFile(relPath, content);
+        const { hash } = await putFile(relPath, content, { savedHash: f.savedHash });
         updateFile(relPath, (cur) => ({
           savedContent: content,
           savedHash: hash,
@@ -143,13 +201,23 @@ export function useFileBuffers({
           startRunRef.current('save');
         }
       } catch (e) {
+        // 409 stale-write (NEE-359): disk moved under us — another tab saved,
+        // or the server appended probes/a dispute fix. The buffer is NOT lost;
+        // it goes down the same conflict path an external file-changed takes,
+        // so the banner can offer reload vs. keep-mine.
+        if (e instanceof ApiError && e.status === 409 && e.code === 'stale-write') {
+          updateFile(relPath, { saveState: 'unsaved', saveError: null, conflict: true });
+          return;
+        }
         updateFile(relPath, {
           saveState: 'unsaved',
           saveError: e instanceof Error ? e.message : 'save failed',
         });
+      } finally {
+        endSaveWindow(relPath);
       }
     },
-    [filesRef, updateFile, hasTests, autorunRef, startRunRef],
+    [filesRef, updateFile, hasTests, autorunRef, startRunRef, endSaveWindow],
   );
 
   const scheduleSave = useCallback(
@@ -210,7 +278,10 @@ export function useFileBuffers({
       timers.clear();
       for (const [relPath, f] of Object.entries(filesRef.current)) {
         if (f.loaded && !f.info.readonly && !f.conflict && f.buffer !== f.savedContent) {
-          flushFileSave(relPath, f.buffer);
+          // savedHash rides along (NEE-359): there is no client left to show a
+          // conflict banner for an unload flush, so it must not be the one
+          // write that silently overwrites a newer version on disk.
+          flushFileSave(relPath, f.buffer, f.savedHash);
         }
       }
     };
@@ -244,17 +315,8 @@ export function useFileBuffers({
     [attempt, scheduleSave, updateFile],
   );
 
-  // ---- external file changes ---------------------------------------------
   useSseEvent('file-changed', ({ relPath, hash }) => {
-    const f = filesRef.current[relPath];
-    if (!f || !f.loaded) return;
-    if (hash === f.savedHash) return; // echo of our own write
-    if (f.buffer === f.savedContent) {
-      // clean buffer → silently pick up the disk version
-      loadFileInto(relPath, { onlyIfClean: true }).catch(() => {});
-    } else {
-      updateFile(relPath, { conflict: true });
-    }
+    applyExternalChangeRef.current(relPath, hash);
   });
 
   const resolveConflictReload = useCallback(
@@ -274,6 +336,10 @@ export function useFileBuffers({
       if (!f) return;
       const content = f.buffer;
       updateFile(relPath, { conflict: false, saveState: 'saving', saveError: null });
+      savesInFlight.current.add(relPath);
+      // Deliberately no `savedHash` (NEE-359): "Keep mine" IS the user's
+      // explicit decision to overwrite whatever disk holds now, so it must not
+      // be rejected by the stale-write precondition it is resolving.
       putFile(relPath, content)
         .then(({ hash }) => {
           updateFile(relPath, (cur) => ({
@@ -289,9 +355,10 @@ export function useFileBuffers({
             saveState: 'unsaved',
             saveError: e instanceof Error ? e.message : 'save failed',
           });
-        });
+        })
+        .finally(() => endSaveWindow(relPath));
     },
-    [filesRef, updateFile, hasTests, autorunRef, startRunRef],
+    [filesRef, updateFile, hasTests, autorunRef, startRunRef, endSaveWindow],
   );
 
   return {

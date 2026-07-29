@@ -284,7 +284,12 @@ afterEach(() => {
 async function editAndWaitForSave(relPath: string, value: string) {
   const editor = await screen.findByTestId(`editor-file:///${relPath}`);
   fireEvent.change(editor, { target: { value } });
-  await waitFor(() => expect(putFile).toHaveBeenCalledWith(relPath, value), { timeout: 2000 });
+  // the third arg is the NEE-359 optimistic-concurrency precondition: the
+  // disk hash this tab loaded, which the server checks before overwriting
+  await waitFor(
+    () => expect(putFile).toHaveBeenCalledWith(relPath, value, { savedHash: `hash-${relPath}` }),
+    { timeout: 2000 },
+  );
 }
 
 describe('Room auto-run-on-save default', () => {

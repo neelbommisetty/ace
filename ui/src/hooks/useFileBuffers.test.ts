@@ -1,20 +1,77 @@
+import { useEffect, useRef } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { useFileBuffers } from './useFileBuffers';
 import type { AttemptRow, QuestionDetail, QuestionFileInfo, TestRunTrigger } from '../types';
 
-// NEE-334 defense-in-depth: even if something upstream of useFileBuffers
-// mis-resolves which file a change event belongs to, handleChange itself
-// must refuse to touch a readonly file's buffer or schedule a save for it.
-const { getFile, putFile, flushFileSave, postAttemptEvent } = vi.hoisted(() => ({
-  getFile: vi.fn(),
-  putFile: vi.fn(),
-  flushFileSave: vi.fn(),
-  postAttemptEvent: vi.fn(),
+const { ApiErrorMock, getFile, putFile, flushFileSave, postAttemptEvent, sseHandlers } = vi.hoisted(
+  () => {
+    class ApiErrorMock extends Error {
+      constructor(
+        readonly status: number,
+        message: string,
+        readonly code: string | null = null,
+      ) {
+        super(message);
+        this.name = 'ApiError';
+      }
+    }
+    return {
+      ApiErrorMock,
+      getFile: vi.fn(),
+      putFile: vi.fn(),
+      flushFileSave: vi.fn(),
+      postAttemptEvent: vi.fn(),
+      sseHandlers: new Map<string, Set<(payload: unknown) => void>>(),
+    };
+  },
+);
+
+vi.mock('../api', () => ({
+  ApiError: ApiErrorMock,
+  getFile,
+  putFile,
+  flushFileSave,
+  postAttemptEvent,
 }));
 
-vi.mock('../api', () => ({ getFile, putFile, flushFileSave, postAttemptEvent }));
-vi.mock('../sse', () => ({ useSseEvent: () => {} }));
+// A real (if tiny) SSE registry: the file-changed handler is the whole
+// external-change path, so a no-op stub would leave NEE-359's fix untested.
+vi.mock('../sse', () => ({
+  useSseEvent: (name: string, handler: (payload: unknown) => void) => {
+    const ref = useRef(handler);
+    ref.current = handler;
+    useEffect(() => {
+      let set = sseHandlers.get(name);
+      if (!set) {
+        set = new Set();
+        sseHandlers.set(name, set);
+      }
+      const fn = (payload: unknown) => ref.current(payload);
+      set.add(fn);
+      return () => {
+        set!.delete(fn);
+      };
+    }, [name]);
+  },
+}));
+
+function fireSse(name: string, payload: unknown) {
+  act(() => {
+    for (const fn of sseHandlers.get(name) ?? []) fn(payload);
+  });
+}
+
+/** A pending promise plus its resolver — the held-promise race technique. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 function fileInfo(overrides: Partial<QuestionFileInfo> = {}): QuestionFileInfo {
   return {
@@ -78,6 +135,8 @@ function setup(files: QuestionFileInfo[]) {
   return hook;
 }
 
+const SOLUTION = fileInfo({ relPath: 'solution.ts', readonly: false });
+
 beforeEach(() => {
   vi.clearAllMocks();
   getFile.mockImplementation((relPath: string) =>
@@ -85,6 +144,10 @@ beforeEach(() => {
   );
   putFile.mockResolvedValue({ hash: 'new-hash' });
   postAttemptEvent.mockResolvedValue({ event: {} });
+});
+
+afterEach(() => {
+  sseHandlers.clear();
 });
 
 describe('useFileBuffers handleChange readonly guard (NEE-334)', () => {
@@ -128,7 +191,150 @@ describe('useFileBuffers handleChange readonly guard (NEE-334)', () => {
     expect(result.current.files['solution.ts'].saveState).toBe('unsaved');
 
     await waitFor(() => {
-      expect(putFile).toHaveBeenCalledWith('solution.ts', 'export const solution = 42;');
+      expect(putFile).toHaveBeenCalledWith('solution.ts', 'export const solution = 42;', {
+        savedHash: 'hash-solution.ts',
+      });
+    });
+  });
+});
+
+// NEE-359: echo suppression for file writes used to be process-global — the
+// server withheld file-changed from EVERY subscriber, so a second tab never
+// learned about the first tab's save and overwrote it on the next keystroke.
+// The broadcast is now unconditional and this tab dedupes its own echo by
+// hash; a write it can't account for either follows disk or raises a conflict.
+describe('useFileBuffers external file-changed (NEE-359)', () => {
+  it('adopts disk content when another tab saved and this buffer is clean', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    getFile.mockResolvedValue({
+      path: 'solution.ts',
+      content: '// written by tab A',
+      hash: 'hash-from-tab-a',
+    });
+    fireSse('file-changed', { relPath: 'solution.ts', hash: 'hash-from-tab-a' });
+
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].buffer).toBe('// written by tab A');
+    });
+    expect(result.current.files['solution.ts'].savedHash).toBe('hash-from-tab-a');
+    expect(result.current.files['solution.ts'].conflict).toBe(false);
+  });
+
+  it('raises a conflict instead of clobbering when this buffer is dirty', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    act(() => {
+      result.current.handleChange('solution.ts', 'my unsaved work');
+    });
+    fireSse('file-changed', { relPath: 'solution.ts', hash: 'hash-from-tab-a' });
+
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].conflict).toBe(true);
+    });
+    expect(result.current.files['solution.ts'].buffer).toBe('my unsaved work');
+  });
+
+  it('ignores the echo of its own write (hash === savedHash), leaving the buffer alone', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+    getFile.mockClear();
+
+    act(() => {
+      result.current.handleChange('solution.ts', 'typed but not yet saved');
+    });
+    fireSse('file-changed', { relPath: 'solution.ts', hash: 'hash-solution.ts' });
+
+    expect(result.current.files['solution.ts'].conflict).toBe(false);
+    expect(result.current.files['solution.ts'].buffer).toBe('typed but not yet saved');
+    expect(getFile).not.toHaveBeenCalled();
+  });
+
+  it('parks an event that lands mid-PUT and re-checks it once savedHash is authoritative', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    const put = deferred<{ hash: string }>();
+    putFile.mockReturnValueOnce(put.promise);
+    act(() => {
+      result.current.handleChange('solution.ts', 'my edit');
+    });
+    await waitFor(() => {
+      expect(putFile).toHaveBeenCalledTimes(1);
+    });
+
+    // The watcher's echo of our OWN write can outrun the PUT response. Acting
+    // on it then would flag a bogus conflict, since savedHash is still the
+    // pre-write value.
+    fireSse('file-changed', { relPath: 'solution.ts', hash: 'echo-hash' });
+    expect(result.current.files['solution.ts'].conflict).toBe(false);
+
+    await act(async () => {
+      put.resolve({ hash: 'echo-hash' });
+      await put.promise;
+    });
+
+    // Re-checked against the now-authoritative savedHash: same hash, no-op.
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].saveState).toBe('saved');
+    });
+    expect(result.current.files['solution.ts'].conflict).toBe(false);
+  });
+});
+
+describe('useFileBuffers stale-write 409 (NEE-359)', () => {
+  it('marks the file conflicted and keeps the buffer when the server rejects a stale PUT', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    putFile.mockRejectedValueOnce(
+      new ApiErrorMock(409, 'file changed on disk since you last loaded it', 'stale-write'),
+    );
+    act(() => {
+      result.current.handleChange('solution.ts', 'B stale buffer');
+    });
+
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].conflict).toBe(true);
+    });
+    expect(result.current.files['solution.ts'].buffer).toBe('B stale buffer');
+    // a conflict is not a save failure — no error strip, the banner owns this
+    expect(result.current.files['solution.ts'].saveError).toBeNull();
+  });
+
+  it('"Keep mine" re-PUTs WITHOUT savedHash, so the precondition it is resolving cannot reject it', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    act(() => {
+      result.current.handleChange('solution.ts', 'my unsaved work');
+    });
+    fireSse('file-changed', { relPath: 'solution.ts', hash: 'hash-from-tab-a' });
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].conflict).toBe(true);
+    });
+    putFile.mockClear();
+
+    act(() => {
+      result.current.resolveConflictKeep('solution.ts');
+    });
+
+    await waitFor(() => {
+      expect(putFile).toHaveBeenCalledWith('solution.ts', 'my unsaved work');
     });
   });
 });
