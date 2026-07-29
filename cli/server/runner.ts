@@ -19,6 +19,13 @@ export { parseVitestJson, stripAnsi };
 
 export interface Runner {
   start(question: QuestionRow, attemptId: string | null, trigger: TestRunTrigger): TestRunRow;
+  /**
+   * Stops the in-flight run identified by runId (killTree + finishTestRun
+   * 'cancelled' + run-done broadcast) WITHOUT starting a replacement.
+   * Returns false if runId isn't currently in flight (already finished, or
+   * unknown) — a no-op, not an error.
+   */
+  cancel(runId: string): boolean;
   /** True while any test run is in flight, across all questions. */
   isBusy(): boolean;
   dispose(): void;
@@ -290,6 +297,19 @@ export function createRunner(opts: {
       });
 
       return run;
+    },
+
+    cancel(runId) {
+      for (const entry of inFlight.values()) {
+        if (entry.runId !== runId) continue;
+        // supersede() already does exactly "kill this in-flight run and mark
+        // it cancelled" — it does NOT itself start a replacement (that's
+        // start()'s job, for the *next* run). Reused as-is for a plain
+        // cancel with no replacement.
+        supersede(entry);
+        return true;
+      }
+      return false;
     },
 
     isBusy() {

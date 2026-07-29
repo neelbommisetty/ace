@@ -70,6 +70,7 @@ export function fakeEngines(overrides: FakeEngineOverrides = {}): EngineFactorie
       const o = resolveOverride(overrides.runner, opts);
       return {
         start: o.start ?? vi.fn(),
+        cancel: o.cancel ?? vi.fn(() => false),
         isBusy: o.isBusy ?? vi.fn(() => false),
         dispose: o.dispose ?? vi.fn(),
       };

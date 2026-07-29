@@ -240,6 +240,11 @@ export function getTestRuns(questionId: string, limit?: number): Promise<TestRun
   return request(withQuery('/api/test-runs', { questionId, limit }));
 }
 
+/** Stops an in-flight run (killTree + status 'cancelled') without starting a replacement. */
+export function cancelTestRun(runId: string): Promise<{ ok: true }> {
+  return request(`/api/test-runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' });
+}
+
 export function getImportPreview(): Promise<{ items: ImportPreviewItem[] }> {
   return request('/api/import/preview');
 }

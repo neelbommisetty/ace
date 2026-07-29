@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { TestConsole, type RunDisplay } from './TestConsole';
 
@@ -10,6 +10,7 @@ const baseProps = {
   autorun: false,
   onToggleAutorun: vi.fn(),
   onRun: vi.fn(),
+  onStop: vi.fn(),
   onCollapse: vi.fn(),
 };
 
@@ -77,5 +78,40 @@ describe('TestConsole — compile-error and no-tests states (NEE-332)', () => {
     expect(screen.getByText('2/3')).toBeTruthy();
     expect(document.querySelector('.summary-fail')).not.toBeNull();
     expect(document.querySelector('.summary-pass')).toBeNull();
+  });
+});
+
+describe('TestConsole — Run/Stop button (NEE-295)', () => {
+  it('shows "Run ⌘↩" and calls onRun when idle', () => {
+    const onRun = vi.fn();
+    const onStop = vi.fn();
+    render(<TestConsole {...baseProps} onRun={onRun} onStop={onStop} lastRun={null} />);
+
+    const btn = screen.getByText('Run ⌘↩');
+    expect(screen.queryByText('Stop')).toBeNull();
+    fireEvent.click(btn);
+    expect(onRun).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it('flips to a destructive "Stop" button while a run is in flight, and calls onStop', () => {
+    const onRun = vi.fn();
+    const onStop = vi.fn();
+    render(
+      <TestConsole
+        {...baseProps}
+        running={{ runId: 'r1', trigger: 'manual' }}
+        onRun={onRun}
+        onStop={onStop}
+        lastRun={null}
+      />,
+    );
+
+    expect(screen.queryByText('Run ⌘↩')).toBeNull();
+    const stopBtn = screen.getByText('Stop');
+    expect(stopBtn.closest('button')).toHaveClass('btn-danger');
+    fireEvent.click(stopBtn);
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onRun).not.toHaveBeenCalled();
   });
 });

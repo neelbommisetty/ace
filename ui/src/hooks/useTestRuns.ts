@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { OnMount } from '@monaco-editor/react';
-import { flushAttemptEnd, getTestRuns, patchAttempt, startTestRun } from '../api';
+import { cancelTestRun, flushAttemptEnd, getTestRuns, patchAttempt, startTestRun } from '../api';
 import type { RunDisplay } from '../components/TestConsole';
 import { isFullyPassing } from '../lib/run';
 import { useSseEvent } from '../sse';
@@ -107,6 +107,19 @@ export function useTestRuns({
     [attempt, hasTests, flushSavesRef],
   );
   const startRunRef = useLatestRef(startRun);
+
+  /**
+   * Stops the currently in-flight run (NEE-295) — the server kills the
+   * process tree and marks it 'cancelled'; 'run-done' (already wired above)
+   * then clears `running` and renders the existing "Run was cancelled."
+   * state. A no-op if nothing is running or the run already finished (404,
+   * swallowed — the UI will settle via run-done/hello either way).
+   */
+  const stopRun = useCallback(() => {
+    const cur = runningRef.current;
+    if (cur == null) return;
+    cancelTestRun(cur.runId).catch(() => {});
+  }, [runningRef]);
 
   useSseEvent('run-started', (p) => {
     if (p.questionId !== questionId) return;
@@ -221,5 +234,5 @@ export function useTestRuns({
     };
   }, [attempt, shouldClaimSolved]);
 
-  return { running, lastRun, history, output, runError, startRun, handleEditorMount };
+  return { running, lastRun, history, output, runError, startRun, stopRun, handleEditorMount };
 }

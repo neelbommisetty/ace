@@ -9,6 +9,7 @@ export function TopBar({
   running,
   readonly,
   onRun,
+  onStop,
   onFreshAttempt,
 }: {
   question: QuestionRow;
@@ -19,6 +20,8 @@ export function TopBar({
   readonly?: boolean;
   /** Absent for design categories (no test files → no run) or in readonly mode. */
   onRun?: () => void;
+  /** Stops the in-flight run (NEE-295). Present whenever onRun is. */
+  onStop?: () => void;
   onFreshAttempt?: () => void;
 }) {
   return (
@@ -52,12 +55,17 @@ export function TopBar({
             {formatClock(seconds)}
           </span>
         )}
-        {onRun && (
-          <button className="btn btn-accent" onClick={onRun} title="Run tests (⌘/Ctrl+Enter)">
-            {running && <span className="pulse-dot pulse-dot-on-accent" />}
-            {running ? 'Running…' : 'Run'}
-          </button>
-        )}
+        {onRun &&
+          (running ? (
+            <button className="btn btn-danger" onClick={onStop} title="Stop the running test run">
+              <span className="pulse-dot pulse-dot-on-accent" />
+              Stop
+            </button>
+          ) : (
+            <button className="btn btn-accent" onClick={onRun} title="Run tests (⌘/Ctrl+Enter)">
+              Run
+            </button>
+          ))}
       </div>
     </header>
   );

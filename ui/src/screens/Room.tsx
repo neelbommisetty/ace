@@ -187,6 +187,7 @@ function RoomInner({
         running={runs.running != null}
         readonly={readonly}
         onRun={hasTests && !readonly ? () => runs.startRun('manual') : undefined}
+        onStop={runs.stopRun}
         onFreshAttempt={readonly ? undefined : openFresh}
       />
       {readonly && (
@@ -243,6 +244,7 @@ function RoomInner({
                 autorun={autorun}
                 onToggleAutorun={() => setAutorun((v) => !v)}
                 onRun={() => runs.startRun('manual')}
+                onStop={runs.stopRun}
                 onCollapse={() => setConsoleOpen(false)}
                 onDispute={(testName) => {
                   if (runs.lastRun != null) review.openDispute(runs.lastRun.runId, testName);

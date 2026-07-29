@@ -204,6 +204,14 @@ export function registerAttemptRoutes(app: Hono, ctx: RouteContext): void {
     return c.json(db.listTestRuns(questionId, limit.limit));
   });
 
+  app.post('/api/test-runs/:runId/cancel', (c) => {
+    const { runner } = ctx.requireSession();
+    const runId = c.req.param('runId');
+    const cancelled = runner.cancel(runId);
+    if (!cancelled) return c.json({ error: 'test run is not in flight' }, 404);
+    return c.json({ ok: true });
+  });
+
   app.post('/api/attempts/:id/fresh', async (c) => {
     const workspaceRoot = ctx.requireWorkspaceRoot();
     const { db } = ctx.requireSession();

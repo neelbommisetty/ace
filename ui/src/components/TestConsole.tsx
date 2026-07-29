@@ -20,6 +20,7 @@ export function TestConsole({
   autorun,
   onToggleAutorun,
   onRun,
+  onStop,
   onCollapse,
   onDispute,
 }: {
@@ -31,6 +32,8 @@ export function TestConsole({
   autorun: boolean;
   onToggleAutorun: () => void;
   onRun: () => void;
+  /** Stops the in-flight run (NEE-295). */
+  onStop: () => void;
   onCollapse: () => void;
   /** Present when the shown run's failures can be disputed (status 'done'). */
   onDispute?: (testName: string) => void;
@@ -82,9 +85,23 @@ export function TestConsole({
                 even once its label is hidden */}
             <span className="autorun-label">auto-run on save</span>
           </label>
-          <button className="btn btn-small btn-accent" onClick={onRun} title="Run tests (⌘/Ctrl+Enter)">
-            {running ? 'Running…' : 'Run ⌘↩'}
-          </button>
+          {running ? (
+            <button
+              className="btn btn-small btn-danger"
+              onClick={onStop}
+              title="Stop the running test run"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              className="btn btn-small btn-accent"
+              onClick={onRun}
+              title="Run tests (⌘/Ctrl+Enter)"
+            >
+              Run ⌘↩
+            </button>
+          )}
           <button className="icon-btn" onClick={onCollapse} title="Collapse console">
             ▾
           </button>
