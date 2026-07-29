@@ -25,7 +25,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       // `ACE_UI_TOKEN=dev npm run ace ui -- --no-open` then open :5173/?t=dev
-      '/api': { target: 'http://127.0.0.1:4242' },
+      '/api': { target: 'http://127.0.0.1:4280' },
     },
   },
 });
