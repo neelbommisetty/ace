@@ -37,6 +37,16 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('solution.test.ts');
   });
 
+  it('carries all five behavioral STAR dimension names into the assembled review prompt (NEE-344)', () => {
+    // Catches a capsule section rename breaking the {{review-dimensions}}
+    // slot silently — the names are also parseReviewDimensions' extraction
+    // keys, so a drift here is a drift in production score history.
+    const prompt = buildSystemPrompt('review', 'behavioral');
+    for (const dimension of ['Structure', 'Specificity', 'Ownership', 'Impact', 'Reflection']) {
+      expect(prompt).toContain(`**${dimension}**`);
+    }
+  });
+
   it('throws with the capsule path when a required section is missing', () => {
     const real = fs.readFileSync.bind(fs);
     const fake = ((file: Parameters<typeof fs.readFileSync>[0], options?: never) => {

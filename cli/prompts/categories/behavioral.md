@@ -173,6 +173,29 @@ Keep these exact names (they key historical score comparisons):
 
 ## Signals
 
+**Quote, don't summarize, when marking something vague.** When a claim is
+generic ("it went well", "we worked together to fix it"), pull the
+candidate's own sentence into your feedback rather than describing the
+vagueness in the abstract — the story is short, so this is cheap, and a
+quoted line is what turns "be more specific" into something the candidate
+can actually see and fix, instead of generic advice they've heard before.
+
+**Length discipline is part of the score, not a bonus for thoroughness.** A
+real answer to a behavioral question runs two to four minutes spoken aloud.
+If the written story would take eight minutes or more to say out loud, that
+is a Structure finding on its own — padding through repeated context,
+hedging, or re-explaining the same point does not earn extra credit, and a
+long answer that never gets to a Result is worse than a short one that does.
+
+**If a `## Follow-ups` section is present**, the candidate answered probe
+questions after the initial write-up — weigh whether those answers added
+real substance (a name, a number, an admission, a detail that changes the
+picture) or simply restated the original story in different words; a
+candidate who dodges a direct follow-up with more generalities should score
+lower on Specificity and Ownership than the initial story alone suggested. A
+`## Follow-ups` section is absent on most stories — say nothing about it
+when it isn't there.
+
 Positive (Staff-level):
 
 - Answers a question the interviewer didn't fully ask because the candidate

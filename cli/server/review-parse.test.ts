@@ -63,6 +63,39 @@ Solid submission — the core algorithm is correct and readable.
 - Add a complexity note in a comment
 `;
 
+// NEE-344: a realistic behavioral review body in the shipped rubric shape —
+// the five STAR dimension names, an Overall line, and a hire-scale verdict —
+// the exact form review.md's Output Format asks the reviewer to produce.
+const behavioralReviewBody = `# Behavioral Review
+
+### Scores
+
+- Structure: 4
+- Specificity: 3
+- Ownership: 4
+- Impact: 3
+- Reflection: 4
+
+Overall: 3.5/5
+
+### Verdict
+
+**Hire** — a well-structured story with real ownership, though the impact
+claim is unquantified.
+
+### 3 Things Done Well
+
+- Clear Situation → Result arc with nothing skipped
+- "I" statements throughout, never "we" at the load-bearing moments
+- A specific, credible reflection instead of a generic lesson
+
+### 3 Areas to Improve
+
+- Name a real number for the outcome instead of "the team adopted it"
+- One stretch of Action leans on vague timeframes ("eventually")
+- Tighten the Situation — it runs long relative to Action
+`;
+
 // llm.ts mock mode (ACE_MOCK_LLM_MODE=feedback) produces exactly this shape.
 const mockFeedbackBody =
   'Overall 4/5\n\nClear solution structure and correct approach. Add a brief complexity note.';
@@ -100,6 +133,10 @@ describe('parseReviewScore', () => {
     expect(parseReviewScore(designReviewBody)).toBeNull();
   });
 
+  it('parses the overall score from a behavioral review body (NEE-344)', () => {
+    expect(parseReviewScore(behavioralReviewBody)).toBe(3.5);
+  });
+
   it('returns null when there is no score at all', () => {
     expect(parseReviewScore(plainBody)).toBeNull();
     expect(parseReviewScore('')).toBeNull();
@@ -113,6 +150,10 @@ describe('parseReviewVerdict', () => {
 
   it('finds the verdict in a code review body', () => {
     expect(parseReviewVerdict(codeReviewBody)).toBe('Hire');
+  });
+
+  it('finds the verdict in a behavioral review body (NEE-344)', () => {
+    expect(parseReviewVerdict(behavioralReviewBody)).toBe('Hire');
   });
 
   it('prefers the longer verdict when they overlap ("Strong Hire" over "Hire")', () => {
@@ -161,6 +202,19 @@ describe('parseReviewDimensions', () => {
       Correctness: 5,
       'Edge Case Handling': 3,
       'Time/Space Complexity': 4,
+    });
+  });
+
+  it('parses all five STAR dimensions from a behavioral review body, with the right scores (NEE-344)', () => {
+    // Acceptance criterion #1: per-dimension scores for behavioral reviews
+    // land in history like every other review — this is the extractor
+    // proving the capsule's five dimension names actually survive parsing.
+    expect(parseReviewDimensions(behavioralReviewBody)).toEqual({
+      Structure: 4,
+      Specificity: 3,
+      Ownership: 4,
+      Impact: 3,
+      Reflection: 4,
     });
   });
 

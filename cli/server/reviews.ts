@@ -259,7 +259,13 @@ const REVIEW_KIND: Record<QuestionType, ReviewKind> = {
   behavioral: 'behavioral',
 };
 
-function buildReviewMessages(
+/**
+ * Exported for test coverage only (review-messages.test.ts): the per-kind
+ * user-message shape is exactly what "byte-for-byte unaffected" (NEE-344
+ * acceptance #3) has to be asserted against, and the internal engine never
+ * calls this from outside the module.
+ */
+export function buildReviewMessages(
   question: QuestionRow,
   config: CategoryConfig,
   kind: ReviewKind,
