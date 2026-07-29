@@ -55,8 +55,9 @@ against), and `reviewKind` (duplicates `type`). `supportsFormatOnSave` has no
 category dimension at all — `useTestRuns.ts` decides it by file extension,
 deliberately.
 
-`isDesignCategory` survives at **exactly one** call site: the `designSubType`
-chain in `reviews.ts`, which is genuinely design-specific.
+`isDesignCategory` was **removed** — the tripwire Records (`REVIEW_KIND`,
+`EXAMPLE_SECTION`, `AUDIT_LABEL`, `VERIFY_SKIP_REASON`) subsumed its one
+remaining use, and the `designSubType` chain in `reviews.ts` never called it.
 
 The SPA needs none of this. It already derives `hasTests` from the wire file
 list (`useFileBuffers.ts`: `editorFiles.some(f => f.kind === 'test')`) and
@@ -476,8 +477,10 @@ compile time, so a clean auto-merge can still be broken.
 
 Runtime tests are required for all of these — the compiler stays silent:
 
-1. `isDesignCategory(...)` returns a boolean; a missed site compiles and takes
-   the coding arm.
+1. ~~`isDesignCategory(...)` returns a boolean; a missed site compiles and
+   takes the coding arm.~~ Moot: the function was removed and every site that
+   would have called it is now a `Record<QuestionType, X>`, so a missed case
+   is a compile error, not a silent fallthrough.
 2. `config.type` interpolated as a string (`generation.ts`'s
    `Question type: ${config.type}` — the only place the type reaches an LLM).
 3. `CATEGORY_SLUGS.includes(...)` in the generation route allowlist.
