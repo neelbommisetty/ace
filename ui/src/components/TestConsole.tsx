@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { formatDuration, relTime } from '../lib/format';
+import type { PreviewConsoleEntry } from '../hooks/usePreviewConsole';
 import type { TestCaseResult, TestRunStatus, TestRunSummary, TestRunTrigger } from '../types';
 
 export interface RunDisplay {
@@ -25,6 +26,8 @@ export function TestConsole({
   onStop,
   onCollapse,
   onDispute,
+  showPreviewTab = false,
+  previewEntries = [],
 }: {
   running: { runId: string; trigger: TestRunTrigger } | null;
   lastRun: RunDisplay | null;
@@ -43,8 +46,15 @@ export function TestConsole({
   onCollapse: () => void;
   /** Present when the shown run's failures can be disputed (status 'done'). */
   onDispute?: (testName: string) => void;
+  /** NEE-351: only react-group questions (the ones with a preview pane at
+   * all) get a Preview tab — everyone else's console is exactly what it was
+   * before this ticket. */
+  showPreviewTab?: boolean;
+  /** Entries from usePreviewConsole — a SEPARATE array from `output`, so a
+   * flooded preview channel can never starve test output for room. */
+  previewEntries?: PreviewConsoleEntry[];
 }) {
-  const [tab, setTab] = useState<'results' | 'output'>('results');
+  const [tab, setTab] = useState<'results' | 'output' | 'preview'>('results');
   const outputRef = useRef<HTMLPreElement>(null);
   const wasRunning = useRef(false);
 
@@ -76,6 +86,17 @@ export function TestConsole({
           >
             Output
           </button>
+          {showPreviewTab && (
+            <button
+              className={`pane-tab ${tab === 'preview' ? 'active' : ''}`}
+              onClick={() => setTab('preview')}
+            >
+              Preview
+              {previewErrorCount(previewEntries) > 0 && (
+                <span className="preview-tab-badge">{previewErrorCount(previewEntries)}</span>
+              )}
+            </button>
+          )}
         </div>
         <div className="console-meta">
           {historyCount > 0 && (
@@ -121,14 +142,15 @@ export function TestConsole({
         </div>
       </div>
       <div className="console-body">
-        {tab === 'results' ? (
+        {tab === 'results' && (
           <ResultsTab
             running={running}
             lastRun={lastRun}
             runError={runError}
             onDispute={onDispute}
           />
-        ) : (
+        )}
+        {tab === 'output' && (
           <div className="output-tab">
             {(lastRun?.status === 'error' || lastRun?.status === 'compile-error') && !running && (
               <div className="run-error-block">
@@ -142,8 +164,69 @@ export function TestConsole({
             </pre>
           </div>
         )}
+        {tab === 'preview' && <PreviewTab entries={previewEntries} />}
       </div>
     </section>
+  );
+}
+
+/** Kinds that read as an actual problem rather than routine console chatter
+ * — drives the Preview tab's badge count. */
+function isPreviewErrorKind(kind: PreviewConsoleEntry['kind']): boolean {
+  return kind === 'console-error' || kind === 'window-error' || kind === 'unhandled-rejection' || kind === 'vite-error';
+}
+
+function previewErrorCount(entries: PreviewConsoleEntry[]): number {
+  return entries.filter((e) => isPreviewErrorKind(e.kind)).length;
+}
+
+/**
+ * Compile-error presentation shared between a vitest transform failure
+ * (ResultsTab, below) and a Vite transform/syntax failure forwarded from the
+ * preview iframe (NEE-351) — the same markup either way, so a TSX syntax
+ * error looks identical whichever tool found it.
+ */
+function CompileErrorBanner({ text }: { text: string }) {
+  return (
+    <div className="results-banner results-banner-error compile-error-banner">
+      <div className="compile-error-title">✕ Compilation failed</div>
+      <pre className="compile-error-text">{text}</pre>
+    </div>
+  );
+}
+
+const PREVIEW_KIND_LABEL: Record<PreviewConsoleEntry['kind'], string> = {
+  'console-log': 'log',
+  'console-warn': 'warn',
+  'console-error': 'error',
+  'window-error': 'error',
+  'unhandled-rejection': 'rejection',
+  'vite-error': 'compile error',
+  'rate-limited': 'throttled',
+};
+
+/** NEE-351: preview console/error entries — a Preview tab sharing this same
+ * console component with test output rather than forking a second one. */
+function PreviewTab({ entries }: { entries: PreviewConsoleEntry[] }) {
+  if (entries.length === 0) {
+    return <div className="pane-empty">No preview activity yet — console output and errors from the live preview will show up here.</div>;
+  }
+  return (
+    <div className="results-tab preview-console">
+      {entries.map((entry) => {
+        if (entry.kind === 'vite-error') {
+          const located = entry.file != null ? `${entry.file}${entry.line != null ? ':' + entry.line : ''}\n${entry.text}` : entry.text;
+          return <CompileErrorBanner key={entry.id} text={located} />;
+        }
+        return (
+          <div key={entry.id} className={`preview-log-line preview-log-${PREVIEW_KIND_LABEL[entry.kind]}`}>
+            <span className="preview-log-source">Preview</span>
+            <span className="preview-log-text">{entry.text}</span>
+            {entry.count > 1 && <span className="preview-log-count">×{entry.count}</span>}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -180,12 +263,7 @@ function ResultsTab({
             </div>
           )}
           {lastRun.status === 'compile-error' && (
-            <div className="results-banner results-banner-error compile-error-banner">
-              <div className="compile-error-title">✕ Compilation failed</div>
-              <pre className="compile-error-text">
-                {lastRun.errorMessage ?? 'Unknown error — see Output for details.'}
-              </pre>
-            </div>
+            <CompileErrorBanner text={lastRun.errorMessage ?? 'Unknown error — see Output for details.'} />
           )}
           {lastRun.status === 'cancelled' && (
             <div className="results-banner results-banner-dim">Run was cancelled.</div>

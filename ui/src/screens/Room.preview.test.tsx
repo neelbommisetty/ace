@@ -406,4 +406,26 @@ describe('Room live preview pane — react-group gating (NEE-349)', () => {
     expect(screen.getByTitle('Live preview')).toBe(frame);
     expect(screen.getByTitle('Live preview').getAttribute('src')).toBe(initialSrc);
   });
+
+  it("forwards a console.error from the preview iframe into the console's Preview tab", async () => {
+    renderRoom();
+    await screen.findByTitle('Live preview');
+    // The Preview tab's own listener attaches from a passive effect keyed
+    // off `previewOrigin` — let it settle before dispatching (the iframe
+    // itself paints on the same commit that computes previewOrigin, so a
+    // bare `findByTitle` can otherwise resolve one tick ahead of it).
+    await new Promise((r) => setTimeout(r, 0));
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { source: 'ace-preview', kind: 'console-error', text: 'boom from the preview', file: null, line: null },
+          origin: 'http://127.0.0.1:5199',
+        }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Preview/ }));
+    expect(await screen.findByText('boom from the preview')).toBeInTheDocument();
+  });
 });

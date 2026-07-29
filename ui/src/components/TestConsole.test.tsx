@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import type { PreviewConsoleEntry } from '../hooks/usePreviewConsole';
 import { TestConsole, type RunDisplay } from './TestConsole';
 
 const baseProps = {
@@ -115,5 +116,114 @@ describe('TestConsole — Run/Stop button (NEE-295)', () => {
     fireEvent.click(stopBtn);
     expect(onStop).toHaveBeenCalledTimes(1);
     expect(onRun).not.toHaveBeenCalled();
+  });
+});
+
+describe('TestConsole — Preview tab (NEE-351)', () => {
+  function entry(overrides: Partial<PreviewConsoleEntry> = {}): PreviewConsoleEntry {
+    return {
+      id: 1,
+      kind: 'console-log',
+      text: 'hello from the preview',
+      file: null,
+      line: null,
+      count: 1,
+      at: Date.now(),
+      ...overrides,
+    };
+  }
+
+  it('is absent entirely for a non-react question (showPreviewTab=false, the default)', () => {
+    renderConsole(null);
+    expect(screen.queryByText('Preview')).toBeNull();
+  });
+
+  it('shows the tab (with no error badge) once a react-group question opts in, even with zero entries', () => {
+    render(<TestConsole {...baseProps} lastRun={null} showPreviewTab />);
+    expect(screen.getByText('Preview')).toBeTruthy();
+    expect(document.querySelector('.preview-tab-badge')).toBeNull();
+  });
+
+  it('renders console-log/warn/error lines, attributed to Preview, when the tab is selected', () => {
+    render(
+      <TestConsole
+        {...baseProps}
+        lastRun={null}
+        showPreviewTab
+        previewEntries={[entry({ id: 1, kind: 'console-error', text: 'boom' })]}
+      />,
+    );
+    fireEvent.click(screen.getByText('Preview'));
+    expect(screen.getByText('boom')).toBeTruthy();
+    expect(screen.getAllByText('Preview').length).toBeGreaterThan(1); // tab label + per-line attribution
+  });
+
+  it('shows a collapsed repeat count instead of one row per identical message', () => {
+    render(
+      <TestConsole
+        {...baseProps}
+        lastRun={null}
+        showPreviewTab
+        previewEntries={[entry({ id: 1, kind: 'console-error', text: 'infinite loop', count: 47 })]}
+      />,
+    );
+    fireEvent.click(screen.getByText('Preview'));
+    expect(screen.getByText('×47')).toBeTruthy();
+    // one row, not 47
+    expect(document.querySelectorAll('.preview-log-line')).toHaveLength(1);
+  });
+
+  it('maps a vite-error entry onto the same compile-error presentation as a vitest transform failure, with file/line', () => {
+    render(
+      <TestConsole
+        {...baseProps}
+        lastRun={null}
+        showPreviewTab
+        previewEntries={[
+          entry({
+            id: 1,
+            kind: 'vite-error',
+            text: 'Unexpected token',
+            file: 'questions/react-apps/demo/App.tsx',
+            line: 12,
+          }),
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByText('Preview'));
+    expect(screen.getByText('✕ Compilation failed')).toBeTruthy();
+    expect(screen.getByText(/App\.tsx:12/)).toBeTruthy();
+    expect(screen.getByText(/Unexpected token/)).toBeTruthy();
+  });
+
+  it('badges the tab with the error count while a different tab is active', () => {
+    render(
+      <TestConsole
+        {...baseProps}
+        lastRun={null}
+        showPreviewTab
+        previewEntries={[
+          entry({ id: 1, kind: 'console-log', text: 'routine log' }),
+          entry({ id: 2, kind: 'console-error', text: 'err one' }),
+          entry({ id: 3, kind: 'window-error', text: 'err two' }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('2')).toBeTruthy(); // 2 error-shaped entries, 1 routine log excluded
+  });
+
+  it('never lets preview entries appear in — or evict — the Output tab’s run stream', () => {
+    render(
+      <TestConsole
+        {...baseProps}
+        lastRun={null}
+        output="test run output line"
+        showPreviewTab
+        previewEntries={[entry({ id: 1, kind: 'console-error', text: 'preview-only text' })]}
+      />,
+    );
+    fireEvent.click(screen.getByText('Output'));
+    expect(screen.getByText('test run output line')).toBeTruthy();
+    expect(screen.queryByText('preview-only text')).toBeNull();
   });
 });

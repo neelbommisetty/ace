@@ -26,6 +26,7 @@ import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { useFileBuffers } from '../hooks/useFileBuffers';
 import { useLocalStorageState } from '../hooks/useLocalStorageState';
 import { usePaneLayout } from '../hooks/usePaneLayout';
+import { usePreviewConsole } from '../hooks/usePreviewConsole';
 import { useReviewPanel } from '../hooks/useReviewPanel';
 import { useTestRuns } from '../hooks/useTestRuns';
 import {
@@ -317,7 +318,7 @@ function RoomInner({
   // against the current window size on mount and resize.
   const layout = usePaneLayout();
 
-  // ---- live preview (NEE-349) -----------------------------------------------
+  // ---- live preview (NEE-349/NEE-351) --------------------------------------
   // Derived from the category registry, never a hardcoded category list:
   // only web-components/react-apps (group 'react') have anything to mount.
   const isReactGroup = lookupCategoryConfig(question.category)?.group === 'react';
@@ -359,6 +360,12 @@ function RoomInner({
     autoStartedPreview.current = true;
     startPreview();
   }, [isReactGroup, previewOpen, startPreview]);
+
+  const previewOrigin =
+    previewStatus.state === 'ready' && previewStatus.url != null ? new URL(previewStatus.url).origin : null;
+  // ONE listener shared by the pane and the console's Preview tab (NEE-351)
+  // — not two independent postMessage subscribers.
+  const previewConsole = usePreviewConsole(previewOrigin);
 
   // Flush pending saves the moment the pane opens (mount, or a later
   // manual open) — the first paint is never one autosave debounce behind.
@@ -572,6 +579,8 @@ function RoomInner({
                   onDispute={(testName) => {
                     if (runs.lastRun != null) review.openDispute(runs.lastRun.runId, testName);
                   }}
+                  showPreviewTab={isReactGroup}
+                  previewEntries={previewConsole.entries}
                 />
               </div>
             ) : (

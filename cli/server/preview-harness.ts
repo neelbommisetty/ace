@@ -211,6 +211,97 @@ export function buildHarnessHtml(target: PreviewTarget): string {
 const RESOLVE_PREVIEW_EXPORT_SOURCE = resolvePreviewExport.toString();
 
 /**
+ * Error/console forwarding (NEE-351) — plain JS spliced verbatim into the
+ * browser entry, installed before the first render so a mount-time throw is
+ * still caught. Posts to the parent window so the Room's EXISTING console
+ * pane can show these under a Preview source (ui/src/hooks/usePreviewConsole.ts
+ * validates origin + payload shape before touching any of it — the iframe
+ * runs LLM-generated + user-written code, so nothing here is trusted on
+ * arrival). Kinds mirror shared/wire-types.ts's `PreviewConsoleKind` — kept
+ * in sync by hand since this half runs as an emitted string, not compiled
+ * TS.
+ *
+ * The per-second cap throttles the CHANNEL itself (not just the display): an
+ * infinite render loop can call console.error far faster than any consumer
+ * can use, and without this the flood would still saturate the parent
+ * window's postMessage queue even if the receiving hook collapses repeats.
+ */
+const ACE_PREVIEW_FORWARDING_SOURCE = `
+let aceMsgCount = 0;
+let aceMsgWindowStart = Date.now();
+const ACE_MAX_MSGS_PER_SEC = 20;
+
+function aceStringify(value) {
+  if (typeof value === 'string') return value;
+  if (value instanceof Error) return value.stack || value.message || String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function acePreviewPost(kind, text, extra) {
+  const now = Date.now();
+  if (now - aceMsgWindowStart > 1000) {
+    aceMsgWindowStart = now;
+    aceMsgCount = 0;
+  }
+  aceMsgCount += 1;
+  if (aceMsgCount > ACE_MAX_MSGS_PER_SEC) {
+    if (aceMsgCount === ACE_MAX_MSGS_PER_SEC + 1) {
+      try {
+        window.parent.postMessage(
+          {
+            source: 'ace-preview',
+            kind: 'rate-limited',
+            text: MODULE_LABEL + ' is emitting messages faster than the console can show — throttling',
+            file: null,
+            line: null,
+          },
+          '*',
+        );
+      } catch {}
+    }
+    return;
+  }
+  try {
+    window.parent.postMessage(
+      {
+        source: 'ace-preview',
+        kind,
+        text,
+        file: (extra && extra.file) || null,
+        line: extra && extra.line != null ? extra.line : null,
+      },
+      '*',
+    );
+  } catch {}
+}
+
+window.addEventListener('error', (e) => {
+  const err = e.error;
+  const text = (err && err.stack) || e.message + ' (' + e.filename + ':' + e.lineno + ':' + e.colno + ')';
+  acePreviewPost('window-error', text);
+});
+
+window.addEventListener('unhandledrejection', (e) => {
+  const reason = e.reason;
+  const text = (reason && reason.stack) || (reason && reason.message) || String(reason);
+  acePreviewPost('unhandled-rejection', text);
+});
+
+for (const level of ['log', 'warn', 'error']) {
+  const original = console[level];
+  const kind = 'console-' + level;
+  console[level] = function (...args) {
+    original.apply(console, args);
+    acePreviewPost(kind, args.map(aceStringify).join(' '));
+  };
+}
+`;
+
+/**
  * The virtual entry module. Plain JS with React.createElement (no JSX, so it
  * needs no transform of its own); React 19 createRoot with StrictMode ON —
  * double-invoked effects are exactly the bug class a practice tool should
@@ -227,6 +318,8 @@ import * as questionModule from ${JSON.stringify('/@fs' + target.moduleFile)};
 const EXPECTED_NAME = ${JSON.stringify(target.expectedName)};
 const MODULE_LABEL = ${JSON.stringify(`${target.category}/${target.slug}/${path.basename(target.moduleFile)}`)};
 
+${ACE_PREVIEW_FORWARDING_SOURCE}
+
 // Injected verbatim from cli/server/preview-harness.ts (single source of truth).
 const resolvePreviewExport = ${RESOLVE_PREVIEW_EXPORT_SOURCE};
 
@@ -242,6 +335,9 @@ class PreviewErrorBoundary extends React.Component {
   }
   componentDidCatch(_error, info) {
     this.setState({ componentStack: info ? info.componentStack : null });
+    // The boundary already shows this locally — also forward it so the same
+    // failure is visible in the console pane (NEE-351), not just in-pane.
+    acePreviewPost('window-error', String((_error && _error.stack) || _error));
   }
   render() {
     if (this.state.error) {
@@ -307,6 +403,21 @@ if (import.meta.hot) {
   // re-runs this module and re-resolves anyway.
   import.meta.hot.on('vite:afterUpdate', () => {
     renderPreview();
+  });
+  // A transform/syntax failure (NEE-351) never reaches renderPreview at
+  // all — Vite's own overlay would normally show it, but the console pane
+  // is the one place the user is already looking, so it's forwarded there
+  // too, mapped onto the same compile-error shape a vitest transform
+  // failure produces (file/line included when Vite reports a loc).
+  import.meta.hot.on('vite:error', (payload) => {
+    const err = payload && payload.err;
+    const loc = err && err.loc;
+    let text = (err && err.message) || (MODULE_LABEL + ': preview failed to compile');
+    if (err && err.frame) text += '\\n' + err.frame;
+    acePreviewPost('vite-error', text, {
+      file: (loc && loc.file) || (err && err.id) || null,
+      line: loc ? loc.line : null,
+    });
   });
 }
 `;

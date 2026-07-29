@@ -469,6 +469,36 @@ export interface PreviewStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Live preview console forwarding (NEE-351) — the postMessage payload the
+// preview iframe harness (cli/server/preview-harness.ts's error-forwarding
+// section) sends to the parent window, and ui/src/hooks/usePreviewConsole.ts
+// receives. UNTRUSTED: the iframe runs LLM-generated + user-written code, so
+// the receiving hook re-validates every field's shape at runtime (this type
+// only documents the contract both sides aim for) before anything here is
+// rendered — as plain text, never markup.
+// ---------------------------------------------------------------------------
+
+export type PreviewConsoleKind =
+  | 'console-log'
+  | 'console-warn'
+  | 'console-error'
+  | 'window-error'
+  | 'unhandled-rejection'
+  | 'vite-error'
+  | 'rate-limited';
+
+export interface PreviewConsoleMessage {
+  source: 'ace-preview';
+  kind: PreviewConsoleKind;
+  text: string;
+  /** Set only for 'vite-error' (a transform/syntax failure) — mirrors the
+   * file/line a vitest compile-error already carries baked into its own
+   * `errorMessage` prose, so both presentations line up. */
+  file: string | null;
+  line: number | null;
+}
+
+// ---------------------------------------------------------------------------
 // SSE events — sent on GET /api/events. `event:` field is the name below,
 // `data:` is the JSON payload.
 // ---------------------------------------------------------------------------

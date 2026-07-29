@@ -209,6 +209,47 @@ describe('harness generation', () => {
     // No JSX — the entry must need no transform of its own.
     expect(entry).not.toContain('</');
   });
+
+  // NEE-351: console/error forwarding to the parent window.
+  describe('error/console forwarding', () => {
+    const entry = buildHarnessEntry(target);
+
+    it('forwards window.onerror, unhandledrejection, and every console level', () => {
+      expect(entry).toContain("window.addEventListener('error'");
+      expect(entry).toContain("window.addEventListener('unhandledrejection'");
+      expect(entry).toContain("['log', 'warn', 'error']");
+      expect(entry).toContain("acePreviewPost(kind, args.map(aceStringify).join(' '))");
+    });
+
+    it('forwards a caught render error from the error boundary too', () => {
+      expect(entry).toContain('componentDidCatch(_error, info)');
+      expect(entry).toContain("acePreviewPost('window-error', String((_error && _error.stack) || _error))");
+    });
+
+    it('forwards Vite transform/syntax failures (vite:error) with file/line', () => {
+      expect(entry).toContain("import.meta.hot.on('vite:error'");
+      expect(entry).toContain("acePreviewPost('vite-error', text,");
+      expect(entry).toContain('loc.file');
+      expect(entry).toContain('loc.line');
+    });
+
+    it('tags every forwarded message with the ace-preview source marker', () => {
+      expect(entry).toContain("source: 'ace-preview'");
+    });
+
+    it('rate-limits the channel itself before a flood ever reaches postMessage', () => {
+      expect(entry).toContain('ACE_MAX_MSGS_PER_SEC');
+      expect(entry).toContain("kind: 'rate-limited'");
+    });
+
+    it('posts with a wildcard target origin (the receiving hook validates event.origin instead)', () => {
+      // The iframe cannot know the parent's origin in general (any ace UI
+      // port/token) — see ui/src/hooks/usePreviewConsole.ts for the
+      // corresponding receive-side origin check.
+      const postCalls = entry.match(/postMessage\(\s*\{[\s\S]*?\},\s*'\*'/g) ?? [];
+      expect(postCalls.length).toBeGreaterThan(0);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -276,6 +317,11 @@ describe('harness over a real vite server', () => {
       expect(js).toContain('resolvePreviewExport');
       expect(js).toContain('questionModule');
       expect(js).toContain('StrictMode');
+      // NEE-351: the served (post-transform) entry still carries the
+      // forwarding wiring — proves Vite's transform doesn't strip it (quotes
+      // may be normalised by esbuild, hence no exact string match here).
+      expect(js).toContain('acePreviewPost');
+      expect(js).toContain('ace-preview');
     }
 
     // The mounted question module itself is served and transformed.

@@ -1597,6 +1597,66 @@ code {
   color: var(--dim);
 }
 
+/* ---- Preview tab (NEE-351) — console/error forwarding from the live
+   preview iframe, sharing this console rather than forking a second one -- */
+
+.preview-tab-badge {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(208, 59, 59, 0.18);
+  color: var(--crit-text);
+  font-size: 10.5px;
+  line-height: 15px;
+}
+
+.preview-console {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.preview-log-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 2px;
+  font-size: 12px;
+  font-family: var(--mono);
+  border-bottom: 1px solid var(--panel-2);
+}
+
+.preview-log-source {
+  flex: none;
+  color: var(--faint);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.preview-log-text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.preview-log-count {
+  flex: none;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.preview-log-error .preview-log-text,
+.preview-log-rejection .preview-log-text {
+  color: var(--crit-text);
+}
+
+.preview-log-warn .preview-log-text {
+  color: var(--accent);
+}
+
 /* ---- notfound / token screens -------------------------------------------- */
 
 .notfound {
