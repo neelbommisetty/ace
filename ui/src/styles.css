@@ -1683,6 +1683,114 @@ code {
   border-left: 1px solid var(--line);
 }
 
+/* ---- live preview pane (NEE-349) ------------------------------------------
+ * Sits between the editor and the AI panel — same sizing-wrapper split as
+ * `.pane-slot-problem`/`.pane-slot-ai` above (NEE-305): this wrapper is what
+ * a stored splitter width overrides with an inline `style`, `.preview-pane`
+ * just fills it. */
+.pane-slot-preview {
+  width: 30%;
+  min-width: 300px;
+  max-width: 520px;
+  flex: none;
+  display: flex;
+  min-height: 0;
+}
+
+.preview-pane {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+}
+
+.preview-viewport-toggle {
+  display: flex;
+  gap: 2px;
+}
+
+.preview-viewport-btn {
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 4px 6px;
+  cursor: pointer;
+  opacity: 0.55;
+}
+
+.preview-viewport-btn:hover {
+  opacity: 0.85;
+  background: var(--panel);
+}
+
+.preview-viewport-btn.active {
+  opacity: 1;
+  border-color: var(--line);
+  background: var(--panel);
+}
+
+.preview-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  background: var(--bg);
+}
+
+.preview-frame-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  overflow: auto;
+}
+
+.preview-frame {
+  flex: none;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  border: none;
+  background: #fff;
+}
+
+/* A narrower viewport toggle (mobile/tablet) shows its emulated width
+ * centered with visible side gutters rather than stretching edge to edge. */
+.preview-frame-wrap[data-viewport='mobile'] .preview-frame,
+.preview-frame-wrap[data-viewport='tablet'] .preview-frame {
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+}
+
+.preview-status {
+  margin: auto;
+  max-width: 420px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--dim);
+  font-size: 13px;
+}
+
+.preview-status-starting {
+  flex-direction: row;
+  align-items: center;
+  color: var(--accent);
+}
+
+.preview-status-failed .compile-error-title {
+  color: var(--crit-text);
+}
+
 .pane-title {
   font-size: 12.5px;
   font-weight: 600;
@@ -3125,6 +3233,13 @@ code {
     min-width: 260px;
   }
 
+  /* NEE-349: the preview pane is sized like the AI panel at every breakpoint
+   * (see minPaneWidth's 'preview'/'ai' parity in ui/src/lib/paneLayout.ts). */
+  .pane-slot-preview {
+    width: 24%;
+    min-width: 260px;
+  }
+
   /* Console real estate gets tightest exactly where the side panes start
    * eating into .center-col — drop the least essential text first so
    * Results/Output + the Run button + collapse always win the row instead
@@ -3137,7 +3252,8 @@ code {
 
 @media (max-width: 900px) {
   .pane-slot-problem,
-  .pane-slot-ai {
+  .pane-slot-ai,
+  .pane-slot-preview {
     min-width: 220px;
   }
 }

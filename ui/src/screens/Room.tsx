@@ -2,12 +2,21 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { RefObject } from 'react';
 import type { OnMount } from '@monaco-editor/react';
 import { Link, useParams, useSearchParams } from 'react-router';
-import { ApiError, createOrResumeAttempt, getQuestionDetail, getQuestions, startFreshAttempt } from '../api';
+import { lookupCategoryConfig } from '@shared/categories';
+import {
+  ApiError,
+  createOrResumeAttempt,
+  getQuestionDetail,
+  getQuestions,
+  openPreview,
+  startFreshAttempt,
+} from '../api';
 import { AiPanel } from '../components/AiPanel';
 import { DisputeModal } from '../components/DisputeModal';
 import { EditorPane } from '../components/EditorPane';
 import { FreshAttemptDialog } from '../components/FreshAttemptDialog';
 import { Modal } from '../components/Modal';
+import { PreviewPane } from '../components/PreviewPane';
 import { ProblemPane } from '../components/ProblemPane';
 import { Splitter } from '../components/Splitter';
 import { TestConsole } from '../components/TestConsole';
@@ -31,8 +40,10 @@ import {
 } from '../lib/libraryOrder';
 import { CONSOLE_DEFAULT_HEIGHT, PANE_DEFAULT_WIDTH } from '../lib/paneLayout';
 import { useSseConnected, useSseEvent } from '../sse';
-import type { AttemptRow, QuestionDetail, QuestionWithStats, TestRunTrigger } from '../types';
+import type { AttemptRow, PreviewStatus, QuestionDetail, QuestionWithStats, TestRunTrigger } from '../types';
 import { NotFound } from './NotFound';
+
+const STOPPED_PREVIEW_STATUS: PreviewStatus = { state: 'stopped', url: null, reason: null };
 
 /**
  * Library-order navigation context (NEE-310): the full questions list plus
@@ -306,6 +317,59 @@ function RoomInner({
   // against the current window size on mount and resize.
   const layout = usePaneLayout();
 
+  // ---- live preview (NEE-349) -----------------------------------------------
+  // Derived from the category registry, never a hardcoded category list:
+  // only web-components/react-apps (group 'react') have anything to mount.
+  const isReactGroup = lookupCategoryConfig(question.category)?.group === 'react';
+  const [previewOpen, setPreviewOpen] = useLocalStorageState('ace-preview-open', true);
+  const [previewStatus, setPreviewStatus] = useState<PreviewStatus>(STOPPED_PREVIEW_STATUS);
+  useSseEvent('preview-status', setPreviewStatus);
+
+  // NOTE: deliberately no separate `getPreviewStatus()` fetch on mount —
+  // `openPreview()` (below) is idempotent server-side (returns the current
+  // 'ready' status immediately if the dev server is already running for
+  // this workspace) and doubles as the initial read, so there is no second
+  // async result that could race the optimistic 'starting' update below and
+  // clobber it back to a stale value.
+  const startPreview = useCallback(() => {
+    if (!isReactGroup) return;
+    // Optimistic: the server's own 'starting' status arrives over SSE too,
+    // but that event and this fetch's resolution race — setting it here
+    // means the pane never sits blank while POST /api/preview/open is
+    // in flight, whichever arrives first.
+    setPreviewStatus((s) => (s.state === 'ready' ? s : { state: 'starting', url: null, reason: null }));
+    openPreview()
+      .then(setPreviewStatus)
+      .catch((e) => {
+        setPreviewStatus({
+          state: 'failed',
+          url: null,
+          reason: e instanceof Error ? e.message : 'Failed to start the preview server',
+        });
+      });
+  }, [isReactGroup]);
+
+  // Lazily starts the dev server the first time the pane is open for this
+  // question — a ref guard (not `previewStatus.state`) so a later failure
+  // doesn't retry itself into a loop; the pane's own Retry button covers
+  // that. Idempotent server-side when it's already running/starting.
+  const autoStartedPreview = useRef(false);
+  useEffect(() => {
+    if (!isReactGroup || !previewOpen || autoStartedPreview.current) return;
+    autoStartedPreview.current = true;
+    startPreview();
+  }, [isReactGroup, previewOpen, startPreview]);
+
+  // Flush pending saves the moment the pane opens (mount, or a later
+  // manual open) — the first paint is never one autosave debounce behind.
+  // flushSaves itself is intentionally left out of the deps: it's recreated
+  // whenever the file buffers change, and this effect should fire only on
+  // an actual open transition, not on every keystroke's autosave churn.
+  useEffect(() => {
+    if (isReactGroup && previewOpen) void flushSaves();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isReactGroup, previewOpen]);
+
   // ---- keyboard shortcuts overlay + pane-toggle bindings (NEE-309) --------
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const shortcutsCloseBtnRef = useRef<HTMLButtonElement>(null);
@@ -535,6 +599,42 @@ function RoomInner({
               </button>
             ))}
         </div>
+        {isReactGroup &&
+          (previewOpen ? (
+            <>
+              <Splitter
+                orientation="vertical"
+                label="Resize preview pane"
+                valueNow={layout.previewWidth ?? PANE_DEFAULT_WIDTH.preview}
+                valueMin={layout.previewMin}
+                valueMax={layout.paneMax}
+                onResize={(deltaPx) => layout.resizePreview(-deltaPx)}
+                onReset={layout.resetPreview}
+              />
+              <div
+                ref={layout.previewRef}
+                className="pane-slot-preview"
+                style={layout.previewWidth != null ? { width: `${layout.previewWidth}px` } : undefined}
+              >
+                <PreviewPane
+                  category={question.category}
+                  slug={question.slug}
+                  status={previewStatus}
+                  onRetry={startPreview}
+                  flushSaves={flushSaves}
+                  onCollapse={() => setPreviewOpen(false)}
+                />
+              </div>
+            </>
+          ) : (
+            <button
+              className="pane-expander"
+              onClick={() => setPreviewOpen(true)}
+              title="Show live preview"
+            >
+              ▸
+            </button>
+          ))}
         {aiOpen ? (
           <>
             <Splitter

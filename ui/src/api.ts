@@ -13,6 +13,7 @@ import type {
   HistoryItem,
   ImportPreviewItem,
   ImportResult,
+  PreviewStatus,
   ProbeSetRow,
   QuestionDetail,
   QuestionRow,
@@ -631,4 +632,16 @@ export function unarchiveQuestion(
   slug: string,
 ): Promise<{ question: QuestionRow }> {
   return request(questionPath(category, slug, '/unarchive'), { method: 'POST' });
+}
+
+// ---- live preview (NEE-348/NEE-349) ----------------------------------------
+
+export function getPreviewStatus(): Promise<PreviewStatus> {
+  return request('/api/preview');
+}
+
+/** Lazily starts the per-workspace preview dev server; idempotent while it's
+ * already running. Resolves with the terminal status ('ready' or 'failed'). */
+export function openPreview(): Promise<PreviewStatus> {
+  return request('/api/preview/open', { method: 'POST' });
 }

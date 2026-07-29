@@ -12,17 +12,22 @@
  * resize within bounds while the user is actively dragging.
  */
 
-export type SidePane = 'problem' | 'ai';
+export type SidePane = 'problem' | 'ai' | 'preview';
 
-/** Matches `.problem-pane`/`.ai-panel`'s shared `max-width: 520px` (styles.css). */
+/** Matches `.problem-pane`/`.ai-panel`/`.preview-pane`'s shared `max-width:
+ * 520px` (styles.css). */
 export const PANE_MAX_WIDTH = 520;
 
 /** "Un-dragged" width used once a handle's key/reset action needs a base
  * value to work from, before any localStorage value has ever been stored —
- * roughly the 30%/27% CSS defaults at a common ~1080px center layout. */
+ * roughly the 30%/27% CSS defaults at a common ~1080px center layout. The
+ * live preview pane (NEE-349) sits between the editor and the AI panel and
+ * wants a bit more room than either — component questions are frequently
+ * about responsive layout, so a too-narrow default would misrepresent it. */
 export const PANE_DEFAULT_WIDTH: Record<SidePane, number> = {
   problem: 320,
   ai: 300,
+  preview: 380,
 };
 
 /** Matches `.console`'s `min-height: 170px` (styles.css) — the one bound
@@ -40,10 +45,10 @@ const CONSOLE_RESERVED_ABOVE = 200;
 
 /**
  * Minimum width for a side pane at a given window width — mirrors the
- * `.problem-pane`/`.ai-panel` media queries in styles.css:
- * - >900px and <=1400px: 240px (problem) / 260px (ai)
- * - <=900px: 220px (both)
- * - >1400px: 280px (problem) / 300px (ai)
+ * `.problem-pane`/`.ai-panel`/`.preview-pane` media queries in styles.css:
+ * - >900px and <=1400px: 240px (problem) / 260px (ai, preview)
+ * - <=900px: 220px (all three)
+ * - >1400px: 280px (problem) / 300px (ai, preview)
  */
 export function minPaneWidth(pane: SidePane, windowWidth: number): number {
   if (windowWidth <= 900) return 220;

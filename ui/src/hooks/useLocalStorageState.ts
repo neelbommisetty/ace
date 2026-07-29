@@ -14,6 +14,8 @@ import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
  *   wide enough to fit it (NEE-290), collapsed by default below that
  * - 'ace-format-before-run'  format dirty editable buffers before Run
  *   (NEE-331); default false — opt-in, next to the auto-run checkbox
+ * - 'ace-preview-open'  live preview pane visible (NEE-349, react-group
+ *   questions only); default true — shown whenever the room has one
  *
  * See `useLocalStorageNumber` below for the room's pane-splitter width/height
  * keys (NEE-305) — a boolean encoding doesn't fit those.
@@ -48,6 +50,9 @@ export function useLocalStorageState(
  * - 'ace-problem-width'   problem pane width in px; null = CSS ~30% default
  * - 'ace-ai-width'        AI panel width in px; null = CSS ~27% default
  * - 'ace-console-height'  console height in px; null = CSS ~30% default
+ *
+ * Key registry addition (NEE-349 — live preview pane):
+ * - 'ace-preview-width'   preview pane width in px; null = its own CSS default
  */
 export function useLocalStorageNumber(key: string): [number | null, Dispatch<SetStateAction<number | null>>] {
   const [value, setValue] = useState<number | null>(() => {

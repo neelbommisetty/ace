@@ -25,6 +25,12 @@ describe('minPaneWidth', () => {
     expect(minPaneWidth('problem', 900)).toBe(220);
     expect(minPaneWidth('ai', 800)).toBe(220);
   });
+
+  it('treats the preview pane (NEE-349) like the ai pane at every breakpoint', () => {
+    expect(minPaneWidth('preview', 1440)).toBe(minPaneWidth('ai', 1440));
+    expect(minPaneWidth('preview', 1280)).toBe(minPaneWidth('ai', 1280));
+    expect(minPaneWidth('preview', 800)).toBe(minPaneWidth('ai', 800));
+  });
 });
 
 describe('clampPaneWidth', () => {
