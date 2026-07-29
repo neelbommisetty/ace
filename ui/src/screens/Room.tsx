@@ -9,14 +9,17 @@ import { EditorPane } from '../components/EditorPane';
 import { FreshAttemptDialog } from '../components/FreshAttemptDialog';
 import { Modal } from '../components/Modal';
 import { ProblemPane } from '../components/ProblemPane';
+import { Splitter } from '../components/Splitter';
 import { TestConsole } from '../components/TestConsole';
 import { TopBar } from '../components/TopBar';
 import { useActiveTimer } from '../hooks/useActiveTimer';
 import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { useFileBuffers } from '../hooks/useFileBuffers';
 import { useLocalStorageState } from '../hooks/useLocalStorageState';
+import { usePaneLayout } from '../hooks/usePaneLayout';
 import { useReviewPanel } from '../hooks/useReviewPanel';
 import { useTestRuns } from '../hooks/useTestRuns';
+import { CONSOLE_DEFAULT_HEIGHT, PANE_DEFAULT_WIDTH } from '../lib/paneLayout';
 import { useSseConnected } from '../sse';
 import type { AttemptRow, QuestionDetail, TestRunTrigger } from '../types';
 import { NotFound } from './NotFound';
@@ -199,6 +202,9 @@ function RoomInner({
   const [problemOpen, setProblemOpen] = useState(() => matchesMinWidth(900));
   const [consoleOpen, setConsoleOpen] = useState(true);
   const [aiOpen, setAiOpen] = useLocalStorageState('ace-ai-open', () => matchesMinWidth(1150));
+  // Draggable splitter widths/height (NEE-305) — persisted + re-clamped
+  // against the current window size on mount and resize.
+  const layout = usePaneLayout();
 
   // ---- keyboard shortcuts overlay + pane-toggle bindings (NEE-309) --------
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -285,14 +291,30 @@ function RoomInner({
       {!connected && <div className="sse-strip">reconnecting…</div>}
       <div className="room-body">
         {problemOpen ? (
-          <ProblemPane
-            readme={detail.readme}
-            attemptId={refAttempt?.id ?? ''}
-            attemptNumber={refAttempt?.number ?? 0}
-            history={runs.history}
-            disputes={review.disputes}
-            onCollapse={() => setProblemOpen(false)}
-          />
+          <>
+            <div
+              className="pane-slot-problem"
+              style={layout.problemWidth != null ? { width: `${layout.problemWidth}px` } : undefined}
+            >
+              <ProblemPane
+                readme={detail.readme}
+                attemptId={refAttempt?.id ?? ''}
+                attemptNumber={refAttempt?.number ?? 0}
+                history={runs.history}
+                disputes={review.disputes}
+                onCollapse={() => setProblemOpen(false)}
+              />
+            </div>
+            <Splitter
+              orientation="vertical"
+              label="Resize problem pane"
+              valueNow={layout.problemWidth ?? PANE_DEFAULT_WIDTH.problem}
+              valueMin={layout.problemMin}
+              valueMax={layout.paneMax}
+              onResize={layout.resizeProblem}
+              onReset={layout.resetProblem}
+            />
+          </>
         ) : (
           <button
             className="pane-expander"
@@ -313,23 +335,39 @@ function RoomInner({
             onConflictReload={buffers.resolveConflictReload}
             onConflictKeep={buffers.resolveConflictKeep}
           />
+          {hasTests && consoleOpen && (
+            <Splitter
+              orientation="horizontal"
+              label="Resize console height"
+              valueNow={layout.consoleHeight ?? CONSOLE_DEFAULT_HEIGHT}
+              valueMin={layout.consoleMin}
+              valueMax={layout.consoleMax}
+              onResize={(deltaPx) => layout.resizeConsole(-deltaPx)}
+              onReset={layout.resetConsole}
+            />
+          )}
           {hasTests &&
             (consoleOpen ? (
-              <TestConsole
-                running={runs.running}
-                lastRun={runs.lastRun}
-                historyCount={runs.history.length}
-                output={runs.output}
-                runError={runs.runError}
-                autorun={autorun}
-                onToggleAutorun={() => setAutorun((v) => !v)}
-                onRun={() => runs.startRun('manual')}
-                onStop={runs.stopRun}
-                onCollapse={() => setConsoleOpen(false)}
-                onDispute={(testName) => {
-                  if (runs.lastRun != null) review.openDispute(runs.lastRun.runId, testName);
-                }}
-              />
+              <div
+                className="console-slot"
+                style={layout.consoleHeight != null ? { height: `${layout.consoleHeight}px` } : undefined}
+              >
+                <TestConsole
+                  running={runs.running}
+                  lastRun={runs.lastRun}
+                  historyCount={runs.history.length}
+                  output={runs.output}
+                  runError={runs.runError}
+                  autorun={autorun}
+                  onToggleAutorun={() => setAutorun((v) => !v)}
+                  onRun={() => runs.startRun('manual')}
+                  onStop={runs.stopRun}
+                  onCollapse={() => setConsoleOpen(false)}
+                  onDispute={(testName) => {
+                    if (runs.lastRun != null) review.openDispute(runs.lastRun.runId, testName);
+                  }}
+                />
+              </div>
             ) : (
               <button
                 className="console-expander"
@@ -356,16 +394,32 @@ function RoomInner({
             ))}
         </div>
         {aiOpen ? (
-          <AiPanel
-            question={question}
-            reviews={review.reviews}
-            stream={review.reviewStream}
-            notice={review.reviewNotice}
-            justDoneId={review.justDoneId}
-            settings={review.settings}
-            onRequest={readonly ? undefined : review.requestReview}
-            onCollapse={() => setAiOpen(false)}
-          />
+          <>
+            <Splitter
+              orientation="vertical"
+              label="Resize AI panel"
+              valueNow={layout.aiWidth ?? PANE_DEFAULT_WIDTH.ai}
+              valueMin={layout.aiMin}
+              valueMax={layout.paneMax}
+              onResize={(deltaPx) => layout.resizeAi(-deltaPx)}
+              onReset={layout.resetAi}
+            />
+            <div
+              className="pane-slot-ai"
+              style={layout.aiWidth != null ? { width: `${layout.aiWidth}px` } : undefined}
+            >
+              <AiPanel
+                question={question}
+                reviews={review.reviews}
+                stream={review.reviewStream}
+                notice={review.reviewNotice}
+                justDoneId={review.justDoneId}
+                settings={review.settings}
+                onRequest={readonly ? undefined : review.requestReview}
+                onCollapse={() => setAiOpen(false)}
+              />
+            </div>
+          </>
         ) : (
           <button
             className="pane-expander pane-expander-right"

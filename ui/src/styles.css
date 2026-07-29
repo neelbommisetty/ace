@@ -797,11 +797,23 @@ code {
   overflow-x: auto;
 }
 
-.problem-pane {
+/* NEE-305: sizing (width + the NEE-290 responsive min-width) lives on the
+ * `.pane-slot-*` wrapper Room.tsx renders around each pane, not on the pane
+ * component's own root element — that wrapper is what a stored splitter
+ * width overrides with an inline `style`, and what the splitter itself sits
+ * beside. `.problem-pane`/`.ai-panel` (further below) just fill it. */
+.pane-slot-problem {
   width: 30%;
   min-width: 280px;
   max-width: 520px;
   flex: none;
+  display: flex;
+  min-height: 0;
+}
+
+.problem-pane {
+  flex: 1;
+  width: 100%;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -823,6 +835,52 @@ code {
 .pane-expander:hover {
   color: var(--ink);
   background: var(--panel);
+}
+
+/* NEE-305: draggable/keyboard-resizable boundary between two panes. A
+ * splitter only ever renders next to a pane that's actually open — Room.tsx
+ * omits it entirely when the adjacent pane is collapsed to its expander
+ * rail, so there's nothing here to disable/hide beyond "don't render it". */
+.splitter {
+  flex: none;
+  background: var(--line);
+  position: relative;
+}
+
+.splitter:hover,
+.splitter:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+
+.splitter-vertical {
+  width: 1px;
+  cursor: col-resize;
+}
+
+/* Widen the hit area well past the visible 1px line without widening the
+ * line itself (a hair-thin drag target is unusable). */
+.splitter-vertical::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
+}
+
+.splitter-horizontal {
+  height: 1px;
+  cursor: row-resize;
+}
+
+.splitter-horizontal::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -3px;
+  bottom: -3px;
 }
 
 .pane-header {
@@ -1169,10 +1227,21 @@ code {
 
 /* console */
 
-.console {
+/* NEE-305: sizing lives on this wrapper Room.tsx renders around TestConsole
+ * (same reasoning as `.pane-slot-problem`/`.pane-slot-ai` above) — a stored
+ * splitter height overrides it with an inline `style`, `.console` itself
+ * just fills it. */
+.console-slot {
   flex: none;
   height: 30%;
   min-height: 170px;
+  display: flex;
+  min-width: 0;
+}
+
+.console {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--line);
@@ -1513,11 +1582,20 @@ code {
 
 /* ---- AI review panel ------------------------------------------------------ */
 
-.ai-panel {
+/* NEE-305: see the `.pane-slot-problem` comment above — same split between
+ * the sizing wrapper and the pane's own fill-parent root. */
+.pane-slot-ai {
   width: 27%;
   min-width: 300px;
   max-width: 520px;
   flex: none;
+  display: flex;
+  min-height: 0;
+}
+
+.ai-panel {
+  flex: 1;
+  width: 100%;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -2934,12 +3012,15 @@ code {
  */
 
 @media (max-width: 1400px) {
-  .problem-pane {
+  /* NEE-305: these widths/min-widths moved from `.problem-pane`/`.ai-panel`
+   * onto the `.pane-slot-*` wrapper (see the comment by `.pane-slot-problem`
+   * above) — same breakpoints, same values, just re-targeted. */
+  .pane-slot-problem {
     width: 26%;
     min-width: 240px;
   }
 
-  .ai-panel {
+  .pane-slot-ai {
     width: 24%;
     min-width: 260px;
   }
@@ -2955,8 +3036,8 @@ code {
 }
 
 @media (max-width: 900px) {
-  .problem-pane,
-  .ai-panel {
+  .pane-slot-problem,
+  .pane-slot-ai {
     min-width: 220px;
   }
 }
