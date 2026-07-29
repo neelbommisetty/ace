@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import {
   archiveQuestion,
   getGenerationJobs,
@@ -10,22 +10,145 @@ import {
   unarchiveQuestion,
 } from '../api';
 import { ImportBanner } from '../components/ImportBanner';
-import { QuestionTable } from '../components/QuestionTable';
+import { QuestionTable, type SortDir, type SortKey } from '../components/QuestionTable';
 import { ResumeCard } from '../components/ResumeCard';
 import { showActionToast } from '../components/Toast';
 import { CATEGORY_SLUGS, categoryShortName } from '../lib/categories';
 import { openWorkspaceSwitchDialog } from '../lib/switchSignal';
 import { useSseEvent } from '../sse';
-import type { QuestionStatus, QuestionWithStats, SettingsInfo, WorkspaceInfo } from '../types';
+import type { Difficulty, QuestionStatus, QuestionWithStats, SettingsInfo, WorkspaceInfo } from '../types';
 
 type StatusFilter = 'all' | QuestionStatus | 'archived';
+type DifficultyFilter = 'all' | Difficulty;
+
+const SEARCH_DEBOUNCE_MS = 300;
+
+// Each sort key's direction the *first* time it's clicked — text sorts
+// start A→Z, everything else (counts, timestamps) starts biggest/newest
+// first, matching the table's prior hardcoded newest-activity-first order.
+const DEFAULT_SORT_DIR: Record<SortKey, SortDir> = {
+  title: 'asc',
+  attempts: 'desc',
+  lastRun: 'desc',
+  lastActivity: 'desc',
+};
+
+function parseStatusFilter(raw: string | null): StatusFilter {
+  return raw === 'not-attempted' || raw === 'in-progress' || raw === 'solved' || raw === 'archived'
+    ? raw
+    : 'all';
+}
+
+function parseDifficultyFilter(raw: string | null): DifficultyFilter {
+  return raw === 'easy' || raw === 'medium' || raw === 'hard' ? raw : 'all';
+}
+
+function parseSortKey(raw: string | null): SortKey {
+  return raw === 'title' || raw === 'attempts' || raw === 'lastRun' || raw === 'lastActivity'
+    ? raw
+    : 'lastActivity';
+}
+
+function sortDirMultiplier(dir: SortDir): number {
+  return dir === 'asc' ? 1 : -1;
+}
+
+// Generalizes the previously-hardcoded newest-activity-first order
+// (Library.tsx:96-100) across all four sortable columns; ascending, the
+// caller negates for descending.
+function compareBySortKey(a: QuestionWithStats, b: QuestionWithStats, key: SortKey): number {
+  switch (key) {
+    case 'title':
+      return a.title.localeCompare(b.title);
+    case 'attempts':
+      return a.stats.attemptCount - b.stats.attemptCount;
+    case 'lastRun': {
+      const at = a.stats.lastRun?.at ?? '';
+      const bt = b.stats.lastRun?.at ?? '';
+      return at.localeCompare(bt);
+    }
+    case 'lastActivity':
+    default: {
+      const at = a.stats.lastActivityAt ?? a.createdAt;
+      const bt = b.stats.lastActivityAt ?? b.createdAt;
+      return at.localeCompare(bt);
+    }
+  }
+}
 
 export function Library() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [questions, setQuestions] = useState<QuestionWithStats[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+
+  // Filters/search/sort live in the URL (NEE-298), matching History
+  // (History.tsx:21-43) so Back/forward and bookmarking work for free and
+  // survive navigating into a room and back.
+  const categoryFilter = searchParams.get('category') ?? '';
+  const statusFilter = parseStatusFilter(searchParams.get('status'));
+  const difficultyFilter = parseDifficultyFilter(searchParams.get('difficulty'));
+  const searchQuery = searchParams.get('q') ?? '';
+  const sortKey = parseSortKey(searchParams.get('sort'));
+  const rawDir = searchParams.get('dir');
+  const sortDir: SortDir = rawDir === 'asc' || rawDir === 'desc' ? rawDir : DEFAULT_SORT_DIR[sortKey];
+
+  const updateParams = useCallback(
+    (patch: Record<string, string>) => {
+      // Functional update: a debounced ?q= commit (below) must not resurrect
+      // the params of the render it was scheduled in.
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          for (const [k, v] of Object.entries(patch)) {
+            if (v) next.set(k, v);
+            else next.delete(k);
+          }
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  // Debounced search input → ?q=, mirroring History.tsx.
+  const [searchInput, setSearchInput] = useState(searchQuery);
+  useEffect(() => {
+    setSearchInput(searchQuery);
+    // resync only when the param changes from outside (back/forward, Clear filters)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery]);
+  useEffect(() => {
+    if (searchInput === searchQuery) return;
+    const t = window.setTimeout(() => updateParams({ q: searchInput }), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchInput]);
+
+  const handleSort = useCallback(
+    (key: SortKey) => {
+      if (key === sortKey) {
+        updateParams({ sort: key, dir: sortDir === 'asc' ? 'desc' : 'asc' });
+      } else {
+        updateParams({ sort: key, dir: DEFAULT_SORT_DIR[key] });
+      }
+    },
+    [sortKey, sortDir, updateParams],
+  );
+
+  const activeFilterCount = [
+    categoryFilter !== '',
+    statusFilter !== 'all',
+    difficultyFilter !== 'all',
+    searchQuery !== '',
+  ].filter(Boolean).length;
+
+  const clearFilters = useCallback(() => {
+    setSearchInput(''); // avoid the debounce effect re-committing stale text over the clear
+    updateParams({ category: '', status: '', difficulty: '', q: '' });
+  }, [updateParams]);
+
   // Null until the settings fetch lands (or if it fails). Only a CONFIRMED
   // keyless workspace repoints the empty-state CTA at Settings — while the
   // answer is unknown, /new stays the primary action and NewQuestion's own
@@ -150,18 +273,17 @@ export function Library() {
   // show up at all — everywhere else they're hidden by default (NEE-296).
   const visible = useMemo(() => {
     if (questions == null) return [];
+    const needle = searchQuery.trim().toLowerCase();
     return questions
       .filter((q) => (statusFilter === 'archived' ? q.archivedAt != null : q.archivedAt == null))
-      .filter((q) => categoryFilter == null || q.category === categoryFilter)
+      .filter((q) => categoryFilter === '' || q.category === categoryFilter)
       .filter(
         (q) => statusFilter === 'all' || statusFilter === 'archived' || q.stats.status === statusFilter,
       )
-      .sort((a, b) => {
-        const at = a.stats.lastActivityAt ?? a.createdAt;
-        const bt = b.stats.lastActivityAt ?? b.createdAt;
-        return bt.localeCompare(at);
-      });
-  }, [questions, categoryFilter, statusFilter]);
+      .filter((q) => difficultyFilter === 'all' || q.difficulty === difficultyFilter)
+      .filter((q) => needle === '' || q.title.toLowerCase().includes(needle))
+      .sort((a, b) => sortDirMultiplier(sortDir) * compareBySortKey(a, b, sortKey));
+  }, [questions, categoryFilter, statusFilter, difficultyFilter, searchQuery, sortKey, sortDir]);
 
   // Archive is reversible (Toast undo, or the Archived filter's Restore row
   // action) so it fires immediately with no confirmation — the Library
@@ -198,6 +320,16 @@ export function Library() {
             <span className="topbar-count">
               {questions.length} {questions.length === 1 ? 'question' : 'questions'}
             </span>
+          )}
+          {activeFilterCount > 0 && (
+            <>
+              <span className="topbar-count">
+                {activeFilterCount} {activeFilterCount === 1 ? 'filter' : 'filters'}
+              </span>
+              <button className="btn btn-small" onClick={clearFilters}>
+                Clear filters
+              </button>
+            </>
           )}
         </div>
         <div className="topbar-right">
@@ -245,8 +377,8 @@ export function Library() {
             <div className="filter-row">
               <div className="filter-pills">
                 <button
-                  className={`pill ${categoryFilter == null ? 'active' : ''}`}
-                  onClick={() => setCategoryFilter(null)}
+                  className={`pill ${categoryFilter === '' ? 'active' : ''}`}
+                  onClick={() => updateParams({ category: '' })}
                 >
                   All
                 </button>
@@ -254,16 +386,23 @@ export function Library() {
                   <button
                     key={slug}
                     className={`pill ${categoryFilter === slug ? 'active' : ''}`}
-                    onClick={() => setCategoryFilter(categoryFilter === slug ? null : slug)}
+                    onClick={() => updateParams({ category: categoryFilter === slug ? '' : slug })}
                   >
                     {categoryShortName(slug)}
                   </button>
                 ))}
               </div>
+              <input
+                className="search-input"
+                type="search"
+                placeholder="Search titles…"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+              />
               <select
                 className="status-select"
                 value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+                onChange={(e) => updateParams({ status: e.target.value === 'all' ? '' : e.target.value })}
                 title="Filter by status"
               >
                 <option value="all">All statuses</option>
@@ -271,6 +410,19 @@ export function Library() {
                 <option value="in-progress">In progress</option>
                 <option value="solved">Solved</option>
                 <option value="archived">Archived</option>
+              </select>
+              <select
+                className="status-select"
+                value={difficultyFilter}
+                onChange={(e) =>
+                  updateParams({ difficulty: e.target.value === 'all' ? '' : e.target.value })
+                }
+                title="Filter by difficulty"
+              >
+                <option value="all">All difficulties</option>
+                <option value="easy">Easy</option>
+                <option value="medium">Medium</option>
+                <option value="hard">Hard</option>
               </select>
             </div>
             {questions.length === 0 ? (
@@ -301,11 +453,20 @@ export function Library() {
             ) : visible.length === 0 ? (
               <div className="empty-state">
                 <p className="empty-title">Nothing matches these filters</p>
-                <p className="empty-hint">Try clearing the category or status filter.</p>
+                <p className="empty-hint">Try clearing the category, status, difficulty, or search filter.</p>
+                {activeFilterCount > 0 && (
+                  <div className="empty-actions">
+                    <button className="btn btn-small" onClick={clearFilters}>
+                      Clear filters
+                    </button>
+                  </div>
+                )}
               </div>
             ) : (
               <QuestionTable
                 questions={visible}
+                sort={{ key: sortKey, dir: sortDir }}
+                onSortChange={handleSort}
                 onArchive={handleArchive}
                 onUnarchive={handleUnarchive}
               />

@@ -1,6 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useEffect, useRef } from 'react';
-import { MemoryRouter, Route, Routes } from 'react-router';
+import { MemoryRouter, Route, Routes, useNavigate, useSearchParams } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerWorkspaceSwitchOpener } from '../lib/switchSignal';
 import { Library } from './Library';
@@ -138,10 +138,56 @@ function question(overrides: Partial<QuestionWithStats> = {}): QuestionWithStats
   };
 }
 
-function renderLibrary() {
+function renderLibrary(initialEntries: string[] = ['/']) {
   return render(
-    <MemoryRouter initialEntries={['/']}>
+    <MemoryRouter initialEntries={initialEntries}>
       <Library />
+    </MemoryRouter>,
+  );
+}
+
+/** Renders next to Library in the same route so the two share one location —
+ * lets a test read back the URL params Library's filter/search/sort UI writes. */
+function LocationProbe() {
+  const [params] = useSearchParams();
+  return <div data-testid="url-params">{params.toString()}</div>;
+}
+
+function BackButton() {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => navigate(-1)}>
+      Go back
+    </button>
+  );
+}
+
+/** Mirrors App.tsx's Library ⇄ room routing, with a probe for the current
+ * search string and a manual Back trigger to simulate the browser Back
+ * button a real room's own '← Library' link (or history swipe) would fire. */
+function renderLibraryWithRoomAndProbe(initialEntries: string[] = ['/']) {
+  return render(
+    <MemoryRouter initialEntries={initialEntries}>
+      <Routes>
+        <Route
+          path="/"
+          element={
+            <>
+              <Library />
+              <LocationProbe />
+            </>
+          }
+        />
+        <Route
+          path="/q/:category/:slug"
+          element={
+            <>
+              <div>Room for question</div>
+              <BackButton />
+            </>
+          }
+        />
+      </Routes>
     </MemoryRouter>,
   );
 }
@@ -569,6 +615,207 @@ describe('Library', () => {
       fireEvent.click(archiveButton);
 
       expect(archiveQuestion).toHaveBeenCalledWith('js-ts', 'missing-question');
+    });
+  });
+
+  // NEE-298: search/filter/sort as URL state.
+  describe('search, filter, sort, and URL state (NEE-298)', () => {
+    function twoQuestions(): QuestionWithStats[] {
+      return [
+        question({
+          id: 'q-1',
+          slug: 'closures-and-scope',
+          title: 'Closures and Scope',
+          difficulty: 'medium',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          stats: {
+            attemptCount: 2,
+            lastRun: { passed: 1, total: 2, at: '2026-01-05T00:00:00.000Z', status: 'done' },
+            lastActivityAt: '2026-01-05T00:00:00.000Z',
+            status: 'in-progress',
+            imported: false,
+          },
+        }),
+        question({
+          id: 'q-2',
+          slug: 'binary-search-basics',
+          title: 'Binary Search Basics',
+          difficulty: 'hard',
+          createdAt: '2026-01-02T00:00:00.000Z',
+          stats: {
+            attemptCount: 5,
+            lastRun: { passed: 3, total: 3, at: '2026-01-10T00:00:00.000Z', status: 'done' },
+            lastActivityAt: '2026-01-10T00:00:00.000Z',
+            status: 'solved',
+            imported: false,
+          },
+        }),
+      ];
+    }
+
+    function rowTitlesInOrder(): string[] {
+      return screen.getAllByRole('row').slice(1).map((row) => within(row).getAllByRole('cell')[0].textContent ?? '');
+    }
+
+    it('reads category/status/difficulty/search/sort out of the URL on load', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue(twoQuestions());
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibrary(['/?category=js-ts&status=in-progress&difficulty=medium&q=closures&sort=title&dir=asc']);
+
+      await screen.findByText('Closures and Scope');
+      expect(screen.queryByText('Binary Search Basics')).toBeNull();
+      expect(screen.getByTitle('Filter by status')).toHaveValue('in-progress');
+      expect(screen.getByTitle('Filter by difficulty')).toHaveValue('medium');
+      expect(screen.getByPlaceholderText('Search titles…')).toHaveValue('closures');
+      expect(screen.getByRole('button', { name: 'JS/TS' })).toHaveClass('active');
+      expect(screen.getByRole('columnheader', { name: 'Title' })).toHaveAttribute(
+        'aria-sort',
+        'ascending',
+      );
+    });
+
+    it('filters by difficulty, updating the URL', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue(twoQuestions());
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibraryWithRoomAndProbe();
+
+      await screen.findByText('Closures and Scope');
+      fireEvent.change(screen.getByTitle('Filter by difficulty'), { target: { value: 'hard' } });
+
+      await waitFor(() => expect(screen.queryByText('Closures and Scope')).toBeNull());
+      expect(screen.getByText('Binary Search Basics')).toBeInTheDocument();
+      expect(screen.getByTestId('url-params').textContent).toContain('difficulty=hard');
+    });
+
+    it('narrows the table via debounced title search and clearing restores it', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue(twoQuestions());
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibraryWithRoomAndProbe();
+
+      await screen.findByText('Closures and Scope');
+      expect(screen.getByText('Binary Search Basics')).toBeInTheDocument();
+
+      const search = screen.getByPlaceholderText('Search titles…');
+      fireEvent.change(search, { target: { value: 'binary' } });
+
+      // Debounced: not applied on the very next tick...
+      expect(screen.getByText('Closures and Scope')).toBeInTheDocument();
+      // ...but is applied (and lands in the URL) once the debounce fires.
+      await waitFor(() => expect(screen.queryByText('Closures and Scope')).toBeNull());
+      expect(screen.getByText('Binary Search Basics')).toBeInTheDocument();
+      expect(screen.getByTestId('url-params').textContent).toContain('q=binary');
+
+      fireEvent.change(search, { target: { value: '' } });
+      await waitFor(() => expect(screen.getByText('Closures and Scope')).toBeInTheDocument());
+      expect(screen.getByText('Binary Search Basics')).toBeInTheDocument();
+      expect(screen.getByTestId('url-params').textContent).not.toContain('q=');
+    });
+
+    it('click-to-sorts the Attempts header, toggling direction with a visual + aria-sort indicator', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue(twoQuestions());
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibraryWithRoomAndProbe();
+
+      await screen.findByText('Closures and Scope');
+      // Default order: newest-activity-first (unchanged from before NEE-298).
+      expect(rowTitlesInOrder()).toEqual(['Binary Search Basics', 'Closures and Scope']);
+
+      const attemptsHeader = screen.getByRole('columnheader', { name: 'Attempts' });
+      expect(attemptsHeader).toHaveAttribute('aria-sort', 'none');
+      fireEvent.click(within(attemptsHeader).getByRole('button', { name: 'Attempts' }));
+
+      // First click on a numeric column defaults to descending (most first).
+      expect(attemptsHeader).toHaveAttribute('aria-sort', 'descending');
+      expect(rowTitlesInOrder()).toEqual(['Binary Search Basics', 'Closures and Scope']);
+      expect(screen.getByTestId('url-params').textContent).toContain('sort=attempts');
+      expect(screen.getByTestId('url-params').textContent).toContain('dir=desc');
+
+      fireEvent.click(within(attemptsHeader).getByRole('button', { name: 'Attempts' }));
+      expect(attemptsHeader).toHaveAttribute('aria-sort', 'ascending');
+      expect(rowTitlesInOrder()).toEqual(['Closures and Scope', 'Binary Search Basics']);
+      expect(screen.getByTestId('url-params').textContent).toContain('dir=asc');
+    });
+
+    it('sorts by Title A→Z on first click (text columns default ascending)', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue(twoQuestions());
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibrary();
+
+      await screen.findByText('Closures and Scope');
+      fireEvent.click(screen.getByRole('button', { name: 'Title' }));
+
+      expect(rowTitlesInOrder()).toEqual(['Binary Search Basics', 'Closures and Scope']);
+    });
+
+    it('shows an active-filter count and a Clear filters affordance that resets category/status/difficulty/search together', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue(twoQuestions());
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibrary(['/?category=js-ts&status=in-progress&difficulty=medium&q=closures']);
+
+      await screen.findByText('Closures and Scope');
+      expect(screen.getByText('4 filters')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+
+      expect(await screen.findByText('Binary Search Basics')).toBeInTheDocument();
+      expect(screen.queryByText(/filters$/)).toBeNull();
+      expect(screen.getByRole('button', { name: 'All' })).toHaveClass('active');
+      expect(screen.getByTitle('Filter by status')).toHaveValue('all');
+      expect(screen.getByTitle('Filter by difficulty')).toHaveValue('all');
+      expect(screen.getByPlaceholderText('Search titles…')).toHaveValue('');
+    });
+
+    it('round-trips the archived status filter through the URL, keeping the Restore action + undo toast working', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue([question({ archivedAt: new Date().toISOString() })]);
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibraryWithRoomAndProbe(['/?status=archived']);
+
+      await screen.findByText('Closures and Scope');
+      expect(screen.getByTitle('Filter by status')).toHaveValue('archived');
+      expect(screen.getByTestId('url-params').textContent).toContain('status=archived');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+      expect(unarchiveQuestion).toHaveBeenCalledWith('js-ts', 'closures-and-scope');
+    });
+
+    it('survives navigating into a room and back — filters, search, and sort are all still applied (shareable URL)', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue(twoQuestions());
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibraryWithRoomAndProbe();
+
+      await screen.findByText('Closures and Scope');
+      fireEvent.click(screen.getByRole('button', { name: 'JS/TS' }));
+      fireEvent.click(within(screen.getByRole('columnheader', { name: 'Attempts' })).getByRole('button', {
+        name: 'Attempts',
+      }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('url-params').textContent).toBe('category=js-ts&sort=attempts&dir=desc'),
+      );
+
+      const link = screen.getByRole('link', { name: 'Closures and Scope' });
+      fireEvent.click(link);
+      expect(await screen.findByText('Room for question')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Go back' }));
+
+      await screen.findByText('Closures and Scope');
+      expect(screen.getByTestId('url-params').textContent).toBe(
+        'category=js-ts&sort=attempts&dir=desc',
+      );
+      expect(screen.getByRole('button', { name: 'JS/TS' })).toHaveClass('active');
+      expect(screen.getByRole('columnheader', { name: 'Attempts' })).toHaveAttribute(
+        'aria-sort',
+        'descending',
+      );
     });
   });
 });

@@ -4,15 +4,53 @@ import { relTime } from '../lib/format';
 import type { QuestionWithStats } from '../types';
 import { CategoryChip, DifficultyChip, StatusChip } from './Chip';
 
+/** The four click-to-sort columns (NEE-298) — Category/Difficulty/Status stay display-only. */
+export type SortKey = 'title' | 'attempts' | 'lastRun' | 'lastActivity';
+export type SortDir = 'asc' | 'desc';
+
 export interface QuestionTableProps {
   questions: QuestionWithStats[];
+  /** Current sort + click-to-sort handler (NEE-298). Omitting both renders plain,
+   * non-interactive headers — used by tests that don't care about ordering. */
+  sort?: { key: SortKey; dir: SortDir };
+  onSortChange?: (key: SortKey) => void;
   /** Row action (NEE-296): archives a not-yet-archived row, including 'missing' ones. */
   onArchive?: (question: QuestionWithStats) => void;
   /** Row action (NEE-296): the Archived filter's Restore. */
   onUnarchive?: (question: QuestionWithStats) => void;
 }
 
-export function QuestionTable({ questions, onArchive, onUnarchive }: QuestionTableProps) {
+function SortableHeader({
+  label,
+  sortKey,
+  className,
+  sort,
+  onSortChange,
+}: {
+  label: string;
+  sortKey: SortKey;
+  className?: string;
+  sort?: { key: SortKey; dir: SortDir };
+  onSortChange?: (key: SortKey) => void;
+}) {
+  if (onSortChange == null) {
+    return <th className={className}>{label}</th>;
+  }
+  const active = sort?.key === sortKey;
+  const dir = active ? sort?.dir : undefined;
+  return (
+    <th className={className} aria-sort={active ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button type="button" className="sort-header-btn" onClick={() => onSortChange(sortKey)}>
+        {label}
+        <span className="sort-indicator" aria-hidden="true">
+          {active ? (dir === 'asc' ? '▲' : '▼') : ''}
+        </span>
+      </button>
+    </th>
+  );
+}
+
+export function QuestionTable({ questions, sort, onSortChange, onArchive, onUnarchive }: QuestionTableProps) {
   const navigate = useNavigate();
   const showActions = onArchive != null || onUnarchive != null;
   return (
@@ -20,13 +58,30 @@ export function QuestionTable({ questions, onArchive, onUnarchive }: QuestionTab
       <table className="question-table">
         <thead>
           <tr>
-            <th>Title</th>
+            <SortableHeader label="Title" sortKey="title" sort={sort} onSortChange={onSortChange} />
             <th>Category</th>
             <th>Difficulty</th>
             <th>Status</th>
-            <th className="num">Attempts</th>
-            <th className="num">Last run</th>
-            <th>Last activity</th>
+            <SortableHeader
+              label="Attempts"
+              sortKey="attempts"
+              className="num"
+              sort={sort}
+              onSortChange={onSortChange}
+            />
+            <SortableHeader
+              label="Last run"
+              sortKey="lastRun"
+              className="num"
+              sort={sort}
+              onSortChange={onSortChange}
+            />
+            <SortableHeader
+              label="Last activity"
+              sortKey="lastActivity"
+              sort={sort}
+              onSortChange={onSortChange}
+            />
             {showActions && <th className="col-actions">
               <span className="sr-only">Actions</span>
             </th>}

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import { QuestionTable } from './QuestionTable';
@@ -97,5 +97,77 @@ describe('QuestionTable — archive row action (NEE-296)', () => {
     const button = screen.getByRole('button', { name: 'Archive' });
     button.focus();
     expect(button).toHaveFocus();
+  });
+});
+
+// NEE-298: click-to-sort headers. QuestionTable itself just renders the
+// affordance and reports clicks — the actual ordering of `questions` is the
+// caller's (Library's) job, per its `visible` useMemo.
+describe('QuestionTable — sortable headers (NEE-298)', () => {
+  it('renders plain, non-interactive headers when no sort/onSortChange is passed', () => {
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <QuestionTable questions={[question()]} />
+      </MemoryRouter>,
+    );
+
+    const header = screen.getByRole('columnheader', { name: 'Title' });
+    expect(header).not.toHaveAttribute('aria-sort');
+    expect(within(header).queryByRole('button')).toBeNull();
+  });
+
+  it('marks only the active column with aria-sort and a visual indicator, and reports clicks by key', () => {
+    const onSortChange = vi.fn();
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <QuestionTable
+          questions={[question()]}
+          sort={{ key: 'lastActivity', dir: 'desc' }}
+          onSortChange={onSortChange}
+        />
+      </MemoryRouter>,
+    );
+
+    const activeHeader = screen.getByRole('columnheader', { name: 'Last activity' });
+    expect(activeHeader).toHaveAttribute('aria-sort', 'descending');
+    expect(within(activeHeader).getByText('▼')).toBeInTheDocument();
+
+    const titleHeader = screen.getByRole('columnheader', { name: 'Title' });
+    expect(titleHeader).toHaveAttribute('aria-sort', 'none');
+    expect(within(titleHeader).queryByText('▲')).toBeNull();
+    expect(within(titleHeader).queryByText('▼')).toBeNull();
+
+    fireEvent.click(within(titleHeader).getByRole('button', { name: 'Title' }));
+    expect(onSortChange).toHaveBeenCalledWith('title');
+
+    fireEvent.click(within(screen.getByRole('columnheader', { name: 'Attempts' })).getByRole('button', {
+      name: 'Attempts',
+    }));
+    expect(onSortChange).toHaveBeenCalledWith('attempts');
+  });
+
+  it('does not navigate the row when a sort header is clicked', () => {
+    const onSortChange = vi.fn();
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <QuestionTable
+                questions={[question()]}
+                sort={{ key: 'lastActivity', dir: 'desc' }}
+                onSortChange={onSortChange}
+              />
+            }
+          />
+          <Route path="/q/:category/:slug" element={<div>Room for question</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Last run' }));
+    expect(onSortChange).toHaveBeenCalledWith('lastRun');
+    expect(screen.queryByText('Room for question')).toBeNull();
   });
 });
