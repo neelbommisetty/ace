@@ -98,13 +98,29 @@ export function parseReviewDimensions(body: string): Record<string, number> | nu
 // Reviewability guard (the route turns a non-null result into a 400).
 // ---------------------------------------------------------------------------
 
-function hasMeaningfulNotes(notes: string): boolean {
-  // At least one non-blank line that is neither a heading nor an HTML
-  // comment — i.e. the user wrote something beyond the notes.md template.
-  return notes
-    .split('\n')
-    .map((line) => line.trim())
-    .some((line) => line.length > 0 && !line.startsWith('#') && !line.startsWith('<!--'));
+/**
+ * At least one non-blank line that is neither a heading nor part of an HTML
+ * comment — i.e. the user wrote something beyond the notes.md/story.md
+ * template. HTML-comment tracking is block-aware: a `<!-- … -->` that wraps
+ * onto multiple lines (every hint comment in story.md.hbs does) counts as a
+ * comment in full, not just its opening line — so this can only ever
+ * classify MORE content as non-meaningful, never less.
+ */
+export function hasMeaningfulNotes(notes: string): boolean {
+  let inComment = false;
+  for (const raw of notes.split('\n')) {
+    const line = raw.trim();
+    if (inComment) {
+      if (line.includes('-->')) inComment = false;
+      continue;
+    }
+    if (line.startsWith('<!--')) {
+      if (!line.includes('-->')) inComment = true;
+      continue;
+    }
+    if (line.length > 0 && !line.startsWith('#')) return true;
+  }
+  return false;
 }
 
 /**
@@ -130,20 +146,60 @@ export function isEffectivelyStub(content: string, renderedEmptyStub: string): b
   return false;
 }
 
+/**
+ * The noun used in review-guard messages ("write your X before requesting a
+ * review"), per question type — a Record so widening QuestionType forces a
+ * decision here, the same discipline as REVIEW_KIND below. `coding`'s value
+ * keeps the pre-NEE-342 wording ("write your solution") byte-identical.
+ */
+const GUARD_NOUN: Record<QuestionType, string> = {
+  coding: 'solution',
+  design: 'design',
+  behavioral: 'story',
+};
+
+/**
+ * Exact-baseline check: true when `content`'s sha1 matches the pristine
+ * scaffold snapshot (captured on first room open, re-recorded after a
+ * fresh-attempt reset) for `relFile`. Shared by both branches below — the
+ * one guard that cannot be fooled by template content, since it never
+ * inspects the text itself. Never compares against 'reset' snapshots —
+ * those hold the user's own pre-reset content, which they may legitimately
+ * restore.
+ */
+function isUnchangedSinceScaffold(
+  question: QuestionRow,
+  db: AceDb,
+  relFile: string,
+  content: string,
+): boolean {
+  const relPath = ['questions', question.category, question.slug, relFile].join('/');
+  const baseline = db.getLatestSnapshot(question.id, relPath, 'scaffold');
+  return baseline !== null && baseline.hash === sha1(content);
+}
+
 /** Returns an actionable error when the question is not reviewable yet, else null. */
 export function getReviewGuardError(question: QuestionRow, db?: AceDb): string | null {
   const config = lookupCategoryConfig(question.category);
   if (!config) return `unknown category "${question.category}"`;
 
+  const primary = config.solutionFiles[0];
+  const noun = GUARD_NOUN[config.type];
+
   if (isProseAnswer(config)) {
-    const notes = readFileOr(path.join(question.dirPath, config.solutionFiles[0]));
+    const notes = readFileOr(path.join(question.dirPath, primary));
     if (!hasMeaningfulNotes(notes)) {
-      return 'notes.md has no design notes yet — write your design before requesting a review';
+      return `${primary} has no ${noun} notes yet — write your ${noun} before requesting a review`;
+    }
+    // Template-content-independent guard (see isUnchangedSinceScaffold):
+    // catches a freshly scaffolded story/notes file whose hint comments or
+    // boilerplate happen to defeat hasMeaningfulNotes.
+    if (db && isUnchangedSinceScaffold(question, db, primary, notes)) {
+      return `${primary} is unchanged since it was scaffolded — write your ${noun} before requesting a review`;
     }
     return null;
   }
 
-  const primary = config.solutionFiles[0];
   let content: string | null;
   try {
     content = fs.readFileSync(path.join(question.dirPath, primary), 'utf8');
@@ -151,22 +207,14 @@ export function getReviewGuardError(question: QuestionRow, db?: AceDb): string |
     content = null;
   }
   if (content === null) {
-    return `${primary} is missing — write your solution before requesting a review`;
+    return `${primary} is missing — write your ${noun} before requesting a review`;
   }
   const stub = getStubContent(config.slug, primary);
   if (isEffectivelyStub(content, stub)) {
-    return `${primary} is still the untouched stub — write your solution before requesting a review`;
+    return `${primary} is still the untouched stub — write your ${noun} before requesting a review`;
   }
-  // Exact-baseline check: unchanged since the pristine scaffold snapshot
-  // (captured on first room open, re-recorded after a fresh-attempt reset).
-  // Never compare against 'reset' snapshots — those hold the user's own
-  // pre-reset code, which they may legitimately restore.
-  if (db) {
-    const relPath = ['questions', question.category, question.slug, primary].join('/');
-    const baseline = db.getLatestSnapshot(question.id, relPath, 'scaffold');
-    if (baseline && baseline.hash === sha1(content)) {
-      return `${primary} is unchanged since it was scaffolded — write your solution before requesting a review`;
-    }
+  if (db && isUnchangedSinceScaffold(question, db, primary, content)) {
+    return `${primary} is unchanged since it was scaffolded — write your ${noun} before requesting a review`;
   }
   return null;
 }
@@ -180,10 +228,9 @@ export type ReviewKind = 'code' | 'design' | 'behavioral';
 /**
  * Review-prompt branch, per question type — a Record so widening
  * QuestionType forces a decision here instead of a silent boolean
- * fallthrough (kindOf used to be `isDesignCategory(...) ? 'design' :
- * 'code'`, which would have silently taken the 'code' branch for a
- * behavioral question). `coding`/`design` map onto the existing
- * 'code'/'design' wire values verbatim.
+ * fallthrough (kindOf used to be a design/coding ternary, which would have
+ * silently taken the 'code' branch for a behavioral question). `coding`/
+ * `design` map onto the existing 'code'/'design' wire values verbatim.
  */
 const REVIEW_KIND: Record<QuestionType, ReviewKind> = {
   coding: 'code',
