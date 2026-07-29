@@ -76,6 +76,10 @@ export interface AceDb {
   }): QuestionRow;
   /** Mark rows whose dir no longer exists; clears the flag for ids present again. */
   setMissing(presentIds: string[], missingIds: string[]): void;
+  /** Sets `archivedAt`; null if `id` doesn't exist. */
+  archiveQuestion(id: string): QuestionRow | null;
+  /** Clears `archivedAt`; null if `id` doesn't exist. */
+  unarchiveQuestion(id: string): QuestionRow | null;
 
   getActiveAttempt(questionId: string): AttemptRow | null;
   /** Most recently active attempt across all questions (for instant resume). */

@@ -486,3 +486,16 @@ export function getAiRun(id: string): Promise<{ run: AiRunRow; steps: AiStepSumm
 export function getAiStep(id: string): Promise<{ step: AiStepRow }> {
   return request(`/api/ai/steps/${encodeURIComponent(id)}`);
 }
+
+// ---- question archive (NEE-296) --------------------------------------------
+
+export function archiveQuestion(category: string, slug: string): Promise<{ question: QuestionRow }> {
+  return request(questionPath(category, slug, '/archive'), { method: 'POST' });
+}
+
+export function unarchiveQuestion(
+  category: string,
+  slug: string,
+): Promise<{ question: QuestionRow }> {
+  return request(questionPath(category, slug, '/unarchive'), { method: 'POST' });
+}

@@ -474,6 +474,29 @@ class SqliteAceDb implements AceDb {
     }
   }
 
+  /**
+   * Sets `archived_at` (NEE-296) — hides the question from the Library's
+   * default view without touching files on disk, attempts, reviews, or
+   * disputes. Idempotent: archiving an already-archived question just
+   * refreshes the timestamp. Returns the updated row, or null if `id` doesn't
+   * exist (the route 404s on that).
+   */
+  archiveQuestion(id: string): QuestionRow | null {
+    const r = this.stmt('UPDATE questions SET archived_at = ? WHERE id = ? RETURNING *').get(
+      nowIso(),
+      id,
+    ) as SqlRow | undefined;
+    return r ? rowToQuestion(r) : null;
+  }
+
+  /** Clears `archived_at` (NEE-296) — the Library's "Restore" action. */
+  unarchiveQuestion(id: string): QuestionRow | null {
+    const r = this.stmt('UPDATE questions SET archived_at = NULL WHERE id = ? RETURNING *').get(
+      id,
+    ) as SqlRow | undefined;
+    return r ? rowToQuestion(r) : null;
+  }
+
   // -- attempts -------------------------------------------------------------
 
   getActiveAttempt(questionId: string): AttemptRow | null {

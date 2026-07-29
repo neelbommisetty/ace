@@ -1,15 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { getGenerationJobs, getQuestions, getSettings, getWorkspace, installStarterPack } from '../api';
+import {
+  archiveQuestion,
+  getGenerationJobs,
+  getQuestions,
+  getSettings,
+  getWorkspace,
+  installStarterPack,
+  unarchiveQuestion,
+} from '../api';
 import { ImportBanner } from '../components/ImportBanner';
 import { QuestionTable } from '../components/QuestionTable';
 import { ResumeCard } from '../components/ResumeCard';
+import { showActionToast } from '../components/Toast';
 import { CATEGORY_SLUGS, categoryShortName } from '../lib/categories';
 import { openWorkspaceSwitchDialog } from '../lib/switchSignal';
 import { useSseEvent } from '../sse';
 import type { QuestionStatus, QuestionWithStats, SettingsInfo, WorkspaceInfo } from '../types';
 
-type StatusFilter = 'all' | QuestionStatus;
+type StatusFilter = 'all' | QuestionStatus | 'archived';
 
 export function Library() {
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
@@ -137,18 +146,46 @@ export function Library() {
 
   const generatingCount = activeJobIds.size;
 
+  // The 'Archived' filter is the only view where archivedAt != null rows
+  // show up at all — everywhere else they're hidden by default (NEE-296).
   const visible = useMemo(() => {
     if (questions == null) return [];
     return questions
-      .filter((q) => q.archivedAt == null)
+      .filter((q) => (statusFilter === 'archived' ? q.archivedAt != null : q.archivedAt == null))
       .filter((q) => categoryFilter == null || q.category === categoryFilter)
-      .filter((q) => statusFilter === 'all' || q.stats.status === statusFilter)
+      .filter(
+        (q) => statusFilter === 'all' || statusFilter === 'archived' || q.stats.status === statusFilter,
+      )
       .sort((a, b) => {
         const at = a.stats.lastActivityAt ?? a.createdAt;
         const bt = b.stats.lastActivityAt ?? b.createdAt;
         return bt.localeCompare(at);
       });
   }, [questions, categoryFilter, statusFilter]);
+
+  // Archive is reversible (Toast undo, or the Archived filter's Restore row
+  // action) so it fires immediately with no confirmation — the Library
+  // refetches on the 'questions-changed' broadcast either action emits, so
+  // no local optimistic-update bookkeeping is needed here.
+  const handleArchive = useCallback((q: QuestionWithStats) => {
+    archiveQuestion(q.category, q.slug)
+      .then(() => {
+        showActionToast(`"${q.title}" archived`, 'Undo', () => {
+          unarchiveQuestion(q.category, q.slug).catch(() => {
+            setError('Failed to restore the question');
+          });
+        });
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : 'Failed to archive the question');
+      });
+  }, []);
+
+  const handleUnarchive = useCallback((q: QuestionWithStats) => {
+    unarchiveQuestion(q.category, q.slug).catch((e: unknown) => {
+      setError(e instanceof Error ? e.message : 'Failed to restore the question');
+    });
+  }, []);
 
   const loading = workspace == null && questions == null && error == null;
 
@@ -233,6 +270,7 @@ export function Library() {
                 <option value="not-attempted">Not attempted</option>
                 <option value="in-progress">In progress</option>
                 <option value="solved">Solved</option>
+                <option value="archived">Archived</option>
               </select>
             </div>
             {questions.length === 0 ? (
@@ -266,7 +304,11 @@ export function Library() {
                 <p className="empty-hint">Try clearing the category or status filter.</p>
               </div>
             ) : (
-              <QuestionTable questions={visible} />
+              <QuestionTable
+                questions={visible}
+                onArchive={handleArchive}
+                onUnarchive={handleUnarchive}
+              />
             )}
           </>
         )}

@@ -588,6 +588,31 @@ code {
   opacity: 0.45;
 }
 
+.row-missing .col-actions {
+  opacity: 1;
+}
+
+.col-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.row-action {
+  font-size: 12px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .cell-title {
   font-weight: 500;
   max-width: 340px;

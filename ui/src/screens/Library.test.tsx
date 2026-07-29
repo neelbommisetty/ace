@@ -44,14 +44,23 @@ vi.mock('../sse', () => ({
   },
 }));
 
-const { getWorkspace, getQuestions, getGenerationJobs, getSettings, installStarterPack } =
-  vi.hoisted(() => ({
-    getWorkspace: vi.fn(),
-    getQuestions: vi.fn(),
-    getGenerationJobs: vi.fn(),
-    getSettings: vi.fn(),
-    installStarterPack: vi.fn(),
-  }));
+const {
+  getWorkspace,
+  getQuestions,
+  getGenerationJobs,
+  getSettings,
+  installStarterPack,
+  archiveQuestion,
+  unarchiveQuestion,
+} = vi.hoisted(() => ({
+  getWorkspace: vi.fn(),
+  getQuestions: vi.fn(),
+  getGenerationJobs: vi.fn(),
+  getSettings: vi.fn(),
+  installStarterPack: vi.fn(),
+  archiveQuestion: vi.fn(),
+  unarchiveQuestion: vi.fn(),
+}));
 
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>();
@@ -62,6 +71,8 @@ vi.mock('../api', async (importOriginal) => {
     getGenerationJobs,
     getSettings,
     installStarterPack,
+    archiveQuestion,
+    unarchiveQuestion,
   };
 });
 
@@ -153,6 +164,8 @@ const KEYLESS: SettingsInfo = settings({
 beforeEach(() => {
   getSettings.mockResolvedValue(settings());
   installStarterPack.mockResolvedValue({ installed: [], skipped: [], unavailable: [] });
+  archiveQuestion.mockResolvedValue({ question: question({ archivedAt: new Date().toISOString() }) });
+  unarchiveQuestion.mockResolvedValue({ question: question() });
 });
 
 afterEach(() => {
@@ -459,5 +472,102 @@ describe('Library', () => {
 
     await screen.findByText('Missing Question');
     expect(screen.queryByRole('link', { name: 'Missing Question' })).toBeNull();
+  });
+
+  // NEE-296: archive/unarchive row action + the Archived status filter.
+  describe('archive (NEE-296)', () => {
+    it('hides archived questions from the default view and offers an Archived filter', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue([
+        question(),
+        question({
+          id: 'q-archived',
+          slug: 'archived-question',
+          title: 'Archived Question',
+          archivedAt: new Date().toISOString(),
+        }),
+      ]);
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibrary();
+
+      await screen.findByText('Closures and Scope');
+      expect(screen.queryByText('Archived Question')).toBeNull();
+
+      const select = screen.getByTitle('Filter by status');
+      expect(screen.getByRole('option', { name: 'Archived' })).toBeInTheDocument();
+      fireEvent.change(select, { target: { value: 'archived' } });
+
+      expect(await screen.findByText('Archived Question')).toBeInTheDocument();
+      expect(screen.queryByText('Closures and Scope')).toBeNull();
+    });
+
+    it('archives a row via its own row-action control without navigating the row', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue([question()]);
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      render(
+        <MemoryRouter initialEntries={['/']}>
+          <Routes>
+            <Route path="/" element={<Library />} />
+            <Route path="/q/:category/:slug" element={<div>Room for question</div>} />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      await screen.findByText('Closures and Scope');
+      const archiveButton = screen.getByRole('button', { name: 'Archive' });
+      fireEvent.click(archiveButton);
+
+      expect(archiveQuestion).toHaveBeenCalledWith('js-ts', 'closures-and-scope');
+      // Clicking the row action must not also trigger the row's own
+      // navigation (NEE-292's Link-based row activation stays intact).
+      expect(screen.queryByText('Room for question')).toBeNull();
+
+      // The server broadcasts 'questions-changed' on a real archive; here
+      // the mocked route response doesn't, so the refetch is driven the
+      // same way the real one would be — via the SSE event.
+      getQuestions.mockResolvedValue([]);
+      emit('questions-changed', {});
+
+      await waitFor(() => expect(screen.queryByText('Closures and Scope')).toBeNull());
+    });
+
+    it('offers Restore on an archived row under the Archived filter', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue([
+        question({ archivedAt: new Date().toISOString() }),
+      ]);
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibrary();
+
+      // The row is archived, so it's invisible until the filter is applied —
+      // wait for the select itself to mount first.
+      const select = await screen.findByTitle('Filter by status');
+      fireEvent.change(select, { target: { value: 'archived' } });
+      const restoreButton = await screen.findByRole('button', { name: 'Restore' });
+      fireEvent.click(restoreButton);
+
+      expect(unarchiveQuestion).toHaveBeenCalledWith('js-ts', 'closures-and-scope');
+    });
+
+    it('offers the same Archive row action on a "missing" dead row so it can be resolved', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue([
+        question({
+          id: 'q-missing',
+          slug: 'missing-question',
+          title: 'Missing Question',
+          missingAt: new Date().toISOString(),
+        }),
+      ]);
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibrary();
+
+      await screen.findByText('Missing Question');
+      const archiveButton = screen.getByRole('button', { name: 'Archive' });
+      fireEvent.click(archiveButton);
+
+      expect(archiveQuestion).toHaveBeenCalledWith('js-ts', 'missing-question');
+    });
   });
 });
