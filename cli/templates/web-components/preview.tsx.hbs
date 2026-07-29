@@ -1,0 +1,13 @@
+import React from 'react';
+import { {{previewComponentName}} } from './Component';
+
+// Seeded preview fixture (NEE-352) — a small, user-owned example so this
+// component previews with real data instead of an empty shell or a throw on
+// first props access. This file is YOURS: edit the props freely, add
+// handlers, wrap with providers/children, whatever makes the preview useful.
+// It is never sent to the reviewer and never picked up as a test file.
+const exampleProps = {{{previewPropsCode}}};
+
+export default function Preview() {
+  return <{{previewComponentName}} {...exampleProps} />;
+}

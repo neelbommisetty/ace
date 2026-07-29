@@ -128,10 +128,47 @@ describe('resolvePreviewTarget', () => {
     const app = resolvePreviewTarget(qdir, 'react-apps', 'demo');
     expect(app).toMatchObject({
       ok: true,
-      target: { expectedName: 'App', moduleFile: path.join(qdir, 'react-apps', 'demo', 'App.tsx') },
+      target: {
+        expectedName: 'App',
+        moduleFile: path.join(qdir, 'react-apps', 'demo', 'App.tsx'),
+        usesFixture: false,
+        fixtureHint: null,
+      },
     });
     const comp = resolvePreviewTarget(qdir, 'web-components', 'widget');
-    expect(comp).toMatchObject({ ok: true, target: { expectedName: 'Component' } });
+    expect(comp).toMatchObject({
+      ok: true,
+      target: {
+        expectedName: 'Component',
+        usesFixture: false,
+        // web-components with no preview.tsx yet gets a hint; react-apps never does.
+        fixtureHint: expect.stringContaining('preview.tsx'),
+      },
+    });
+  });
+
+  it('mounts preview.tsx instead of the bare component when one exists (NEE-352 fixture seam)', () => {
+    const qdir = makeQuestions();
+    const fixturePath = path.join(qdir, 'web-components', 'widget', 'preview.tsx');
+    fs.writeFileSync(fixturePath, 'export default function Preview() { return null; }\n');
+
+    const resolved = resolvePreviewTarget(qdir, 'web-components', 'widget');
+    expect(resolved).toMatchObject({
+      ok: true,
+      target: {
+        moduleFile: fixturePath,
+        expectedName: null,
+        usesFixture: true,
+        // A fixture means props are handled — no hint needed.
+        fixtureHint: null,
+      },
+    });
+  });
+
+  it('never hints for react-apps even with no fixture (App is self-sufficient bare)', () => {
+    const qdir = makeQuestions();
+    const resolved = resolvePreviewTarget(qdir, 'react-apps', 'demo');
+    expect(resolved).toMatchObject({ ok: true, target: { fixtureHint: null } });
   });
 
   it('rejects non-react categories, unknown categories, and missing questions', () => {
@@ -187,6 +224,8 @@ describe('harness generation', () => {
     slug: 'demo',
     moduleFile: '/ws/questions/react-apps/demo/App.tsx',
     expectedName: 'App',
+    usesFixture: false,
+    fixtureHint: null,
   };
 
   it('html mounts the entry module and nothing else', () => {
@@ -208,6 +247,22 @@ describe('harness generation', () => {
     expect(entry).toContain("import.meta.hot.on('vite:afterUpdate'");
     // No JSX — the entry must need no transform of its own.
     expect(entry).not.toContain('</');
+    // No fixture hint for this target (react-apps, App is self-sufficient).
+    expect(entry).toContain('const FIXTURE_HINT = null');
+  });
+
+  it('embeds and renders a non-null fixture hint (NEE-352)', () => {
+    const entry = buildHarnessEntry({
+      ...target,
+      category: 'web-components',
+      expectedName: 'Component',
+      fixtureHint: 'No preview.tsx yet — add one in this question folder to preview with real props.',
+    });
+    expect(entry).toContain(
+      'const FIXTURE_HINT = "No preview.tsx yet — add one in this question folder to preview with real props."',
+    );
+    expect(entry).toContain('function renderFixtureHint(');
+    expect(entry).toContain('renderFixtureHint()');
   });
 
   // NEE-351: console/error forwarding to the parent window.
@@ -338,5 +393,71 @@ describe('harness over a real vite server', () => {
     const missing = await fetch(url + previewPagePath('react-apps', 'nope'));
     expect(missing.status).toBe(404);
     expect(await missing.text()).toContain('App.tsx');
+  }, 30_000);
+
+  // NEE-352: preview.tsx fixture — mounted instead of the bare (often
+  // unimplemented/throwing) solution file, with a hint when it's absent.
+  it('mounts preview.tsx when present, hints when absent, both for the SAME web-components question', async () => {
+    const root = makeCorpusWorkspace();
+    const withFixtureDir = path.join(root, 'questions', 'web-components', 'with-fixture');
+    fs.mkdirSync(withFixtureDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(withFixtureDir, 'Component.tsx'),
+      "import React from 'react';\nexport function Widget(props) { throw new Error('not implemented'); }\n",
+    );
+    const fixturePath = path.join(withFixtureDir, 'preview.tsx');
+    fs.writeFileSync(
+      fixturePath,
+      "import React from 'react';\nimport { Widget } from './Component';\nexport default function Preview() { return React.createElement('div', null, 'v1'); }\n",
+    );
+
+    const manager = trackManager(createPreviewManager({ bus: createBus() }));
+    const status = await manager.open(root);
+    expect(status.state).toBe('ready');
+    const url = status.url as string;
+    const realRoot = fs.realpathSync(root);
+
+    // 1. named-comp (from makeCorpusWorkspace) has NO preview.tsx — the
+    // entry carries the fixture hint for the pane to render, and mounts the
+    // bare Component.tsx.
+    const bareEntry = await (await fetch(url + previewEntryPath('web-components', 'named-comp'))).text();
+    expect(bareEntry).toContain('No preview.tsx yet');
+    // Vite's import-analysis rewrites in-root /@fs paths to root-relative
+    // ones, so assert on the filename rather than the exact /@fs<root> form.
+    expect(bareEntry).toMatch(/questionModule from ["'][^"']*named-comp\/Component\.tsx["']/);
+
+    // 2. with-fixture mounts preview.tsx, NOT the (throwing) Component.tsx —
+    // and carries no hint, since the fixture already provides the props.
+    const fixtureEntry = await (
+      await fetch(url + previewEntryPath('web-components', 'with-fixture'))
+    ).text();
+    expect(fixtureEntry).toMatch(/questionModule from ["'][^"']*with-fixture\/preview\.tsx["']/);
+    expect(fixtureEntry).not.toContain('Component.tsx');
+    expect(fixtureEntry).toContain('const FIXTURE_HINT = null');
+
+    // 3. The fixture module is served/transformed like any other question
+    // file (no special virtual bypass) — fetch it once for v1...
+    const modUrl = `${url}/@fs${realRoot}/questions/web-components/with-fixture/preview.tsx`;
+    const v1 = await (await fetch(modUrl)).text();
+    expect(v1).toContain('v1');
+
+    // ...then edit it on disk, exactly as a live user edit would, and
+    // re-fetch: it must reflect the change through the SAME file-watching
+    // pipeline every other question file already uses (not assumed — this is
+    // the "verify, do not assume" NEE-352 calls for). Poll instead of a fixed
+    // sleep since the watcher's propagation delay isn't guaranteed.
+    fs.writeFileSync(
+      fixturePath,
+      "import React from 'react';\nimport { Widget } from './Component';\nexport default function Preview() { return React.createElement('div', null, 'v2-edited'); }\n",
+    );
+    const deadline = Date.now() + 10_000;
+    let v2 = '';
+    while (Date.now() < deadline) {
+      v2 = await (await fetch(modUrl)).text();
+      if (v2.includes('v2-edited')) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(v2).toContain('v2-edited');
+    expect(v2).not.toContain('>v1<');
   }, 30_000);
 });

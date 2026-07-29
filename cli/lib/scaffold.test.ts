@@ -229,6 +229,64 @@ describe('scaffoldQuestionAt', () => {
     expect(scorecard.difficulty).toBe('medium');
   });
 
+  it('seeds a preview.tsx fixture for web-components, deriving props from the signature (NEE-352)', () => {
+    const result = scaffoldQuestionAt(tempRoot, {
+      title: 'Tag Input',
+      slug: 'tag-input',
+      category: 'web-components',
+      difficulty: 'medium',
+      description: 'Build a tag input.',
+      signature: [
+        'interface TagInputProps {',
+        '  value: string[];',
+        '  onChange: (next: string[]) => void;',
+        '  maxTags?: number;',
+        '}',
+        '',
+        'export function TagInput({ value, onChange, maxTags }: TagInputProps)',
+      ].join('\n'),
+    });
+
+    expect(result.files).toContain('preview.tsx');
+    const previewPath = path.join(result.dir, 'preview.tsx');
+    expect(fs.existsSync(previewPath)).toBe(true);
+    const preview = fs.readFileSync(previewPath, 'utf-8');
+    expect(preview).toContain("import { TagInput } from './Component';");
+    expect(preview).toContain("value: ['Example one', 'Example two']");
+    expect(preview).toContain('onChange: (...args) => console.log("onChange", ...args)');
+    expect(preview).toContain('maxTags: 10');
+    expect(preview).toContain('<TagInput {...exampleProps} />');
+  });
+
+  it('seeds a bare preview.tsx (empty props) for web-components with no signature', () => {
+    const result = scaffoldQuestionAt(tempRoot, {
+      title: 'Badge',
+      slug: 'badge-no-signature',
+      category: 'web-components',
+      difficulty: 'easy',
+      description: 'Build a badge.',
+    });
+
+    expect(result.files).toContain('preview.tsx');
+    const preview = fs.readFileSync(path.join(result.dir, 'preview.tsx'), 'utf-8');
+    expect(preview).toContain("import { Component } from './Component';");
+    expect(preview).toContain('const exampleProps = {}');
+  });
+
+  it('writes no preview.tsx for categories that have no preview.tsx.hbs template', () => {
+    const result = scaffoldQuestionAt(tempRoot, {
+      title: 'Sprint Board',
+      slug: 'sprint-board',
+      category: 'react-apps',
+      difficulty: 'medium',
+      description: 'Build a task board.',
+      signature: 'export default function App()',
+    });
+
+    expect(result.files).not.toContain('preview.tsx');
+    expect(fs.existsSync(path.join(result.dir, 'preview.tsx'))).toBe(false);
+  });
+
   it('throws when the question dir already exists', () => {
     scaffoldQuestionAt(tempRoot, {
       title: 'Dup',

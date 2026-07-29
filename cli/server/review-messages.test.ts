@@ -95,6 +95,32 @@ it('works', () => {});
   });
 });
 
+describe('buildReviewMessages — code arm excludes preview.tsx (NEE-352)', () => {
+  it('never includes a question-folder preview.tsx fixture in the solution content sent to the reviewer', () => {
+    const config = getCategoryConfig('web-components');
+    const question = makeQuestion({ category: 'web-components', slug: 'tag-input' });
+    writeFile(question.dirPath, 'README.md', '# Tag Input\n\nBuild a tag input.\n');
+    writeFile(question.dirPath, 'Component.tsx', 'export function TagInput() { return null; }\n');
+    writeFile(question.dirPath, 'Component.test.tsx', "it('works', () => {});\n");
+    // A distinctive marker that would be trivially easy to spot if it ever
+    // leaked into the reviewer's prompt.
+    writeFile(
+      question.dirPath,
+      'preview.tsx',
+      "import { TagInput } from './Component';\nexport default () => <TagInput value={['SHOULD-NEVER-REACH-REVIEWER']} />;\n",
+    );
+
+    const { messages, maskedPrompt } = buildReviewMessages(question, config, 'code');
+
+    expect(messages[1].content).not.toContain('SHOULD-NEVER-REACH-REVIEWER');
+    expect(messages[1].content).not.toContain('preview.tsx');
+    expect(maskedPrompt).not.toContain('SHOULD-NEVER-REACH-REVIEWER');
+    // Sanity: the arm still assembled normally around the exclusion.
+    expect(messages[1].content).toContain('Component.tsx');
+    expect(messages[1].content).toContain('TagInput');
+  });
+});
+
 describe('buildReviewMessages — design arm (byte-for-byte unaffected)', () => {
   it('assembles the exact design-notes user-message shape, including the sub-type line', () => {
     const config = getCategoryConfig('design-fe');

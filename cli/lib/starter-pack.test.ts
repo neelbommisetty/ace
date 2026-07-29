@@ -93,6 +93,19 @@ describe('starter pack contents', () => {
       expect(fs.existsSync(reference)).toBe(true);
     }
   });
+
+  it('ships a preview.tsx fixture for every web-components question (NEE-352)', () => {
+    const webComponentQuestions = STARTER_PACK.filter((q) => q.category === 'web-components');
+    expect(webComponentQuestions.length).toBeGreaterThan(0);
+    for (const question of webComponentQuestions) {
+      const preview = path.join(packDir, question.category, question.slug, 'preview.tsx');
+      expect(fs.existsSync(preview)).toBe(true);
+      // Sanity: it actually imports the component it's a fixture for, not a
+      // stray empty file.
+      const content = fs.readFileSync(preview, 'utf8');
+      expect(content).toContain("from './Component'");
+    }
+  });
 });
 
 describe('copyStarterPack', () => {
@@ -111,6 +124,9 @@ describe('copyStarterPack', () => {
       if (hasTests(getCategoryConfig(question.category))) {
         // Dotfiles are easy to lose in a naive copy; the debrief needs this one.
         expect(fs.existsSync(path.join(dir, '.reference.md'))).toBe(true);
+      }
+      if (question.category === 'web-components') {
+        expect(fs.existsSync(path.join(dir, 'preview.tsx'))).toBe(true);
       }
 
       // The general form of that trap, so a new dotfile is covered the day it

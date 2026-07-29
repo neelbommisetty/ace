@@ -3,6 +3,7 @@ import path from 'node:path';
 import Handlebars from 'handlebars';
 import type { CategorySlug, Difficulty } from './categories.js';
 import { getCategoryConfig, getSuggestedTime, hasTests } from './categories.js';
+import { derivePreviewFixture } from './preview-fixture.js';
 import { createScorecard, writeScorecardAt } from './scorecard.js';
 import { getQuestionsDir as getQuestionsDirPath } from './paths.js';
 import { getImportMetaDirname } from './import-meta.js';
@@ -130,6 +131,30 @@ export function scaffoldQuestionAt(
       fs.writeFileSync(path.join(questionDir, testFile), opts.testCode);
       files.push(testFile);
     }
+  }
+
+  // Preview fixture (NEE-352): a seeded preview.tsx for component categories
+  // whose bare export needs example props to render anything meaningful.
+  // Handlebars-templated like every other per-question file, but deliberately
+  // NOT added to config.solutionFiles/testFiles — it must never reach the
+  // reviewer (buildReviewMessages reads only those two lists) and must never
+  // match the workspace's `questions/**/*.test.{ts,tsx}` vitest glob (it
+  // isn't a `.test.ts(x)` file, so that's true by construction). Presence of
+  // the template, not the category, gates this — the same pattern
+  // config.solutionFiles/testFiles already use above.
+  const previewFixtureTemplate = path.join(templateDir, 'preview.tsx.hbs');
+  if (fs.existsSync(previewFixtureTemplate)) {
+    const fixture = derivePreviewFixture(opts.signature);
+    const tmpl = loadTemplate(previewFixtureTemplate);
+    fs.writeFileSync(
+      path.join(questionDir, 'preview.tsx'),
+      tmpl({
+        ...templateData,
+        previewComponentName: fixture.componentName,
+        previewPropsCode: fixture.propsCode,
+      }),
+    );
+    files.push('preview.tsx');
   }
 
   // Hidden interviewer artifacts (post-review debrief material). Dotfiles

@@ -64,9 +64,24 @@ export interface PreviewTarget {
   /**
    * The category's expected export name (`App` for react-apps, `Component`
    * for web-components — derived from the category's first solution file, so
-   * a category change can't silently drift a twin copy of the rule).
+   * a category change can't silently drift a twin copy of the rule). `null`
+   * when `usesFixture` is true — the fixture is mounted by its default
+   * export, no category-name fallback involved.
    */
   expectedName: string | null;
+  /**
+   * True when `moduleFile` is the question's own `preview.tsx` (NEE-352)
+   * rather than the bare solution file.
+   */
+  usesFixture: boolean;
+  /**
+   * One-line hint the pane renders alongside the mount when a component
+   * category (web-components) has no seeded fixture yet — props-taking
+   * components render an empty shell or throw bare, so the hint says why.
+   * `null` whenever a fixture exists or the category needs none (react-apps
+   * is self-sufficient bare).
+   */
+  fixtureHint: string | null;
 }
 
 export type PreviewTargetResolution =
@@ -79,12 +94,18 @@ function isSafeSegment(segment: string): boolean {
 }
 
 /**
- * FIXTURE SEAM (deliberate, for the parallel preview-fixture ticket): this
- * function is the single decision point for "which module gets mounted". A
- * user-owned `preview.tsx` in the question folder will, when present, be
- * returned here as the moduleFile (mounted directly, `expectedName: null`)
- * instead of the bare solution component — nothing else in the harness needs
- * to change for that.
+ * FIXTURE SEAM (NEE-352): a user-owned `preview.tsx` in the question folder,
+ * when present, is returned here as the moduleFile (mounted by its default
+ * export, `expectedName: null`) instead of the bare solution component —
+ * nothing else in the harness needs to change for that: `preview.tsx` is just
+ * another module under `questionsDir`, served/watched/transformed by Vite
+ * exactly like the solution file it stands in for, so it gets the same
+ * `/@fs` serving and HMR re-render on edit for free.
+ *
+ * web-components is a component WITH PROPS — bare-mounting it renders an
+ * empty shell or throws on first props access — so a category with no
+ * fixture yet gets a `fixtureHint` the pane renders alongside the mount.
+ * react-apps' `App` is self-sufficient by contract, so it never gets one.
  */
 export function resolvePreviewTarget(
   questionsDir: string,
@@ -105,8 +126,10 @@ export function resolvePreviewTarget(
     };
   }
   const solutionFile = config.solutionFiles[0];
-  const moduleFile = path.join(questionsDir, category, slug, solutionFile);
-  if (!fs.existsSync(moduleFile)) {
+  const fixtureFile = path.join(questionsDir, category, slug, 'preview.tsx');
+  const usesFixture = fs.existsSync(fixtureFile);
+  const moduleFile = usesFixture ? fixtureFile : path.join(questionsDir, category, slug, solutionFile);
+  if (!usesFixture && !fs.existsSync(moduleFile)) {
     return {
       ok: false,
       reason: `no ${solutionFile} found for ${category}/${slug}`,
@@ -118,7 +141,12 @@ export function resolvePreviewTarget(
       category,
       slug,
       moduleFile,
-      expectedName: path.basename(solutionFile).replace(/\.[^.]+$/, ''),
+      expectedName: usesFixture ? null : path.basename(solutionFile).replace(/\.[^.]+$/, ''),
+      usesFixture,
+      fixtureHint:
+        !usesFixture && category === 'web-components'
+          ? 'No preview.tsx yet — add one in this question folder to preview with real props.'
+          : null,
     },
   };
 }
@@ -317,6 +345,7 @@ import * as questionModule from ${JSON.stringify('/@fs' + target.moduleFile)};
 
 const EXPECTED_NAME = ${JSON.stringify(target.expectedName)};
 const MODULE_LABEL = ${JSON.stringify(`${target.category}/${target.slug}/${path.basename(target.moduleFile)}`)};
+const FIXTURE_HINT = ${JSON.stringify(target.fixtureHint)};
 
 ${ACE_PREVIEW_FORWARDING_SOURCE}
 
@@ -364,6 +393,28 @@ class PreviewErrorBoundary extends React.Component {
   }
 }
 
+// Rendered above the mount whenever FIXTURE_HINT is set (web-components with
+// no preview.tsx yet) — null renders nothing, so every other question's pane
+// is unaffected.
+function renderFixtureHint() {
+  if (!FIXTURE_HINT) return null;
+  return React.createElement(
+    'div',
+    {
+      style: {
+        padding: '6px 12px',
+        fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+        fontSize: '12px',
+        lineHeight: 1.4,
+        background: '#fff3cd',
+        color: '#664d03',
+        borderBottom: '1px solid rgba(0, 0, 0, 0.12)',
+      },
+    },
+    FIXTURE_HINT,
+  );
+}
+
 const root = createRoot(document.getElementById('root'));
 let mountGeneration = 0;
 
@@ -373,13 +424,18 @@ function renderPreview() {
   if (!resolved.ok) {
     root.render(
       React.createElement(
-        'div',
-        { style: { padding: '16px' } },
-        React.createElement('h2', { style: { marginTop: 0 } }, 'Nothing to mount'),
+        React.Fragment,
+        null,
+        renderFixtureHint(),
         React.createElement(
-          'pre',
-          { style: { whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, SFMono-Regular, monospace' } },
-          MODULE_LABEL + ': ' + resolved.message,
+          'div',
+          { style: { padding: '16px' } },
+          React.createElement('h2', { style: { marginTop: 0 } }, 'Nothing to mount'),
+          React.createElement(
+            'pre',
+            { style: { whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, SFMono-Regular, monospace' } },
+            MODULE_LABEL + ': ' + resolved.message,
+          ),
         ),
       ),
     );
@@ -388,9 +444,14 @@ function renderPreview() {
   const Component = questionModule[resolved.exportName];
   root.render(
     React.createElement(
-      React.StrictMode,
+      React.Fragment,
       null,
-      React.createElement(PreviewErrorBoundary, { key: mountGeneration }, React.createElement(Component)),
+      renderFixtureHint(),
+      React.createElement(
+        React.StrictMode,
+        null,
+        React.createElement(PreviewErrorBoundary, { key: mountGeneration }, React.createElement(Component)),
+      ),
     ),
   );
 }
