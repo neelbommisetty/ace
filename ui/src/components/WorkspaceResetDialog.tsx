@@ -1,8 +1,9 @@
 import { useId, useRef, useState } from 'react';
-import { ApiError, resetWorkspace } from '../api';
+import { ApiError, getResetPreview, resetWorkspace } from '../api';
+import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { armSuppressNextReset, disarmSuppressNextReset } from '../lib/resetSuppress';
 import { Modal } from './Modal';
-import type { WorkspaceResetMode, WorkspaceResetResult } from '../types';
+import type { AtRiskProseFile, WorkspaceResetMode, WorkspaceResetResult } from '../types';
 
 const CONSEQUENCES: Record<WorkspaceResetMode, string[]> = {
   progress: [
@@ -31,6 +32,22 @@ const DONE_HEADING: Record<WorkspaceResetMode, string> = {
 type DialogState = { kind: 'idle' } | { kind: 'busy' } | { kind: 'error'; message: string } | { kind: 'done'; result: WorkspaceResetResult };
 
 /**
+ * "2 stories and 1 design answer" — concrete counts by prose kind (NEE-363),
+ * so the confirmation names what's actually at risk instead of the old vague
+ * "solution files are reset to scaffold" line. `behavioral` solution files
+ * are "stories"; every other prose category (design-fe/be/full) is a
+ * "design answer" — the same nouns the Library and AiPanel already use.
+ */
+function summarizeAtRisk(entries: AtRiskProseFile[]): string {
+  const stories = entries.filter((e) => e.category === 'behavioral').length;
+  const designs = entries.length - stories;
+  const parts: string[] = [];
+  if (stories > 0) parts.push(`${stories} ${stories === 1 ? 'story' : 'stories'}`);
+  if (designs > 0) parts.push(`${designs} design ${designs === 1 ? 'answer' : 'answers'}`);
+  return parts.join(' and ');
+}
+
+/**
  * Settings danger-zone modal: typed-confirmation gate for the destructive
  * workspace reset endpoint. Follows FreshAttemptDialog's overlay/header/
  * body/footer conventions.
@@ -46,8 +63,27 @@ export function WorkspaceResetDialog({
 }) {
   const [input, setInput] = useState('');
   const [state, setState] = useState<DialogState>({ kind: 'idle' });
+  // null while loading (or in 'progress' mode, which never touches solution
+  // files on disk and so never needs this). A fetch failure degrades to `[]`
+  // — best-effort: the generic CONSEQUENCES wording still applies below, and
+  // the typed-confirmation gate is the real safety net either way.
+  const [atRiskProse, setAtRiskProse] = useState<AtRiskProseFile[] | null>(null);
   const headingId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useCancellableEffect(
+    (cancelled) => {
+      if (mode !== 'full') return;
+      getResetPreview()
+        .then((preview) => {
+          if (!cancelled()) setAtRiskProse(preview.atRiskProse);
+        })
+        .catch(() => {
+          if (!cancelled()) setAtRiskProse([]);
+        });
+    },
+    [mode],
+  );
 
   const busy = state.kind === 'busy';
   const done = state.kind === 'done';
@@ -114,6 +150,21 @@ export function WorkspaceResetDialog({
                 <li key={line}>{line}</li>
               ))}
             </ul>
+            {atRiskProse != null && atRiskProse.length > 0 && (
+              <div className="reset-at-risk">
+                <p className="dialog-note">
+                  <strong>{summarizeAtRisk(atRiskProse)}</strong> will be reset to their original
+                  scaffold — the hand-written text below is what's actually lost from disk (it
+                  stays viewable, read-only, under the question's Activity tab, but there is no
+                  one-click undo):
+                </p>
+                <ul className="reset-at-risk-list">
+                  {atRiskProse.map((f) => (
+                    <li key={`${f.category}/${f.slug}`}>{f.title}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <p className="dialog-note">
               Type the workspace folder name <strong>{folderName}</strong> to confirm.
             </p>

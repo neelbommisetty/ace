@@ -154,8 +154,9 @@ export function Settings() {
               <h3 className="settings-card-title">Reset workspace</h3>
               <p className="settings-hint">
                 Does everything Clear progress does, and also resets solution files on disk to
-                their original scaffold. Applied dispute fixes to test files are kept as the new
-                baseline for the next attempt.
+                their original scaffold — including hand-written behavioral stories and design
+                notes, not just code. The confirmation dialog names exactly which ones. Applied
+                dispute fixes to test files are kept as the new baseline for the next attempt.
               </p>
               <div className="settings-row">
                 <button

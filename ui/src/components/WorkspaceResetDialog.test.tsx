@@ -10,11 +10,17 @@ const { armSuppressNextReset, disarmSuppressNextReset } = vi.hoisted(() => ({
 
 vi.mock('../lib/resetSuppress', () => ({ armSuppressNextReset, disarmSuppressNextReset }));
 
-const { resetWorkspace } = vi.hoisted(() => ({ resetWorkspace: vi.fn() }));
+const { resetWorkspace, getResetPreview } = vi.hoisted(() => ({
+  resetWorkspace: vi.fn(),
+  // Every test below is 'full' or 'progress' with no at-risk prose by
+  // default — individual tests override this to exercise the concrete
+  // at-risk wording.
+  getResetPreview: vi.fn().mockResolvedValue({ atRiskProse: [] }),
+}));
 
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>();
-  return { ...actual, resetWorkspace };
+  return { ...actual, resetWorkspace, getResetPreview };
 });
 
 const FOLDER = 'my-prep';
@@ -237,6 +243,40 @@ describe('WorkspaceResetDialog', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // NEE-363: the dialog names what prose is actually at risk, in words —
+  // "2 stories and 1 design answer", not the old generic "solution files
+  // are reset to scaffold" line.
+  it('names at-risk prose files by title, with a concrete count summary (full mode)', async () => {
+    getResetPreview.mockResolvedValue({
+      atRiskProse: [
+        { category: 'behavioral', slug: 'a', title: 'A Time I Disagreed', relPath: 'a' },
+        { category: 'behavioral', slug: 'b', title: 'A Time I Failed', relPath: 'b' },
+        { category: 'design-fe', slug: 'c', title: 'Infinite Scroll', relPath: 'c' },
+      ],
+    });
+    render(<WorkspaceResetDialog mode="full" folderName={FOLDER} onClose={vi.fn()} />);
+
+    expect(await screen.findByText(/2 stories and 1 design answer/)).toBeInTheDocument();
+    expect(screen.getByText('A Time I Disagreed')).toBeInTheDocument();
+    expect(screen.getByText('A Time I Failed')).toBeInTheDocument();
+    expect(screen.getByText('Infinite Scroll')).toBeInTheDocument();
+  });
+
+  it('shows no at-risk section when nothing differs from scaffold (full mode)', async () => {
+    getResetPreview.mockResolvedValue({ atRiskProse: [] });
+    render(<WorkspaceResetDialog mode="full" folderName={FOLDER} onClose={vi.fn()} />);
+
+    // Let the preview fetch settle before asserting its absence.
+    await Promise.resolve();
+    expect(screen.queryByText(/will be reset to their original/)).not.toBeInTheDocument();
+  });
+
+  it('never fetches the reset preview in progress mode (solution files are never touched)', async () => {
+    render(<WorkspaceResetDialog mode="progress" folderName={FOLDER} onClose={vi.fn()} />);
+    await Promise.resolve();
+    expect(getResetPreview).not.toHaveBeenCalled();
   });
 
   it('traps Tab within the dialog (first <-> last wrap)', () => {

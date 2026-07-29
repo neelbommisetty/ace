@@ -120,6 +120,30 @@ export interface ReviewRow {
   source: 'user' | 'import';
 }
 
+export type SnapshotTrigger =
+  | 'scaffold'
+  | 'save'
+  | 'review'
+  | 'dispute-apply'
+  | 'probe-append'
+  | 'reset';
+
+/**
+ * One point-in-time capture of a solution/story/notes file's content, keyed
+ * by content-addressed blob hash (NEE-363's snapshot-viewing surface reuses
+ * the same rows `applyRestorePlan`/`snapshotPreResetState` already write —
+ * nothing new is captured, this just makes them reachable from the SPA).
+ */
+export interface SnapshotRow {
+  id: string;
+  questionId: string;
+  attemptId: string | null;
+  relPath: string;
+  hash: string; // sha1, content stored at .ace/blobs/<hash>
+  at: string;
+  trigger: SnapshotTrigger;
+}
+
 export type DisputeVerdict = 'test_incorrect' | 'solution_incorrect' | 'ambiguous';
 
 export interface DisputeRow {
@@ -383,6 +407,28 @@ export interface WorkspaceResetResult {
   archivedTo: string; // absolute path of the renamed .ace-archive-* dir
   restored: { questions: number; files: number }; // zeros in 'progress' mode
   workspace: WorkspaceInfo; // freshly computed post-reset, for the initiating tab
+}
+
+/**
+ * One prose (behavioral story.md / design notes.md) solution file that
+ * currently differs from its scaffold baseline — a 'full' reset would
+ * overwrite it with scaffold content, destroying whatever was hand-written
+ * (NEE-363). Coding solution files are deliberately excluded here: they get
+ * a pre-reset 'reset'-trigger snapshot too, but this list exists to name the
+ * hand-written prose at risk in words the confirmation dialog can show.
+ */
+export interface AtRiskProseFile {
+  category: string;
+  slug: string;
+  title: string;
+  relPath: string;
+}
+
+/** 200 response of `GET /api/workspace/reset-preview` (NEE-363) — read-only;
+ * `progress` mode never touches solution files on disk, so this list only
+ * matters ahead of a 'full' reset. */
+export interface WorkspaceResetPreview {
+  atRiskProse: AtRiskProseFile[];
 }
 
 /**

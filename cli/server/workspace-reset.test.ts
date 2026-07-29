@@ -12,6 +12,7 @@ import {
   ArchiveError,
   applyRestorePlan,
   archiveAceDir,
+  collectAtRiskProse,
   collectRestorePlan,
   snapshotPreResetState,
   type RestorePlan,
@@ -50,6 +51,14 @@ function writeDesignQuestion(category: string, slug: string, notes = '# Notes\n'
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'README.md'), `# ${slug}\n`, 'utf-8');
   fs.writeFileSync(path.join(dir, 'notes.md'), notes, 'utf-8');
+  return dir;
+}
+
+function writeBehavioralQuestion(category: string, slug: string, story = '# Story\n'): string {
+  const dir = questionDir(category, slug);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'README.md'), `# ${slug}\n`, 'utf-8');
+  fs.writeFileSync(path.join(dir, 'story.md'), story, 'utf-8');
   return dir;
 }
 
@@ -263,6 +272,98 @@ describe('collectRestorePlan', () => {
     expect(plan.some((e) => e.relPath === testRel)).toBe(false);
     // Only the solution file made it into the plan for this question.
     expect(plan.filter((e) => e.slug === 'has-test-scaffold')).toHaveLength(1);
+  });
+});
+
+describe('collectAtRiskProse', () => {
+  it('names a behavioral story.md that was hand-edited past its scaffold', () => {
+    const dir = writeBehavioralQuestion('behavioral', 'disagreed', '# my real story\n');
+    db.upsertQuestion({
+      category: 'behavioral',
+      slug: 'disagreed',
+      title: 'A Time I Disagreed',
+      difficulty: 'medium',
+      suggestedMinutes: 8,
+      dirPath: dir,
+      source: 'manual',
+    });
+
+    const atRisk = collectAtRiskProse(db, tempRoot);
+    expect(atRisk).toEqual([
+      {
+        category: 'behavioral',
+        slug: 'disagreed',
+        title: 'A Time I Disagreed',
+        relPath: toWorkspaceRelPath(tempRoot, path.join(dir, 'story.md')),
+      },
+    ]);
+  });
+
+  it('names a design notes.md that was hand-edited past its scaffold', () => {
+    const dir = writeDesignQuestion('design-fe', 'infinite-scroll', '# my real notes\n');
+    db.upsertQuestion({
+      category: 'design-fe',
+      slug: 'infinite-scroll',
+      title: 'Infinite scroll',
+      difficulty: 'medium',
+      suggestedMinutes: 40,
+      dirPath: dir,
+      source: 'manual',
+    });
+
+    const atRisk = collectAtRiskProse(db, tempRoot);
+    expect(atRisk).toEqual([
+      expect.objectContaining({ category: 'design-fe', slug: 'infinite-scroll', title: 'Infinite scroll' }),
+    ]);
+  });
+
+  it('excludes coding solution files — those get their own reset snapshot, not this list', () => {
+    const dir = writeCodingQuestion('js-ts', 'debounce', { solution: 'export const x = 1;\n' });
+    db.upsertQuestion({
+      category: 'js-ts',
+      slug: 'debounce',
+      title: 'Debounce',
+      difficulty: 'medium',
+      suggestedMinutes: 30,
+      dirPath: dir,
+      source: 'manual',
+    });
+
+    expect(collectAtRiskProse(db, tempRoot)).toEqual([]);
+  });
+
+  it('excludes a story.md that was never touched (still equal to its own scaffold baseline)', () => {
+    const dir = writeBehavioralQuestion('behavioral', 'untouched', '# scaffold text\n');
+    const question = db.upsertQuestion({
+      category: 'behavioral',
+      slug: 'untouched',
+      title: 'Untouched story',
+      difficulty: 'easy',
+      suggestedMinutes: 8,
+      dirPath: dir,
+      source: 'manual',
+    });
+    const rel = toWorkspaceRelPath(tempRoot, path.join(dir, 'story.md'));
+    const hash = saveBlob(tempRoot, '# scaffold text\n');
+    db.addSnapshot({ questionId: question.id, attemptId: null, relPath: rel, hash, trigger: 'scaffold' });
+
+    expect(collectAtRiskProse(db, tempRoot)).toEqual([]);
+  });
+
+  it('excludes a story.md that is absent on disk', () => {
+    const dir = writeBehavioralQuestion('behavioral', 'gone-file');
+    db.upsertQuestion({
+      category: 'behavioral',
+      slug: 'gone-file',
+      title: 'Gone file',
+      difficulty: 'easy',
+      suggestedMinutes: 8,
+      dirPath: dir,
+      source: 'manual',
+    });
+    fs.rmSync(path.join(dir, 'story.md'));
+
+    expect(collectAtRiskProse(db, tempRoot)).toEqual([]);
   });
 });
 

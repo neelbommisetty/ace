@@ -1,11 +1,18 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { getAttempt } from '../api';
+import { getAttempt, getSnapshot, getSnapshots } from '../api';
 import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { formatDuration, relTime } from '../lib/format';
 import { DISPUTE_VERDICT_LABELS } from '../lib/review';
-import type { AttemptEventRow, AttemptEventType, DisputeRow, TestRunRow } from '../types';
+import type {
+  AttemptEventRow,
+  AttemptEventType,
+  DisputeRow,
+  SnapshotRow,
+  SnapshotTrigger,
+  TestRunRow,
+} from '../types';
 
 const EVENT_LABELS: Record<AttemptEventType, string> = {
   reveal: 'question revealed',
@@ -18,6 +25,8 @@ const EVENT_LABELS: Record<AttemptEventType, string> = {
 
 export function ProblemPane({
   readme,
+  category,
+  slug,
   attemptId,
   attemptNumber,
   history,
@@ -25,6 +34,8 @@ export function ProblemPane({
   onCollapse,
 }: {
   readme: string;
+  category: string;
+  slug: string;
   attemptId: string;
   attemptNumber: number;
   history: TestRunRow[];
@@ -65,6 +76,8 @@ export function ProblemPane({
           )
         ) : (
           <ActivityTab
+            category={category}
+            slug={slug}
             attemptId={attemptId}
             attemptNumber={attemptNumber}
             history={history}
@@ -77,11 +90,15 @@ export function ProblemPane({
 }
 
 function ActivityTab({
+  category,
+  slug,
   attemptId,
   attemptNumber,
   history,
   disputes,
 }: {
+  category: string;
+  slug: string;
   attemptId: string;
   attemptNumber: number;
   history: TestRunRow[];
@@ -183,6 +200,93 @@ function ActivityTab({
           ))}
         </ul>
       )}
+      <PastAttemptCode category={category} slug={slug} />
     </div>
+  );
+}
+
+const SNAPSHOT_TRIGGER_LABELS: Record<SnapshotTrigger, string> = {
+  scaffold: 'scaffold baseline',
+  save: 'autosave',
+  review: 'reviewed',
+  'dispute-apply': 'dispute fix applied',
+  'probe-append': 'follow-up added',
+  reset: 'saved before reset',
+};
+
+/**
+ * Read-only "past attempt code" list (NEE-363): a question solved by tests
+ * (or by review-free prose) and then reset-to-stub previously had no
+ * in-app way to recover the pre-reset content — the only viewable blob was
+ * a review's snapshotHash. This surfaces every snapshot ever taken for the
+ * question's solution files, newest first. No restore action — visible
+ * recovery is enough; copy/paste covers the rest.
+ */
+function PastAttemptCode({ category, slug }: { category: string; slug: string }) {
+  const [snapshots, setSnapshots] = useState<SnapshotRow[] | null>(null);
+
+  useCancellableEffect(
+    (cancelled) => {
+      setSnapshots(null);
+      getSnapshots(category, slug)
+        .then((got) => {
+          if (!cancelled()) setSnapshots(got);
+        })
+        .catch(() => {
+          if (!cancelled()) setSnapshots([]);
+        });
+    },
+    [category, slug],
+  );
+
+  if (snapshots == null || snapshots.length === 0) return null;
+
+  return (
+    <>
+      <h3 className="activity-heading">Past attempt code</h3>
+      <ul className="activity-list">
+        {snapshots.map((s) => (
+          <li key={s.id} className="activity-item activity-snapshot">
+            <SnapshotEntry snapshot={s} />
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+/** Collapsible past-attempt blob, fetched lazily on first expand — same
+ * details/summary lazy-load pattern as History.tsx's SnapshotCode. */
+function SnapshotEntry({ snapshot }: { snapshot: SnapshotRow }) {
+  const [content, setContent] = useState<string | null>(null);
+  const [state, setState] = useState<'idle' | 'loading' | 'loaded' | 'missing' | 'error'>('idle');
+
+  const load = () => {
+    if (state !== 'idle') return;
+    setState('loading');
+    getSnapshot(snapshot.id)
+      .then((s) => {
+        if (s.content != null) {
+          setContent(s.content);
+          setState('loaded');
+        } else {
+          setState('missing');
+        }
+      })
+      .catch(() => setState('error'));
+  };
+
+  return (
+    <details className="snapshot-details" onToggle={(e) => e.currentTarget.open && load()}>
+      <summary>
+        <span className="mono">{snapshot.relPath}</span>
+        <span className="cell-dim"> · {SNAPSHOT_TRIGGER_LABELS[snapshot.trigger]}</span>
+        <span className="activity-when"> · {relTime(snapshot.at)}</span>
+      </summary>
+      {state === 'loading' && <div className="pane-empty">Loading snapshot…</div>}
+      {state === 'missing' && <div className="pane-empty">Snapshot blob is gone from disk.</div>}
+      {state === 'error' && <div className="pane-empty">Failed to load the snapshot.</div>}
+      {state === 'loaded' && content != null && <pre className="snapshot-pre">{content}</pre>}
+    </details>
   );
 }

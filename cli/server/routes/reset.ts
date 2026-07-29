@@ -7,6 +7,7 @@ import { readJsonBody } from '../route-helpers.js';
 import type { WorkspaceSession } from '../session.js';
 import { performWorkspaceSwitch } from '../switch-orchestrator.js';
 import type { WorkspaceResetMode } from '../types.js';
+import { collectAtRiskProse } from '../workspace-reset.js';
 import type { RouteContext } from './context.js';
 import { computeWorkspaceInfo } from './workspace.js';
 
@@ -45,6 +46,16 @@ function getBusyEngineError(session: WorkspaceSession): string | null {
 }
 
 export function registerResetRoutes(app: Hono, ctx: RouteContext): void {
+  // Read-only — never gated on the busy-engine/swap checks below, since it
+  // mutates nothing. Powers the reset confirmation dialog's "N stories and M
+  // design answers will be reset" line (NEE-363): the same computation a
+  // 'full' reset would do, minus the archive/write.
+  app.get('/api/workspace/reset-preview', (c) => {
+    const workspaceRoot = ctx.requireWorkspaceRoot();
+    const { db } = ctx.requireSession();
+    return c.json({ atRiskProse: collectAtRiskProse(db, workspaceRoot) });
+  });
+
   app.post('/api/workspace/reset', async (c) => {
     const workspaceRoot = ctx.requireWorkspaceRoot();
     const body = await readJsonBody(c);

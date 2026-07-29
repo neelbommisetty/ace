@@ -806,6 +806,23 @@ code {
   gap: 4px;
 }
 
+.reset-at-risk {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(208, 59, 59, 0.35);
+  border-radius: 7px;
+  background: rgba(208, 59, 59, 0.09);
+}
+
+.reset-at-risk-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 /* ---- room ---------------------------------------------------------------- */
 
 .room {

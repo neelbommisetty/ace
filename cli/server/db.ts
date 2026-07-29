@@ -1012,6 +1012,18 @@ class SqliteAceDb implements AceDb {
     return r ? rowToSnapshot(r) : null;
   }
 
+  getSnapshot(id: string): SnapshotRow | null {
+    const r = this.stmt('SELECT * FROM snapshots WHERE id = ?').get(id) as SqlRow | undefined;
+    return r ? rowToSnapshot(r) : null;
+  }
+
+  listSnapshotsForQuestion(questionId: string): SnapshotRow[] {
+    const rows = this.stmt(
+      'SELECT * FROM snapshots WHERE question_id = ? ORDER BY at DESC, id DESC',
+    ).all(questionId) as SqlRow[];
+    return rows.map(rowToSnapshot);
+  }
+
   // -- generation jobs --------------------------------------------------------
 
   createGenerationJob(j: {

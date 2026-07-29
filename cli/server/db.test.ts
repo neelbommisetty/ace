@@ -1239,6 +1239,50 @@ describe('snapshots', () => {
     expect(db.getLatestSnapshot(q.id, 'questions/js-ts/debounce/nope.ts')).toBeNull();
     expect(db.getLatestSnapshot('nope', rel)).toBeNull();
   });
+
+  it('getSnapshot fetches by id, null for an unknown id', () => {
+    const q = makeQuestion();
+    const snap = db.addSnapshot({
+      questionId: q.id,
+      attemptId: null,
+      relPath: 'questions/js-ts/debounce/solution.ts',
+      hash: '4'.repeat(40),
+      trigger: 'reset',
+    });
+    expect(db.getSnapshot(snap.id)).toEqual(snap);
+    expect(db.getSnapshot('nope')).toBeNull();
+  });
+
+  it('listSnapshotsForQuestion returns every snapshot for the question, newest first', () => {
+    const q = makeQuestion();
+    const other = makeQuestion({ slug: 'other' });
+    const first = db.addSnapshot({
+      questionId: q.id,
+      attemptId: null,
+      relPath: 'questions/js-ts/debounce/solution.ts',
+      hash: '5'.repeat(40),
+      trigger: 'scaffold',
+    });
+    const second = db.addSnapshot({
+      questionId: q.id,
+      attemptId: null,
+      relPath: 'questions/js-ts/debounce/solution.ts',
+      hash: '6'.repeat(40),
+      trigger: 'reset',
+    });
+    // A different question's snapshot must never leak in.
+    db.addSnapshot({
+      questionId: other.id,
+      attemptId: null,
+      relPath: 'questions/js-ts/other/solution.ts',
+      hash: '7'.repeat(40),
+      trigger: 'scaffold',
+    });
+
+    const rows = db.listSnapshotsForQuestion(q.id);
+    expect(rows.map((r) => r.id)).toEqual([second.id, first.id]);
+    expect(db.listSnapshotsForQuestion('nope')).toEqual([]);
+  });
 });
 
 describe('generation jobs', () => {

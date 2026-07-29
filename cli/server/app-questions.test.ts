@@ -7,8 +7,10 @@
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { scaffoldQuestionAt } from '../lib/scaffold.js';
+import { saveBlob } from './blobs.js';
+import { toWorkspaceRelPath } from './files.js';
 import { makeApp, makeWorkspace, type WorkspaceHandle } from './test-support.js';
-import type { QuestionDetail, QuestionRow, QuestionWithStats } from './types.js';
+import type { QuestionDetail, QuestionRow, QuestionWithStats, SnapshotRow } from './types.js';
 
 let ws: WorkspaceHandle;
 
@@ -70,6 +72,102 @@ describe('GET /api/questions/:category/:slug', () => {
     expect(body.files).toHaveLength(1);
     expect(body.files[0]).toMatchObject({ name: 'story.md', kind: 'notes', readonly: false });
     expect(body.files.some((f) => f.kind === 'test')).toBe(false);
+  });
+});
+
+describe('GET /api/questions/:category/:slug/snapshots', () => {
+  it('returns snapshots for the solution file only, newest first', async () => {
+    const q = makeQuestion();
+    const rel = toWorkspaceRelPath(ws.root, path.join(q.dirPath, 'solution.ts'));
+    const testRel = toWorkspaceRelPath(ws.root, path.join(q.dirPath, 'solution.test.ts'));
+    const older = ws.session.db.addSnapshot({
+      questionId: q.id,
+      attemptId: null,
+      relPath: rel,
+      hash: saveBlob(ws.root, 'old code\n'),
+      trigger: 'scaffold',
+    });
+    const newer = ws.session.db.addSnapshot({
+      questionId: q.id,
+      attemptId: null,
+      relPath: rel,
+      hash: saveBlob(ws.root, 'newer code\n'),
+      trigger: 'reset',
+    });
+    // A test-file snapshot must never leak into this "past attempt code" list.
+    ws.session.db.addSnapshot({
+      questionId: q.id,
+      attemptId: null,
+      relPath: testRel,
+      hash: saveBlob(ws.root, 'it("t", () => {});\n'),
+      trigger: 'scaffold',
+    });
+
+    const fetch = buildApp();
+    const res = await fetch(`/api/questions/${q.category}/${q.slug}/snapshots`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SnapshotRow[];
+    expect(body.map((s) => s.id)).toEqual([newer.id, older.id]);
+  });
+
+  it('is empty when the question has no snapshots yet', async () => {
+    const q = makeQuestion();
+    const fetch = buildApp();
+    const res = await fetch(`/api/questions/${q.category}/${q.slug}/snapshots`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+  });
+
+  it('404s for an unknown category/slug', async () => {
+    const fetch = buildApp();
+    const res = await fetch('/api/questions/nope/nope/snapshots');
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/snapshots/:id', () => {
+  it('returns the snapshot row plus its blob content', async () => {
+    const q = makeQuestion();
+    const rel = toWorkspaceRelPath(ws.root, path.join(q.dirPath, 'solution.ts'));
+    const snap = ws.session.db.addSnapshot({
+      questionId: q.id,
+      attemptId: null,
+      relPath: rel,
+      hash: saveBlob(ws.root, 'export const x = 1;\n'),
+      trigger: 'reset',
+    });
+
+    const fetch = buildApp();
+    const res = await fetch(`/api/snapshots/${snap.id}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SnapshotRow & { content: string | null };
+    expect(body.content).toBe('export const x = 1;\n');
+    expect(body.relPath).toBe(rel);
+    expect(body.trigger).toBe('reset');
+  });
+
+  it('content is null when the blob is gone from disk (row survives)', async () => {
+    const q = makeQuestion();
+    const rel = toWorkspaceRelPath(ws.root, path.join(q.dirPath, 'solution.ts'));
+    const snap = ws.session.db.addSnapshot({
+      questionId: q.id,
+      attemptId: null,
+      relPath: rel,
+      hash: 'f'.repeat(40),
+      trigger: 'reset',
+    });
+
+    const fetch = buildApp();
+    const res = await fetch(`/api/snapshots/${snap.id}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SnapshotRow & { content: string | null };
+    expect(body.content).toBeNull();
+  });
+
+  it('404s for an unknown id', async () => {
+    const fetch = buildApp();
+    const res = await fetch('/api/snapshots/nope');
+    expect(res.status).toBe(404);
   });
 });
 

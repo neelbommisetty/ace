@@ -410,6 +410,8 @@ function RoomInner({
             >
               <ProblemPane
                 readme={detail.readme}
+                category={question.category}
+                slug={question.slug}
                 attemptId={refAttempt?.id ?? ''}
                 attemptNumber={refAttempt?.number ?? 0}
                 history={runs.history}
@@ -568,6 +570,7 @@ function RoomInner({
       {freshOpen && refAttempt != null && (
         <FreshAttemptDialog
           nextNumber={refAttempt.number + 1}
+          category={question.category}
           busy={freshBusy}
           error={freshError}
           onConfirm={confirmFresh}

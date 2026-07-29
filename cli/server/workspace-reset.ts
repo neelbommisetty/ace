@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { lookupCategoryConfig } from '../lib/categories.js';
+import { isProseAnswer, lookupCategoryConfig } from '../lib/categories.js';
 import { getStubContent } from '../lib/scaffold.js';
 import { readBlob, saveBlob } from './blobs.js';
 import { readWorkspaceFile, toWorkspaceRelPath, writeWorkspaceFile } from './files.js';
-import type { AceDb } from './types.js';
+import type { AceDb, AtRiskProseFile } from './types.js';
 
 /**
  * Pure fs+db helpers backing "clear workspace" (NEE-165). No HTTP, no
@@ -106,6 +106,42 @@ export function collectRestorePlan(db: AceDb, workspaceRoot: string): RestorePla
   }
 
   return plan;
+}
+
+/**
+ * Which prose (behavioral story.md / design notes.md) solution files a
+ * 'full' reset would actually overwrite with scaffold content right now
+ * (NEE-363) — read-only, built on top of `collectRestorePlan`. A coding
+ * question's solution.ts is deliberately excluded: it gets its own
+ * 'reset'-trigger snapshot too, but naming *that* loss isn't this list's
+ * job — it exists so the reset confirmation dialog can say "2 stories and 1
+ * design answer will be reset" instead of the old, silent "solution files
+ * are reset to scaffold" line. A file that was never touched (still equal
+ * to its own baseline) isn't "at risk" — nothing would actually change.
+ */
+export function collectAtRiskProse(db: AceDb, workspaceRoot: string): AtRiskProseFile[] {
+  const plan = collectRestorePlan(db, workspaceRoot);
+  const atRisk: AtRiskProseFile[] = [];
+
+  for (const entry of plan) {
+    if (entry.currentContent == null) continue;
+    if (entry.currentContent === entry.baselineContent) continue;
+
+    const config = lookupCategoryConfig(entry.category);
+    if (!config || !isProseAnswer(config)) continue;
+
+    const question = db.getQuestion(entry.category, entry.slug);
+    if (!question) continue;
+
+    atRisk.push({
+      category: entry.category,
+      slug: entry.slug,
+      title: question.title,
+      relPath: entry.relPath,
+    });
+  }
+
+  return atRisk;
 }
 
 /**

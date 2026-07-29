@@ -20,11 +20,13 @@ import type {
   RecentWorkspace,
   ReviewRow,
   SettingsInfo,
+  SnapshotRow,
   StarterPackInstallResult,
   TestRunRow,
   TestRunTrigger,
   WorkspaceInfo,
   WorkspaceResetMode,
+  WorkspaceResetPreview,
   WorkspaceResetResult,
   WorkspaceSwitchResult,
 } from './types';
@@ -186,6 +188,18 @@ export function getQuestions(): Promise<QuestionWithStats[]> {
 
 export function getQuestionDetail(category: string, slug: string): Promise<QuestionDetail> {
   return request(questionPath(category, slug));
+}
+
+/** Newest first, solution files only (never test files) — the Room Activity
+ * tab's read-only "Past attempt code" list (NEE-363). */
+export function getSnapshots(category: string, slug: string): Promise<SnapshotRow[]> {
+  return request(questionPath(category, slug, '/snapshots'));
+}
+
+/** `content` is null when the blob is gone from disk — mirrors getReview's
+ * snapshotContent nullability. */
+export function getSnapshot(id: string): Promise<SnapshotRow & { content: string | null }> {
+  return request(`/api/snapshots/${encodeURIComponent(id)}`);
 }
 
 /**
@@ -410,6 +424,14 @@ export function putSettings(body: {
  */
 export function installStarterPack(): Promise<StarterPackInstallResult> {
   return request('/api/starter-pack', { method: 'POST' });
+}
+
+/** Which hand-written prose files a 'full' reset would overwrite right now
+ * (NEE-363) — fetched before the confirmation dialog opens so it can name
+ * what's actually at risk instead of a generic "solution files are reset"
+ * line. */
+export function getResetPreview(): Promise<WorkspaceResetPreview> {
+  return request('/api/workspace/reset-preview');
 }
 
 export function resetWorkspace(

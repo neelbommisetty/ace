@@ -51,6 +51,14 @@ function writeCodingQuestion(
   return dir;
 }
 
+function writeBehavioralQuestion(category: string, slug: string, story = '# Story\n'): string {
+  const dir = questionDir(category, slug);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'README.md'), `# ${slug}\n`, 'utf-8');
+  fs.writeFileSync(path.join(dir, 'story.md'), story, 'utf-8');
+  return dir;
+}
+
 interface BusyFlags {
   runner: boolean;
   reviews: boolean;
@@ -583,5 +591,50 @@ describe('POST /api/workspace/reset — archive-failure recovery', () => {
     expect(workspaceRes.status).toBe(200);
 
     await closeWorkspaceSession(harness.getSession()!);
+  });
+});
+
+describe('GET /api/workspace/reset-preview', () => {
+  it('names a behavioral story.md that differs from its scaffold baseline', async () => {
+    const dir = writeBehavioralQuestion('behavioral', 'disagreed', '# my real story\n');
+    const bus = createBus();
+    const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
+    const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines: busyEngines(flags) });
+    // Reconciliation writes the js-ts fixture as source: 'manual'; the
+    // behavioral one needs a matching row before it shows up in the plan.
+    session.db.upsertQuestion({
+      category: 'behavioral',
+      slug: 'disagreed',
+      title: 'A Time I Disagreed',
+      difficulty: 'medium',
+      suggestedMinutes: 8,
+      dirPath: dir,
+      source: 'manual',
+    });
+    const harness = makeHarness(session);
+    const app = buildApp(bus, harness, busyEngines(flags));
+
+    const res = await request(app, `http://localhost/api/workspace/reset-preview?t=${TOKEN}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { atRiskProse: { category: string; slug: string; title: string }[] };
+    expect(body.atRiskProse).toEqual([
+      expect.objectContaining({ category: 'behavioral', slug: 'disagreed', title: 'A Time I Disagreed' }),
+    ]);
+
+    await closeWorkspaceSession(session);
+  });
+
+  it('is empty when there are no questions (or nothing prose has changed)', async () => {
+    const bus = createBus();
+    const flags: BusyFlags = { runner: false, reviews: false, disputes: false, generation: false, brainstorm: false };
+    const session = createWorkspaceSession({ workspaceRoot: tempRoot, bus, watch: false, engines: busyEngines(flags) });
+    const harness = makeHarness(session);
+    const app = buildApp(bus, harness, busyEngines(flags));
+
+    const res = await request(app, `http://localhost/api/workspace/reset-preview?t=${TOKEN}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ atRiskProse: [] });
+
+    await closeWorkspaceSession(session);
   });
 });

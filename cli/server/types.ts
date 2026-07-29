@@ -5,9 +5,9 @@
  * SPA consumes the same JSON wire shapes. The wire half lives in
  * shared/wire-types.ts (NEE-284) — compiled by both tsconfigs — and is
  * re-exported here so existing `./types.js` importers are untouched. This
- * file keeps only the server-only half: snapshot rows and the `AceDb`
- * interface. JSON over the wire is camelCase; SQLite columns are snake_case
- * (db.ts maps). All timestamps are ISO 8601 UTC strings.
+ * file keeps only the server-only half: the `AceDb` interface. JSON over the
+ * wire is camelCase; SQLite columns are snake_case (db.ts maps). All
+ * timestamps are ISO 8601 UTC strings.
  */
 
 export * from '../../shared/wire-types.js';
@@ -37,30 +37,14 @@ import type {
   QuestionSource,
   QuestionWithStats,
   ReviewRow,
+  SnapshotRow,
+  SnapshotTrigger,
   TestCaseResult,
   TestRunRow,
   TestRunStatus,
   TestRunSummary,
   TestRunTrigger,
 } from '../../shared/wire-types.js';
-
-export type SnapshotTrigger =
-  | 'scaffold'
-  | 'save'
-  | 'review'
-  | 'dispute-apply'
-  | 'probe-append'
-  | 'reset';
-
-export interface SnapshotRow {
-  id: string;
-  questionId: string;
-  attemptId: string | null;
-  relPath: string;
-  hash: string; // sha1, content stored at .ace/blobs/<hash>
-  at: string;
-  trigger: SnapshotTrigger;
-}
 
 // ---------------------------------------------------------------------------
 // The db layer contract. Implemented in db.ts over node:sqlite; routes and
@@ -204,6 +188,10 @@ export interface AceDb {
   getLatestSnapshot(questionId: string, relPath: string, trigger?: SnapshotTrigger): SnapshotRow | null;
   /** Oldest snapshot for a path (optionally by trigger) — the pristine scaffold baseline. */
   getFirstSnapshot(questionId: string, relPath: string, trigger?: SnapshotTrigger): SnapshotRow | null;
+  /** By primary key, for the blob-view route (NEE-363) — mirrors getReview(id)/getDispute(id). */
+  getSnapshot(id: string): SnapshotRow | null;
+  /** Every snapshot ever taken for a question, newest first — the "Past attempt code" list (NEE-363). */
+  listSnapshotsForQuestion(questionId: string): SnapshotRow[];
 
   createGenerationJob(j: {
     category: string;

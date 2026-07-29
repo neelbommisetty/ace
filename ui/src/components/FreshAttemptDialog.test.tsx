@@ -9,6 +9,7 @@ function renderDialog(props: Partial<ComponentProps<typeof FreshAttemptDialog>> 
   render(
     <FreshAttemptDialog
       nextNumber={3}
+      category="js-ts"
       busy={false}
       error={null}
       onConfirm={onConfirm}
@@ -40,6 +41,7 @@ describe('FreshAttemptDialog', () => {
     const { unmount } = render(
       <FreshAttemptDialog
         nextNumber={3}
+        category="js-ts"
         busy={false}
         error={null}
         onConfirm={vi.fn()}
@@ -77,5 +79,25 @@ describe('FreshAttemptDialog', () => {
     startBtn.focus();
     fireEvent.keyDown(document, { key: 'Tab' });
     expect(closeBtn).toHaveFocus();
+  });
+
+  // NEE-363: prose categories name what's actually at risk ("story"/"notes",
+  // not "code") and default to Keep — same as coding's unchanged default.
+  it('names the story for a behavioral question and defaults to keeping it', () => {
+    renderDialog({ category: 'behavioral' });
+    expect(screen.getByText(/Your current story is snapshotted/)).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Keep current story/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /Reset story to stub/ })).not.toBeChecked();
+  });
+
+  it('names the notes for a design question and defaults to keeping them', () => {
+    renderDialog({ category: 'design-fe' });
+    expect(screen.getByText(/Your current notes are snapshotted/)).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Keep current notes/ })).toBeChecked();
+  });
+
+  it('coding default is unchanged: "Keep current code" is checked first', () => {
+    renderDialog({ category: 'js-ts' });
+    expect(screen.getByRole('radio', { name: /Keep current code/ })).toBeChecked();
   });
 });
