@@ -60,6 +60,11 @@ const VALID_GENERATED_PAYLOAD = {
   // Required-and-nullable in GeneratedQuestionSchema (strict structured
   // outputs, NEE-263) — the key must be present even when unused.
   interviewerPacket: null,
+  // competency/followUps (NEE-343, behavioral-only) — same required-and-
+  // nullable rule; this fixture drives coding-category tests, so both stay
+  // null.
+  competency: null,
+  followUps: null,
 };
 
 /** The opts shape the pipeline's streaming call passes through to the fake. */
@@ -1126,5 +1131,215 @@ describe('verified pipeline wiring', () => {
     const solution = fs.readFileSync(path.join(question.dirPath, 'solution.ts'), 'utf8');
     expect(solution).toContain('// TODO: implement');
     expect(solution).not.toContain('return [0, 1];');
+  });
+});
+
+describe('behavioral generation (NEE-343)', () => {
+  /** Seeds an existing behavioral question directly on disk + in the db, mirroring what a prior scaffold produced. */
+  function seedBehavioralQuestion(opts: { slug: string; title: string; competency: string | null }) {
+    const dir = path.join(tempRoot, 'questions', 'behavioral', opts.slug);
+    fs.mkdirSync(dir, { recursive: true });
+    const competencyLine = opts.competency ? `**Competency:** ${opts.competency}\n` : '';
+    fs.writeFileSync(
+      path.join(dir, 'README.md'),
+      `# ${opts.title}\n\n**Category:** Behavioral\n**Difficulty:** medium\n**Suggested Time:** ~8 minutes\n${competencyLine}\n---\n\nSome prompt.\n`,
+    );
+    db.upsertQuestion({
+      category: 'behavioral',
+      slug: opts.slug,
+      title: opts.title,
+      difficulty: 'medium',
+      suggestedMinutes: 8,
+      dirPath: dir,
+      source: 'manual',
+    });
+  }
+
+  it('feeds existing behavioral titles + competencies into the generate user message, requiring a distinct competency', async () => {
+    seedBehavioralQuestion({
+      slug: 'a-conflict-story',
+      title: 'A Conflict You Navigated',
+      competency: 'conflict',
+    });
+    seedBehavioralQuestion({
+      slug: 'ambiguous-scope',
+      title: 'Ambiguous Scope Mid-Project',
+      competency: 'ambiguity',
+    });
+
+    const { llm, calls } = makeFakeLlm([
+      () => ({
+        ...VALID_GENERATED_PAYLOAD,
+        title: 'A New Story',
+        slug: 'a-new-story',
+        competency: 'mentorship',
+        followUps: ['probe'],
+      }),
+    ]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engine.start({ category: 'behavioral', difficulty: 'medium', topic: 'mentoring' });
+    await waitFor('generation-done');
+
+    expect(calls).toHaveLength(1);
+    const userMessage = calls[0].messages[1]?.content ?? '';
+    expect(userMessage).toContain('Existing Behavioral Questions');
+    expect(userMessage).toContain('"A Conflict You Navigated" — competency: conflict');
+    expect(userMessage).toContain('"Ambiguous Scope Mid-Project" — competency: ambiguity');
+    expect(userMessage).toContain('choose a distinct');
+    expect(userMessage).toContain('competency from the closed vocabulary');
+  });
+
+  it('does not append a corpus note for coding categories, and appends nothing when no behavioral questions exist yet', async () => {
+    const { llm: llmCoding, calls: callsCoding } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
+    const engineCoding = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm: llmCoding,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engineCoding.start({ category: 'js-ts', difficulty: 'medium', topic: 'irrelevant' });
+    await waitFor('generation-done');
+    expect(callsCoding[0].messages[1]?.content ?? '').not.toContain('Existing Behavioral Questions');
+
+    const { llm: llmBehavioral, calls: callsBehavioral } = makeFakeLlm([
+      () => ({ ...VALID_GENERATED_PAYLOAD, competency: 'conflict', followUps: ['probe'] }),
+    ]);
+    const engineBehavioral = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm: llmBehavioral,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engineBehavioral.start({ category: 'behavioral', difficulty: 'medium', topic: 'first one' });
+    await waitFor('generation-done');
+    expect(callsBehavioral[0].messages[1]?.content ?? '').not.toContain(
+      'Existing Behavioral Questions',
+    );
+  });
+
+  it('writes the competency into the README and the followUps into a hidden .probes.md', async () => {
+    const { llm } = makeFakeLlm([
+      () => ({
+        ...VALID_GENERATED_PAYLOAD,
+        title: 'A Conflict You Navigated',
+        slug: 'conflict-story',
+        competency: 'conflict',
+        followUps: ['What would the other engineer say?', 'How would this scale to 10x?'],
+      }),
+    ]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engine.start({ category: 'behavioral', difficulty: 'medium', topic: 'conflict' });
+    const { question } = await waitFor('generation-done');
+
+    const readme = fs.readFileSync(path.join(question.dirPath, 'README.md'), 'utf8');
+    expect(readme).toContain('**Competency:** conflict');
+
+    const probes = fs.readFileSync(path.join(question.dirPath, '.probes.md'), 'utf8');
+    expect(probes).toContain('What would the other engineer say?');
+    expect(probes).toContain('How would this scale to 10x?');
+
+    // .probes.md is a dotfile and never listed among the scaffolded files
+    // returned to the caller's own reconciler-facing list — story.md/README
+    // only, mirroring .interviewer.md's own invisibility.
+    expect(fs.readdirSync(question.dirPath).sort()).toEqual([
+      '.probes.md',
+      'README.md',
+      'story.md',
+    ]);
+  });
+
+  it('normalizes a model competency with off-vocabulary casing/spacing before writing the README', async () => {
+    const { llm } = makeFakeLlm([
+      () => ({
+        ...VALID_GENERATED_PAYLOAD,
+        title: 'Influence Story',
+        slug: 'influence-story',
+        competency: '  Influence Without Authority  ',
+        followUps: null,
+      }),
+    ]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engine.start({ category: 'behavioral', difficulty: 'medium', topic: 'influence' });
+    const { question } = await waitFor('generation-done');
+
+    const readme = fs.readFileSync(path.join(question.dirPath, 'README.md'), 'utf8');
+    expect(readme).toContain('**Competency:** influence-without-authority');
+  });
+
+  it('degrades an unrecognized competency to no README line rather than failing the job', async () => {
+    const { llm } = makeFakeLlm([
+      () => ({
+        ...VALID_GENERATED_PAYLOAD,
+        title: 'Unrecognized Value',
+        slug: 'unrecognized-value',
+        competency: 'leadership', // not in the closed vocabulary
+        followUps: null,
+      }),
+    ]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engine.start({ category: 'behavioral', difficulty: 'medium', topic: 'odd' });
+    const { question } = await waitFor('generation-done');
+
+    const readme = fs.readFileSync(path.join(question.dirPath, 'README.md'), 'utf8');
+    expect(readme).not.toContain('**Competency:**');
+  });
+
+  it('never emits a phantom verify step in the generation-progress/done flow for behavioral', async () => {
+    const phases: string[] = [];
+    const { llm } = makeFakeLlm([
+      () => ({ ...VALID_GENERATED_PAYLOAD, competency: 'failure', followUps: ['probe'] }),
+    ]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      // A verifier that would fail loudly if ever invoked — behavioral must
+      // never reach it.
+      verify: (async () => {
+        throw new Error('verify must never be called for a no-test category');
+      }) as VerifyFn,
+    });
+    bus.subscribe((name, data) => {
+      if (name === 'generation-progress') phases.push((data as { phase: string }).phase);
+    });
+    engine.start({ category: 'behavioral', difficulty: 'medium', topic: 'failure story' });
+    await waitFor('generation-done');
+
+    expect(phases).not.toContain('verifying');
+    expect(phases).not.toContain('repairing');
   });
 });

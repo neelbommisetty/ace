@@ -225,9 +225,9 @@ describe('GET /api/generation/jobs', () => {
 });
 
 describe('generation-job result redaction', () => {
-  it('strips referenceSolution/interviewerPacket/solutionCode from both job routes', async () => {
+  it('strips referenceSolution/interviewerPacket/solutionCode/followUps from both job routes', async () => {
     const job = ws.session.db.createGenerationJob({
-      category: 'js-ts',
+      category: 'behavioral',
       difficulty: 'easy',
       topic: 'secrets',
     });
@@ -240,6 +240,11 @@ describe('generation-job result redaction', () => {
         referenceSolution: 'SECRET_REFERENCE',
         interviewerPacket: 'SECRET_PACKET',
         solutionCode: 'SECRET_SOLUTION',
+        // followUps (NEE-343) joined SPOILER_KEYS — a probe read before the
+        // candidate writes their story is worthless the same way a spoiled
+        // reference solution is.
+        followUps: ['SECRET_PROBE'],
+        competency: 'conflict',
       },
     });
     const fetch = buildApp();
@@ -247,9 +252,11 @@ describe('generation-job result redaction', () => {
     const listRes = await fetch('/api/generation/jobs');
     const listBody = JSON.stringify(await listRes.json());
     expect(listBody).toContain('visible tests');
+    expect(listBody).toContain('conflict');
     expect(listBody).not.toContain('SECRET_REFERENCE');
     expect(listBody).not.toContain('SECRET_PACKET');
     expect(listBody).not.toContain('SECRET_SOLUTION');
+    expect(listBody).not.toContain('SECRET_PROBE');
 
     const oneRes = await fetch(`/api/generation/jobs/${job.id}`);
     const oneBody = JSON.stringify(await oneRes.json());
@@ -257,6 +264,7 @@ describe('generation-job result redaction', () => {
     expect(oneBody).not.toContain('SECRET_REFERENCE');
     expect(oneBody).not.toContain('SECRET_PACKET');
     expect(oneBody).not.toContain('SECRET_SOLUTION');
+    expect(oneBody).not.toContain('SECRET_PROBE');
 
     // The db row itself keeps the full result — retry's scaffold-only
     // resume depends on it. Only the API boundary redacts.

@@ -18,6 +18,7 @@ import type { VerifyFn } from '../lib/gen-verify.js';
 import { chatObjectStream, type LLMProvider } from '../lib/llm.js';
 import { formatReferenceSolutionMd, scaffoldQuestionAt } from '../lib/scaffold.js';
 import { splitSpoilers } from '../lib/spoilers.js';
+import { extractCompetencyFromReadme, normalizeCompetency } from '../../shared/competencies.js';
 import { NULL_AI_LOG, type AiLog } from './ai-log.js';
 import { nowIso } from './ids.js';
 import { createJobRegistry, toEngineErrorMessage } from './job-engine.js';
@@ -64,6 +65,46 @@ function resolveSlug(
     if (!fs.existsSync(dir) && !db.getQuestion(category, candidate)) return candidate;
   }
   throw new Error(`could not find an available slug for "${base}" — too many collisions`);
+}
+
+/**
+ * Corpus-dedupe feed for behavioral generation (NEE-343): every existing
+ * behavioral question's title and competency, appended to the generate user
+ * message so the model picks a distinct competency instead of five prompts
+ * in a row collapsing onto "conflict". Deliberately behavioral-scoped — there
+ * is no dedupe anywhere else in the app, and this does not generalise to
+ * coding/design categories.
+ *
+ * The db carries no competency column (the README is the source of truth,
+ * kept visible on purpose — see shared/competencies.ts), so competencies are
+ * read back off each question's scaffolded README on disk. A README that
+ * vanished between `listQuestions()` and this read (or predates NEE-343 and
+ * has no `**Competency:**` line at all) just contributes "unknown" rather
+ * than dropping the title from the feed.
+ */
+function buildBehavioralCorpusNote(db: AceDb): string {
+  const existing = db.listQuestions().filter((q) => q.category === 'behavioral');
+  if (existing.length === 0) return '';
+
+  const lines = existing.map((q) => {
+    let readme = '';
+    try {
+      readme = fs.readFileSync(path.join(q.dirPath, 'README.md'), 'utf8');
+    } catch {
+      // dir vanished between listQuestions() and this read — fall through
+    }
+    const competency = extractCompetencyFromReadme(readme);
+    return `- "${q.title}" — competency: ${competency ?? 'unknown'}`;
+  });
+
+  return `
+
+## Existing Behavioral Questions in This Workspace
+
+Do not repeat the competency any of these already probe — choose a distinct
+competency from the closed vocabulary.
+
+${lines.join('\n')}`;
 }
 
 /** Injectable seam so unit tests never need a real API key. */
@@ -187,10 +228,11 @@ export function createGenerationEngine(opts: {
         if (!provider) throw new Error('no LLM API key configured — add one in Settings');
 
         const config = getCategoryConfig(category);
+        const corpusNote = category === 'behavioral' ? buildBehavioralCorpusNote(db) : '';
         const userMessage = `Generate a ${difficulty} difficulty ${config.name} interview question about: ${job.topic}
 
 Category slug: ${category}
-Question type: ${config.type}`;
+Question type: ${config.type}${corpusNote}`;
 
         // Full verified pipeline: generate → edge-audit → sandbox verify with
         // repair loop (design categories: critique pass, no sandbox). Each
@@ -331,6 +373,13 @@ Question type: ${config.type}`;
                 referenceSolutionMd: parsed.referenceSolution
                   ? formatReferenceSolutionMd(parsed.referenceSolution)
                   : undefined,
+                // Normalized defensively (NEE-343): the model can drift on
+                // casing/spacing, and an unrecognized value degrades to no
+                // README line rather than failing the whole job — this is
+                // interview framing, not something worth burning a retry
+                // over.
+                competency: parsed.competency ? normalizeCompetency(parsed.competency) : undefined,
+                followUps: parsed.followUps ?? undefined,
               },
               { writeScorecard: false },
             ));

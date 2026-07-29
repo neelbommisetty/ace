@@ -48,7 +48,9 @@ describe('generation schemas are strict-structured-output compatible', () => {
   it('GeneratedQuestionSchema lists every property in required', () => {
     const emitted = zodSchema(GeneratedQuestionSchema).jsonSchema as JsonSchemaObjectNode;
     expect(Object.keys(emitted.properties ?? {}).sort()).toEqual([
+      'competency',
       'description',
+      'followUps',
       'interviewerPacket',
       'referenceSolution',
       'signature',
@@ -94,6 +96,8 @@ describe('generation schemas are strict-structured-output compatible', () => {
       solutionCode: null,
       referenceSolution: null,
       interviewerPacket: null,
+      competency: null,
+      followUps: null,
     });
     expect(question.slug ?? undefined).toBeUndefined();
 

@@ -36,6 +36,16 @@ export const GeneratedQuestionSchema = z.object({
   solutionCode: z.string().nullable(),
   referenceSolution: z.string().nullable(),
   interviewerPacket: z.string().nullable(),
+  // Behavioral-only (NEE-343): the single competency this question probes,
+  // freeform text normalized downstream via shared/competencies.js's
+  // normalizeCompetency (never a z.enum here — a near-miss casing/spacing
+  // variant should be tolerated, not 400 the whole paid call). Null for
+  // every coding/design category.
+  competency: z.string().nullable(),
+  // Behavioral-only (NEE-343): candidate follow-up probes for the interview
+  // drill-down, written to the hidden `.probes.md` bank (NEE-345 reads it).
+  // Null for every coding/design category.
+  followUps: z.array(z.string()).nullable(),
 });
 
 export type GeneratedQuestion = z.infer<typeof GeneratedQuestionSchema>;
@@ -403,10 +413,18 @@ export async function generateVerifiedQuestion(
   // Backstop registration (NEE-268): every spoiler value that materialises is
   // handed to the recorder's literal scrubber, catching verbatim echoes that
   // structural masking can't (e.g. a provider error quoting the prompt).
+  // followUps (NEE-343) is the one array-valued spoiler — each probe string
+  // is registered individually so an echo of any single one is still caught.
   const registerSpoilers = (q: GeneratedQuestion): void => {
     for (const key of SPOILER_KEYS) {
       const value = q[key];
-      if (typeof value === 'string' && value.length > 0) steps.registerSecret(value);
+      if (typeof value === 'string' && value.length > 0) {
+        steps.registerSecret(value);
+      } else if (Array.isArray(value)) {
+        for (const item of value) {
+          if (typeof item === 'string' && item.length > 0) steps.registerSecret(item);
+        }
+      }
     }
   };
 

@@ -115,10 +115,13 @@ describe('createAiLog recorder', () => {
     expect(summary.slug).toBe('generate');
     expect(summary.promptWithheld).toBe(false);
     // withheldKeys declared on STARTED: schema keys minus WIRE_SAFE_KEYS.
+    // followUps (NEE-343, behavioral-only) joined SPOILER_KEYS alongside
+    // interviewerPacket — see spoilers.ts for the reasoning.
     expect(summary.withheldKeys).toEqual([
       'solutionCode',
       'referenceSolution',
       'interviewerPacket',
+      'followUps',
     ]);
     // The multi-KB bodies never ride the wire.
     expect('promptText' in summary).toBe(false);

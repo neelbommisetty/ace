@@ -24,6 +24,27 @@ out loud. The interviewer's job here is to ask, listen, and press with
 follow-ups — not to construct an elaborate scenario the way a coding or
 design prompt does.
 
+Every question targets exactly one competency from this closed vocabulary
+(`shared/competencies.ts` — the `competency` output field must be one of
+these values, verbatim, lowercase, hyphenated):
+
+- `conflict` — disagreement with a peer, manager, or another team, resolved
+  without escalating past the candidate's own authority.
+- `ambiguity` — a call made with incomplete requirements or information, and
+  how the candidate resolved (not avoided) the uncertainty.
+- `failure` — a project, decision, or delivery the candidate owned that went
+  wrong, and what they did about it.
+- `influence-without-authority` — getting another person or team to change
+  course without having formal authority over them.
+- `prioritisation` — a real trade-off under a deadline or resource
+  constraint, and what got cut and why.
+- `mentorship` — developing another engineer's skill or judgment, including
+  when it didn't go smoothly.
+- `receiving-feedback` — critical feedback the candidate received and what
+  they did with it afterward, not feedback they gave.
+- `ownership` — going beyond the letter of the candidate's role to see a
+  problem through, distinct from `failure` (no bad outcome required here).
+
 ## Difficulty Calibration
 
 Suggested times: easy 5 min, medium 8 min, hard 10 min.
@@ -67,6 +88,19 @@ This is a prose exercise, not a coding exercise:
   trick question, not double-barreled), that it targets one clear
   competency, and that it isn't a thinly-veiled duplicate of a stock
   "tell me about a time" prompt.
+- Generation MUST emit `competency`: exactly one value from the closed
+  vocabulary above, chosen to match the prompt. If the user message lists
+  existing behavioral questions already in the workspace, `competency` must
+  be distinct from every one listed — do not repeat a competency that's
+  already covered.
+- Generation MUST emit `followUps`: an array of 2–4 candidate drill-down
+  probes an interviewer could ask once the candidate has answered, each from
+  a genuinely different angle (e.g. push on a vague claim, ask what the
+  other party would say, ask how the approach would change at 10x scale).
+  These are never shown to the candidate before they write their story —
+  they are stored in a hidden probe bank for a later follow-up round, so
+  write them as real, specific questions, not generic prompts like "tell me
+  more."
 
 ## Example Strong vs Weak Answer
 
@@ -165,15 +199,16 @@ Red flags:
 ## Example Directions
 
 - **A disagreement with a peer engineer over a technical approach** that had
-  to be resolved without escalating to a manager — probes influence without
-  authority and conflict navigation.
+  to be resolved without escalating to a manager — `conflict`, with a side
+  of `influence-without-authority` if the resolution required winning the
+  peer over rather than a manager's ruling.
 - **A project or feature that shipped late or was scrapped**, where the
-  candidate had real responsibility for the outcome — probes ownership of
-  failure and reflection.
+  candidate had real responsibility for the outcome — `failure`.
 - **Requirements that changed or were ambiguous mid-project**, forcing a
-  call without complete information — probes ambiguity and prioritization
-  under pressure.
+  call without complete information — `ambiguity`.
 - **Receiving critical feedback that stung**, and what the candidate did
-  with it afterward — probes self-awareness and growth orientation.
+  with it afterward — `receiving-feedback`.
 - **Prioritizing under a hard deadline** when not everything could get
-  done — probes trade-off reasoning and communicating scope cuts.
+  done — `prioritisation`.
+- **Helping a struggling teammate or junior engineer improve**, including a
+  case where the first attempt at mentoring didn't land — `mentorship`.

@@ -32,6 +32,11 @@ const PAYLOAD = {
   solutionCode: `export function countCanaries(coop) { return coop.length; } // ${CANARY}`,
   referenceSolution: `export function countCanaries(coop: string[]): number {\n  // ${CANARY} — the hidden reference body\n  return coop.length;\n}\n`,
   interviewerPacket: `## Capability Tested\n\n${CANARY} hidden interviewer guidance.`,
+  // followUps (NEE-343) joined SPOILER_KEYS alongside interviewerPacket —
+  // canary-laden here too so a leak of the probe bank is caught the same
+  // way. competency is wire-safe, so no canary needed on it.
+  competency: null,
+  followUps: [`${CANARY} probe leak attempt`],
 };
 
 const AUDIT = {

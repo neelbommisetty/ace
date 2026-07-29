@@ -24,6 +24,8 @@ const STAGE1: GeneratedQuestion = {
   solutionCode: null,
   referenceSolution: 'export function createAutosaver() {\n  return {} as never;\n}\n',
   interviewerPacket: '## Capability Tested\n\nConcurrency realities.',
+  competency: null,
+  followUps: null,
 };
 
 const AUDIT_NOOP: EdgeAuditResult = {
@@ -234,6 +236,8 @@ describe('generateVerifiedQuestion', () => {
       solutionCode: null,
       referenceSolution: null,
       interviewerPacket: '## Capability Tested\n\nAmbiguity → invariants.',
+      competency: null,
+      followUps: null,
     };
     const critique: EdgeAuditResult = {
       edgeCases: [{ name: 'requirements ambiguity', covered: false, action: 'update-question' }],
@@ -411,6 +415,36 @@ describe('step recording (NEE-268)', () => {
       ['verify', 'skipped', 'not applicable to design questions'],
     ]);
     expect(recorded[1].label).toBe('Critiquing requirements');
+  });
+
+  it('records a skipped sandbox step for behavioral categories — no phantom verify stage, no repair loop off a null testCode (NEE-343)', async () => {
+    const behavioralStage1: GeneratedQuestion = {
+      ...STAGE1,
+      signature: null,
+      testCode: null,
+      referenceSolution: null,
+      competency: 'conflict',
+      followUps: ['What would the other engineer say happened?'],
+    };
+    const { sink, recorded } = makeStepsSink();
+    const { llm } = makeLlm([behavioralStage1], [AUDIT_NOOP]);
+
+    const result = await generateVerifiedQuestion(
+      { ...PARAMS, category: 'behavioral' },
+      { llm, verify: makeVerify([]), steps: sink },
+    );
+
+    expect(recorded.map((r) => [r.slug, r.status, r.outcome])).toEqual([
+      ['generate', 'done', undefined],
+      ['edge-audit', 'done', '1 edge case · 0 changes applied'],
+      ['verify', 'skipped', 'not applicable to behavioral questions'],
+    ]);
+    expect(recorded[1].label).toBe('Critiquing the prompt');
+    // No repair step ever recorded — a missing testCode never drives the
+    // coding-only static-check/verify/repair loop for a no-test category.
+    expect(recorded.some((r) => r.slug === 'repair')).toBe(false);
+    expect(recorded.some((r) => r.slug === 'static-check')).toBe(false);
+    expect(result.question.competency).toBe('conflict');
   });
 
   it('fails the llm step (and rethrows) when the call dies mid-stream', async () => {
@@ -600,6 +634,8 @@ Concurrency realities.`);
       solutionCode: null,
       referenceSolution: null,
       interviewerPacket: '## Capability Tested\n\nAmbiguity resolved into invariants.',
+      competency: null,
+      followUps: null,
     };
     const { llm, calls } = makeLlm([designStage1], [AUDIT_NOOP]);
     await generateVerifiedQuestion({ ...PARAMS, category: 'design-fe' }, { llm, verify: makeVerify([]) });

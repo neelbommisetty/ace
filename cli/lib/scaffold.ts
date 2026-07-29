@@ -23,6 +23,19 @@ export interface ScaffoldOptions {
   interviewerPacket?: string;
   /** Pre-formatted markdown written as `.reference.md`; never for design categories. */
   referenceSolutionMd?: string;
+  /**
+   * Behavioral-only (NEE-343): the competency this question probes — a
+   * visible `{{competency}}` slot in README.md.hbs (renders nothing when
+   * absent, so every other category's README is unaffected).
+   */
+  competency?: string | null;
+  /**
+   * Behavioral-only (NEE-343): candidate follow-up probes, written as the
+   * hidden `.probes.md` bank beside `.interviewer.md` — invisible to the
+   * watcher/reconciler/UI/vitest by the same dotfile convention. Absent or
+   * empty writes nothing (see getProbeBankMd's format doc).
+   */
+  followUps?: string[] | null;
 }
 
 export interface ScaffoldResult {
@@ -77,6 +90,7 @@ export function scaffoldQuestionAt(
     signature: opts.signature || '',
     testCode: opts.testCode || '',
     solutionCode: opts.solutionCode || '',
+    competency: opts.competency || '',
   };
 
   // README.md
@@ -125,6 +139,14 @@ export function scaffoldQuestionAt(
     fs.writeFileSync(path.join(questionDir, '.interviewer.md'), opts.interviewerPacket);
     files.push('.interviewer.md');
   }
+  // Behavioral-only in practice (only the behavioral capsule asks the model
+  // for followUps — every other category's generated question has
+  // followUps: null and nothing is written), but gated on presence, not
+  // category, mirroring interviewerPacket above.
+  if (opts.followUps && opts.followUps.length > 0) {
+    fs.writeFileSync(path.join(questionDir, '.probes.md'), getProbeBankMd(opts.followUps));
+    files.push('.probes.md');
+  }
   if (opts.referenceSolutionMd && hasTests(config)) {
     fs.writeFileSync(path.join(questionDir, '.reference.md'), opts.referenceSolutionMd);
     files.push('.reference.md');
@@ -138,6 +160,21 @@ export function scaffoldQuestionAt(
   }
 
   return { dir: questionDir, files };
+}
+
+/**
+ * Renders the `.probes.md` probe-bank format (NEE-343/NEE-345): a fixed
+ * `# Probe Bank` heading, one short framing line, then the probes as a
+ * plain numbered markdown list — nothing fancier, since the only consumer
+ * is a parser, never a human editing it by hand. NEE-345's probe engine
+ * reads this file as its `source: 'bank'` pool (absent file ⇒ every probe
+ * is `source: 'derived'` instead); parse with the numbered-item regex
+ * `/^\d+\.\s+(.+)$/gm` against everything after the heading — each capture
+ * is one probe's full text, no further structure.
+ */
+export function getProbeBankMd(probes: string[]): string {
+  const items = probes.map((probe, i) => `${i + 1}. ${probe.trim()}`).join('\n');
+  return `# Probe Bank\n\nFollow-up questions to pull from when drilling into this story. Hidden\nuntil the debrief — this file is a dotfile precisely so it stays invisible\nbefore then.\n\n${items}\n`;
 }
 
 /** Formats a raw reference solution into the `.reference.md` document. */

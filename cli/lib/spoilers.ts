@@ -13,7 +13,24 @@ export const WITHHELD_MARKER = '█ withheld █';
  * Single source of truth — redactGenerationJob, the masked prompt builders,
  * and the drift guard in spoilers.test.ts all derive from this list.
  */
-export const SPOILER_KEYS = ['referenceSolution', 'solutionCode', 'interviewerPacket'] as const;
+// followUps (NEE-343, behavioral-only) joins this list, not
+// WIRE_SAFE_KEYS.generate: it is the candidate drill-down question bank
+// (written to the hidden `.probes.md`, NEE-345's territory), structurally
+// the same kind of content as interviewerPacket's own "Skeptical
+// Follow-ups" section for coding/design — a probe read before the
+// candidate writes their story is worthless the same way a spoiled
+// reference solution is. Withholding it here keeps it out of the
+// Activity Log's live stream and the generation job's wire result;
+// `.probes.md` on disk (never SPOILER_KEYS/redactGenerationJob) is the
+// actual reveal path, mirroring how `.interviewer.md` is read straight off
+// disk by the review-gated debrief endpoint (reviews.ts), not reconstructed
+// from a job row.
+export const SPOILER_KEYS = [
+  'referenceSolution',
+  'solutionCode',
+  'interviewerPacket',
+  'followUps',
+] as const;
 
 const SPOILER_KEY_SET: ReadonlySet<string> = new Set(SPOILER_KEYS);
 
@@ -36,8 +53,13 @@ export function splitSpoilers<T extends object>(
 
 /** Per-step wire allowlist. Fail-closed: an unknown slug maps to the empty set. */
 export const WIRE_SAFE_KEYS: Record<string, ReadonlySet<string>> = {
-  generate: new Set(['title', 'slug', 'description', 'signature', 'testCode']),
-  repair: new Set(['title', 'slug', 'description', 'signature', 'testCode']),
+  // competency (NEE-343, behavioral-only) is wire-safe: it is visible
+  // interview framing, written straight into the README (the same
+  // treatment coding/design questions give their whole problem statement)
+  // — knowing "this probes conflict-handling" doesn't hand the candidate an
+  // answer. followUps is deliberately NOT here — see SPOILER_KEYS below.
+  generate: new Set(['title', 'slug', 'description', 'signature', 'testCode', 'competency']),
+  repair: new Set(['title', 'slug', 'description', 'signature', 'testCode', 'competency']),
   'edge-audit': new Set(['description', 'testCode']), // edgeCases withheld — the names are hints
   dispute: new Set(['verdict', 'summary', 'details', 'failingTests', 'fixedTestCode', 'hint']),
   brainstorm: new Set(['reply', 'ideas']),

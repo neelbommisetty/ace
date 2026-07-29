@@ -29,11 +29,17 @@ function getGenerateMockPayload() {
     signature: 'export function twoSum(nums: number[], target: number): number[]',
     // GeneratedQuestionSchema's optional fields are required-and-nullable
     // (strict structured outputs, NEE-263) — omitting the keys would fail
-    // schema dispatch, so the unused artifacts are explicit nulls.
+    // schema dispatch, so the unused artifacts are explicit nulls. This
+    // payload is shared across every category in mock mode (there is only
+    // one 'generate'-shaped candidate), so competency/followUps (NEE-343,
+    // behavioral-only) stay null here too — a keyless behavioral e2e run
+    // exercises the schema/scaffold plumbing, not real competency content.
     testCode: null,
     solutionCode: null,
     referenceSolution: null,
     interviewerPacket: null,
+    competency: null,
+    followUps: null,
   };
 }
 

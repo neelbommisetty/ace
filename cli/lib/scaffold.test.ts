@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getStubContent, renderSolutionStub, scaffoldQuestionAt } from './scaffold.js';
+import { getProbeBankMd, getStubContent, renderSolutionStub, scaffoldQuestionAt } from './scaffold.js';
 
 let tempRoot = '';
 let otherCwdWorkspace = '';
@@ -87,6 +87,68 @@ describe('scaffoldQuestionAt', () => {
     expect(result.files.sort()).toEqual(['README.md', 'story.md']);
     expect(fs.existsSync(path.join(expectedDir, 'story.md'))).toBe(true);
     expect(fs.existsSync(path.join(expectedDir, '.reference.md'))).toBe(false);
+  });
+
+  it('writes a competency-bearing README and a hidden .probes.md when given competency/followUps (NEE-343)', () => {
+    const result = scaffoldQuestionAt(tempRoot, {
+      title: 'A Conflict You Navigated',
+      slug: 'conflict-navigated-2',
+      category: 'behavioral',
+      difficulty: 'medium',
+      description: 'Tell me about a time you disagreed with a decision.',
+      competency: 'conflict',
+      followUps: [
+        'What would the other engineer say about how you handled it?',
+        'How would your approach change if this happened at 10x the team size?',
+      ],
+    });
+
+    const expectedDir = path.join(tempRoot, 'questions', 'behavioral', 'conflict-navigated-2');
+    expect(result.files.sort()).toEqual(['.probes.md', 'README.md', 'story.md']);
+
+    const readme = fs.readFileSync(path.join(expectedDir, 'README.md'), 'utf-8');
+    expect(readme).toContain('**Competency:** conflict');
+
+    const probes = fs.readFileSync(path.join(expectedDir, '.probes.md'), 'utf-8');
+    expect(probes).toContain('# Probe Bank');
+    expect(probes).toContain('1. What would the other engineer say about how you handled it?');
+    expect(probes).toContain(
+      '2. How would your approach change if this happened at 10x the team size?',
+    );
+  });
+
+  it('writes no competency line and no .probes.md for a coding question (competency/followUps absent)', () => {
+    const result = scaffoldQuestionAt(tempRoot, {
+      title: 'Two Sum',
+      slug: 'two-sum-no-competency',
+      category: 'js-ts',
+      difficulty: 'medium',
+      description: 'Find indices adding to target.',
+    });
+
+    const expectedDir = path.join(tempRoot, 'questions', 'js-ts', 'two-sum-no-competency');
+    expect(result.files).not.toContain('.probes.md');
+    expect(fs.existsSync(path.join(expectedDir, '.probes.md'))).toBe(false);
+
+    const readme = fs.readFileSync(path.join(expectedDir, 'README.md'), 'utf-8');
+    expect(readme).not.toContain('**Competency:**');
+  });
+
+  it('writes no .probes.md when followUps is an empty array', () => {
+    const result = scaffoldQuestionAt(tempRoot, {
+      title: 'Empty Probes',
+      slug: 'empty-probes',
+      category: 'behavioral',
+      difficulty: 'easy',
+      description: 'Tell me about a time.',
+      competency: 'ownership',
+      followUps: [],
+    });
+
+    expect(result.files).not.toContain('.probes.md');
+    expect(
+      fs.existsSync(path.join(tempRoot, 'questions', 'behavioral', 'empty-probes', '.probes.md')),
+    ).toBe(false);
   });
 
   it('writeScorecard: false (default) leaves no scorecard.json', () => {
@@ -197,5 +259,20 @@ describe('getStubContent', () => {
     const stub = getStubContent('behavioral', 'story.md');
     expect(stub).not.toBe('');
     expect(stub).toContain('## Situation');
+  });
+});
+
+describe('getProbeBankMd (NEE-343/NEE-345 .probes.md format)', () => {
+  it('renders a numbered list under a fixed heading, parseable via /^\\d+\\.\\s+(.+)$/gm', () => {
+    const md = getProbeBankMd(['First probe?', 'Second probe?', 'Third probe?']);
+    expect(md).toContain('# Probe Bank');
+
+    const matches = [...md.matchAll(/^\d+\.\s+(.+)$/gm)].map((m) => m[1]);
+    expect(matches).toEqual(['First probe?', 'Second probe?', 'Third probe?']);
+  });
+
+  it('trims each probe and numbers from 1', () => {
+    const md = getProbeBankMd(['  padded probe  ']);
+    expect(md).toContain('1. padded probe');
   });
 });

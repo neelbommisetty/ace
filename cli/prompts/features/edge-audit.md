@@ -64,6 +64,31 @@ charter's Capabilities to Evaluate:
 Fix what falls short by returning an updated description and, if the bar
 changed, an updated interviewer packet.
 
+## Your Critique (behavioral categories)
+
+There is no test file and no reference solution — the artifact under audit
+is the prompt itself, one sentence in the interviewer's own words. Use the
+category's Edge-Case Classes above (double-barreled, leading, unanswerable
+from typical experience, stock-prompt duplication, competency mismatch) as
+your checklist, then ask specifically:
+
+1. Is this genuinely ONE question probing ONE competency, not two folded
+   together?
+2. Does the phrasing avoid hinting at what a "good" answer says?
+3. Could a typical target-profile candidate actually have lived this, or
+   does it assume a scale/authority level they are unlikely to have held?
+4. Is it a real, specific question rather than a bare synonym of a stock
+   interview cliché?
+5. Does the wording actually probe the competency it's filed under (per the
+   Category Identity above), not just gesture at leadership in general?
+
+Fix what falls short by returning an updated `description` — rephrase or
+narrow it until it cleanly probes its filed competency; never change which
+competency it targets (that decision was already made at generation time,
+and the Output Contract below has no field to revise it). Leave
+`interviewerPacket` alone unless its rubric no longer matches the fixed
+prompt.
+
 ## Output Contract
 
 Respond with a single JSON object:

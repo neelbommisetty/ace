@@ -50,6 +50,8 @@ const GeneratedQuestionSchema = z.object({
   solutionCode: z.string().nullable(),
   referenceSolution: z.string().nullable(),
   interviewerPacket: z.string().nullable(),
+  competency: z.string().nullable(),
+  followUps: z.array(z.string()).nullable(),
 });
 
 // Mirrors the planned brainstorm-engine IdeaListSchema.

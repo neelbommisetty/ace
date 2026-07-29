@@ -21,6 +21,8 @@ describe('splitSpoilers', () => {
       solutionCode: 'SECRET_SOLUTION',
       referenceSolution: 'SECRET_REFERENCE',
       interviewerPacket: 'SECRET_PACKET',
+      competency: 'conflict',
+      followUps: ['SECRET_PROBE_1', 'SECRET_PROBE_2'],
     });
     expect(safe).toEqual({
       title: 'T',
@@ -28,8 +30,14 @@ describe('splitSpoilers', () => {
       description: 'visible',
       signature: 'sig',
       testCode: 'tests',
+      competency: 'conflict',
     });
-    expect(withheld.sort()).toEqual(['interviewerPacket', 'referenceSolution', 'solutionCode']);
+    expect(withheld.sort()).toEqual([
+      'followUps',
+      'interviewerPacket',
+      'referenceSolution',
+      'solutionCode',
+    ]);
   });
 
   it('lists a spoiler key as withheld even when its value is null', () => {
@@ -181,6 +189,15 @@ describe('maskSpoilerValues', () => {
     }) as { jobs: Array<{ result: Record<string, unknown> }> };
     expect(masked.jobs[0].result.referenceSolution).toBe(WITHHELD_MARKER);
     expect(masked.jobs[0].result.title).toBe('ok');
+  });
+
+  it('collapses an array-valued spoiler (followUps) to a single withheld marker, not per-item', () => {
+    const masked = maskSpoilerValues({
+      followUps: ['SECRET_PROBE_1', 'SECRET_PROBE_2'],
+      competency: 'conflict',
+    }) as { followUps: unknown; competency: string };
+    expect(masked.followUps).toBe(WITHHELD_MARKER);
+    expect(masked.competency).toBe('conflict');
   });
 });
 

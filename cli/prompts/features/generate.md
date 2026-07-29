@@ -38,14 +38,16 @@ prose. Fields:
 - `slug` — kebab-case slug (lowercase letters, digits, hyphens).
 - `description` — the full problem statement in Markdown (sections below).
 - `signature` — ONLY for coding categories, exactly in the shape the
-  Environment & Test Contract above prescribes. Omit for design categories.
+  Environment & Test Contract above prescribes. Omit (return `null`) for
+  design and behavioral categories.
 - `testCode` — ONLY for coding categories: the complete Vitest test file,
-  obeying the Environment & Test Contract. Omit for design categories.
+  obeying the Environment & Test Contract. Omit (return `null`) for design
+  and behavioral categories.
 - `referenceSolution` — ONLY for coding categories: a complete, correct,
   production-quality solution file that satisfies every test you wrote. This
   is never shown to the candidate before review; it exists so the tests can
   be executed and verified. It must compile and pass your own tests. Omit
-  for design categories.
+  (return `null`) for design and behavioral categories.
 - `interviewerPacket` — a Markdown document with exactly these sections:
   - `## Capability Tested` — which charter capabilities this question
     surfaces, and how.
@@ -57,6 +59,20 @@ prose. Fields:
     responses and where they fall short.
   - `## Scoring Rubric (1–5)` — one line per score 1–5 stating what that
     score looks like for THIS question.
+  Required for every category, including behavioral.
+- `competency` — ONLY for behavioral categories: exactly one value from the
+  closed competency vocabulary in the Category Identity above (e.g.
+  `conflict`, `ambiguity`, `failure`, `influence-without-authority`,
+  `prioritisation`, `mentorship`, `receiving-feedback`, `ownership`) —
+  lowercase, hyphenated, verbatim from that list, never invented. Omit
+  (return `null`) for coding and design categories.
+- `followUps` — ONLY for behavioral categories: an array of 2–4 candidate
+  follow-up probe questions an interviewer could ask once the candidate has
+  answered, each drawn from a DIFFERENT angle on the same story (dig into a
+  vague claim, ask what the other side would say, ask what they'd do
+  differently at scale). These are never shown to the candidate up front —
+  they exist for a later drill-down. Omit (return `null`) for coding and
+  design categories.
 
 Never include a `solutionCode` field. The candidate's starter file is built
 from `signature` alone.
@@ -74,6 +90,13 @@ For **design** categories, `description` must contain, in order:
 `## Requirements` (functional and non-functional, with real targets),
 `## Scope` (Focus On / Out of Scope), `## Evaluation Criteria` (what a
 strong answer covers).
+
+For **behavioral** categories, `description` IS the interview prompt
+itself: a single realistic question in the interviewer's own words,
+optionally followed by one or two sentences of framing for what kind of
+story is wanted. No section headings, no multi-part scenario — a long
+`description` here is itself a quality defect. See the Environment & Test
+Contract above for the full contract.
 
 ## Test Authoring Core (coding categories)
 
@@ -126,3 +149,9 @@ repairing your previous output, included in that message:
 5. (Coding categories) Does the reference solution satisfy every single test
    you wrote?
 6. Does the interviewer packet contain all five required sections?
+7. (Behavioral categories) Is `description` a single interviewer-voiced
+   prompt with no section headings — never a multi-part scenario? Does
+   `competency` match exactly one value from the closed vocabulary, and does
+   the difficulty reflect discomfort (a success story vs an owned failure),
+   not scope? Does each of `followUps` probe a genuinely different angle,
+   not a rewording of the same question?
