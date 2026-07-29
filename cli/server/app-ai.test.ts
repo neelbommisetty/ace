@@ -130,6 +130,20 @@ describe('GET /api/ai/runs', () => {
     expect(body.runs[0].id).toBe(review.id);
   });
 
+  // NEE-345 trap: AI_RUN_KINDS in routes/ai.ts is hand-maintained and only
+  // catches a BAD member, never a missing one — forgetting to add 'probe'
+  // there would 400 this query while probe rows kept writing fine.
+  it('filters by kind=probe', async () => {
+    seedRunWithStep(); // kind: 'generation'
+    const probe = ws.session.db.createAiRun({ kind: 'probe', label: 'Probes: a-story' });
+    const fetch = buildApp();
+    const res = await fetch('/api/ai/runs?kind=probe');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { runs: RunWithSteps[] };
+    expect(body.runs.length).toBe(1);
+    expect(body.runs[0].id).toBe(probe.id);
+  });
+
   it('400s on an unknown kind', async () => {
     const fetch = buildApp();
     const res = await fetch('/api/ai/runs?kind=nonsense');

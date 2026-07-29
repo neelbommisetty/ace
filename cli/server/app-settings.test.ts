@@ -126,6 +126,7 @@ describe('GET /api/settings model map', () => {
       provider: 'anthropic',
       model: getModelId('anthropic', 'review-extract'),
     });
-    expect(Object.keys(models)).toHaveLength(6);
+    expect(models.probe).toEqual({ provider: 'anthropic', model: getModelId('anthropic', 'probe') });
+    expect(Object.keys(models)).toHaveLength(7);
   });
 });

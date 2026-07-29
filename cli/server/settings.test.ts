@@ -153,6 +153,7 @@ describe('getSettingsInfo models (NEE-303)', () => {
       'review-extract': 'claude-haiku-4-5',
       brainstorm: 'claude-sonnet-5',
       dispute: 'claude-opus-5',
+      probe: 'claude-sonnet-5',
     });
 
     const { models } = getSettingsInfo();
@@ -165,6 +166,7 @@ describe('getSettingsInfo models (NEE-303)', () => {
       'review-extract': { provider: 'anthropic', model: 'claude-haiku-4-5' },
       brainstorm: { provider: 'anthropic', model: 'claude-sonnet-5' },
       dispute: { provider: 'anthropic', model: 'claude-opus-5' },
+      probe: { provider: 'anthropic', model: 'claude-sonnet-5' },
     });
   });
 
@@ -178,6 +180,7 @@ describe('getSettingsInfo models (NEE-303)', () => {
       'review-extract': 'mock-basic',
       brainstorm: 'mock-mid',
       dispute: 'mock-top',
+      probe: 'mock-mid',
     });
 
     const { models } = getSettingsInfo();

@@ -120,6 +120,11 @@ describe('createWorkspaceSession — generation/brainstorm engines', () => {
     expect(typeof session.brainstorm.isAnyRunning).toBe('function');
     expect(typeof session.brainstorm.dispose).toBe('function');
 
+    expect(typeof session.probes.start).toBe('function');
+    expect(typeof session.probes.isRunning).toBe('function');
+    expect(typeof session.probes.isAnyRunning).toBe('function');
+    expect(typeof session.probes.dispose).toBe('function');
+
     session.db.close();
   });
 
@@ -180,11 +185,19 @@ describe('createWorkspaceSession — generation/brainstorm engines', () => {
 describe('closeWorkspaceSession', () => {
   it('calls each fake engine dispose() exactly once and closes the db', async () => {
     const bus = createBus();
-    const disposals = { runner: 0, reviews: 0, disputes: 0, generation: 0, brainstorm: 0 };
+    const disposals = {
+      runner: 0,
+      reviews: 0,
+      disputes: 0,
+      probes: 0,
+      generation: 0,
+      brainstorm: 0,
+    };
     const engines = fakeEngines({
       runner: { dispose: vi.fn(() => void disposals.runner++) },
       reviews: { dispose: vi.fn(() => void disposals.reviews++) },
       disputes: { dispose: vi.fn(() => void disposals.disputes++) },
+      probes: { dispose: vi.fn(() => void disposals.probes++) },
       generation: { dispose: vi.fn(() => void disposals.generation++) },
       brainstorm: { dispose: vi.fn(() => void disposals.brainstorm++) },
     });
@@ -195,6 +208,7 @@ describe('closeWorkspaceSession', () => {
     expect(disposals.runner).toBe(1);
     expect(disposals.reviews).toBe(1);
     expect(disposals.disputes).toBe(1);
+    expect(disposals.probes).toBe(1);
     expect(disposals.generation).toBe(1);
     expect(disposals.brainstorm).toBe(1);
     expect(() => session.db.listQuestions()).toThrow();
@@ -209,13 +223,14 @@ describe('closeWorkspaceSession', () => {
     await expect(closeWorkspaceSession(session)).resolves.toBeUndefined();
   });
 
-  it('disposes generation and brainstorm AFTER disputes.dispose() and BEFORE db.close()', async () => {
+  it('disposes probes/generation/brainstorm AFTER disputes.dispose() and BEFORE db.close()', async () => {
     const bus = createBus();
     const callOrder: string[] = [];
     const engines: EngineFactories = fakeEngines({
       runner: { dispose: vi.fn(() => callOrder.push('runner')) },
       reviews: { dispose: vi.fn(() => callOrder.push('reviews')) },
       disputes: { dispose: vi.fn(() => callOrder.push('disputes')) },
+      probes: { dispose: vi.fn(() => callOrder.push('probes')) },
       generation: { dispose: vi.fn(() => callOrder.push('generation')) },
       brainstorm: { dispose: vi.fn(() => callOrder.push('brainstorm')) },
     });
@@ -227,12 +242,14 @@ describe('closeWorkspaceSession', () => {
     await closeWorkspaceSession(session);
 
     const disputesIdx = callOrder.indexOf('disputes');
+    const probesIdx = callOrder.indexOf('probes');
     const generationIdx = callOrder.indexOf('generation');
     const brainstormIdx = callOrder.indexOf('brainstorm');
     const dbCloseIdx = callOrder.indexOf('db.close');
     expect(disputesIdx).toBeGreaterThanOrEqual(0);
-    expect(generationIdx).toBeGreaterThan(disputesIdx);
-    expect(brainstormIdx).toBeGreaterThan(disputesIdx);
+    expect(probesIdx).toBeGreaterThan(disputesIdx);
+    expect(generationIdx).toBeGreaterThan(probesIdx);
+    expect(brainstormIdx).toBeGreaterThan(probesIdx);
     expect(dbCloseIdx).toBeGreaterThan(generationIdx);
     expect(dbCloseIdx).toBeGreaterThan(brainstormIdx);
 
@@ -244,11 +261,12 @@ describe('closeWorkspaceSession', () => {
 describe('closeWorkspaceSessionSafe', () => {
   it('a throwing engine.dispose() does not prevent the rest of teardown (including db.close()) from completing', async () => {
     const bus = createBus();
-    const disposals = { runner: 0, reviews: 0, disputes: 0, brainstorm: 0 };
+    const disposals = { runner: 0, reviews: 0, disputes: 0, probes: 0, brainstorm: 0 };
     const engines: EngineFactories = fakeEngines({
       runner: { dispose: vi.fn(() => void disposals.runner++) },
       reviews: { dispose: vi.fn(() => void disposals.reviews++) },
       disputes: { dispose: vi.fn(() => void disposals.disputes++) },
+      probes: { dispose: vi.fn(() => void disposals.probes++) },
       generation: {
         // Simulates a broken generation engine's teardown.
         dispose: vi.fn(() => {
@@ -265,6 +283,7 @@ describe('closeWorkspaceSessionSafe', () => {
     expect(disposals.runner).toBe(1);
     expect(disposals.reviews).toBe(1);
     expect(disposals.disputes).toBe(1);
+    expect(disposals.probes).toBe(1);
     expect(disposals.brainstorm).toBe(1);
     expect(() => session.db.listQuestions()).toThrow();
   });

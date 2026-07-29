@@ -70,12 +70,21 @@ const IdeaListSchema = z.object({
     .max(5),
 });
 
+// Mirrors cli/server/probes.ts's ProbeResultSchema (kept local for the same
+// hoisting reason as the schemas above).
+const ProbeResultSchema = z.object({
+  probes: z
+    .array(z.object({ question: z.string(), source: z.enum(['bank', 'derived']) }))
+    .min(2)
+    .max(4),
+});
+
 // Loose enough to validate against ANY plain object — used to prove that an
 // explicit ACE_MOCK_LLM_MODE override wins even when schema-dispatch would
 // otherwise have matched a different (earlier-tried) candidate.
 const PermissiveSchema = z.record(z.string(), z.unknown());
 
-// Matches none of the mock candidates (generate/dispute/brainstorm/
+// Matches none of the mock candidates (generate/dispute/brainstorm/probe/
 // review-extraction all lack a `foo` field), so it exercises the existing
 // parse-failure fallback.
 const UnmatchedSchema = z.object({ foo: z.string() });
@@ -105,6 +114,7 @@ describe('per-purpose model map (NEE-274)', () => {
     expect(getModelId('anthropic', 'dispute')).toBe('claude-opus-5');
     expect(getModelId('anthropic', 'edge-audit')).toBe('claude-sonnet-5');
     expect(getModelId('anthropic', 'brainstorm')).toBe('claude-sonnet-5');
+    expect(getModelId('anthropic', 'probe')).toBe('claude-sonnet-5');
     expect(getModelId('anthropic', 'review-extract')).toBe('claude-haiku-4-5');
 
     expect(getModelId('openai', 'generate')).toBe('gpt-5.6-sol');
@@ -112,6 +122,7 @@ describe('per-purpose model map (NEE-274)', () => {
     expect(getModelId('openai', 'dispute')).toBe('gpt-5.6-sol');
     expect(getModelId('openai', 'edge-audit')).toBe('gpt-5.6-terra');
     expect(getModelId('openai', 'brainstorm')).toBe('gpt-5.6-terra');
+    expect(getModelId('openai', 'probe')).toBe('gpt-5.6-terra');
     expect(getModelId('openai', 'review-extract')).toBe('gpt-5.6-luna');
   });
 });
@@ -132,6 +143,12 @@ describe('chatObject mock schema-dispatch', () => {
       expect(CATEGORY_SLUGS).toContain(idea.category);
       expect(['easy', 'medium', 'hard']).toContain(idea.difficulty);
     }
+  });
+
+  it('returns the probe payload for a ProbeResultSchema-shaped call, no mode var set', async () => {
+    const result = await chatObject('openai', [], ProbeResultSchema);
+    expect(result.probes.length).toBeGreaterThanOrEqual(2);
+    expect(result.probes.some((p) => p.source === 'derived')).toBe(true);
   });
 
   it('honors an explicit ACE_MOCK_LLM_MODE override even when the schema would otherwise match generate', async () => {

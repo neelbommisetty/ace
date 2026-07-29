@@ -55,7 +55,7 @@ describe('openDb', () => {
   it('creates .ace and .ace/tmp and tracks schema_version', () => {
     expect(fs.existsSync(path.join(tempRoot, '.ace', 'ace.db'))).toBe(true);
     expect(fs.statSync(path.join(tempRoot, '.ace', 'tmp')).isDirectory()).toBe(true);
-    expect(db.getMeta('schema_version')).toBe('7');
+    expect(db.getMeta('schema_version')).toBe('8');
   });
 
   it('reopens an existing db without re-running migrations', () => {
@@ -64,7 +64,7 @@ describe('openDb', () => {
     db.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('7');
+    expect(db.getMeta('schema_version')).toBe('8');
     expect(db.getMeta('custom')).toBe('kept');
     expect(db.getQuestionById(q.id)?.slug).toBe('debounce');
   });
@@ -72,7 +72,7 @@ describe('openDb', () => {
 
 describe('migration 3 (generation jobs + brainstorm sessions)', () => {
   it('lands schema_version=3 and creates the new tables + indexes', () => {
-    expect(db.getMeta('schema_version')).toBe('7');
+    expect(db.getMeta('schema_version')).toBe('8');
 
     const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
     try {
@@ -140,7 +140,7 @@ describe('migration 3 (generation jobs + brainstorm sessions)', () => {
     // picks up migration 4 (NEE-178 backfill), migration 5 (NEE-266 AI
     // activity log), migration 6 (NEE-277 run_started_at) and migration 7
     // (NEE-286 idx_reviews_question_id) on top of migration 3.
-    expect(db.getMeta('schema_version')).toBe('7');
+    expect(db.getMeta('schema_version')).toBe('8');
     expect(db.getQuestionById('seed-q1')?.slug).toBe('debounce');
 
     const raw = new DatabaseSync(dbPath);
@@ -231,7 +231,7 @@ describe('migration 4 (NEE-178 backfill: close stale solved-question attempts)',
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('7');
+    expect(db.getMeta('schema_version')).toBe('8');
 
     const a1 = db.getAttempt('a1')!;
     expect(a1.endReason).toBe('solved');
@@ -252,7 +252,7 @@ describe('migration 4 (NEE-178 backfill: close stale solved-question attempts)',
 
 describe('migration 5 (NEE-266: ai activity log)', () => {
   it('creates ai_runs/ai_steps and their indexes', () => {
-    expect(db.getMeta('schema_version')).toBe('7');
+    expect(db.getMeta('schema_version')).toBe('8');
 
     const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
     try {
@@ -314,7 +314,7 @@ describe('migration 5 (NEE-266: ai activity log)', () => {
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('7');
+    expect(db.getMeta('schema_version')).toBe('8');
     expect(db.getQuestionById('seed-q1')?.slug).toBe('debounce');
     expect(db.listAiRuns()).toEqual([]);
   });
@@ -343,7 +343,7 @@ describe('migration 6 (NEE-277: generation_jobs.run_started_at)', () => {
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('7');
+    expect(db.getMeta('schema_version')).toBe('8');
     const migrated = db.getGenerationJob('gj-old')!;
     // Backfilled to created_at so historical jobs keep their current reading.
     expect(migrated.runStartedAt).toBe('2026-01-01T00:00:00.000Z');
@@ -354,7 +354,7 @@ describe('migration 6 (NEE-277: generation_jobs.run_started_at)', () => {
 
 describe('migration 7 (NEE-286: idx_reviews_question_id)', () => {
   it('creates the index', () => {
-    expect(db.getMeta('schema_version')).toBe('7');
+    expect(db.getMeta('schema_version')).toBe('8');
 
     const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
     try {
@@ -399,9 +399,68 @@ describe('migration 7 (NEE-286: idx_reviews_question_id)', () => {
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('7');
+    expect(db.getMeta('schema_version')).toBe('8');
     expect(db.listReviews('seed-q1')).toHaveLength(1);
     expect(db.listReviews('seed-q1')[0].id).toBe('rv-old');
+  });
+});
+
+describe('migration 8 (NEE-345: probe_sets)', () => {
+  it('creates the table and its question_id index', () => {
+    expect(db.getMeta('schema_version')).toBe('8');
+
+    const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
+    try {
+      const table = raw
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'probe_sets'`)
+        .get();
+      expect(table).toBeTruthy();
+      const index = raw
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'index' AND name = 'idx_probe_sets_question_id'`,
+        )
+        .get();
+      expect(index).toBeTruthy();
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('migrates a db pre-seeded at schema_version 7 cleanly to 8, preserving existing data', () => {
+    db.close();
+    const dbPath = path.join(tempRoot, '.ace', 'ace.db');
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(`${dbPath}-wal`, { force: true });
+    fs.rmSync(`${dbPath}-shm`, { force: true });
+
+    const seed = new DatabaseSync(dbPath);
+    seed.exec('PRAGMA journal_mode = WAL');
+    for (const m of MIGRATIONS.slice(0, 7)) seed.exec(m);
+    seed.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('schema_version', '7');
+    seed
+      .prepare(
+        `INSERT INTO questions
+          (id, category, slug, title, difficulty, suggested_minutes, dir_path, source, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'seed-q1',
+        'behavioral',
+        'a-story',
+        'A Story',
+        'medium',
+        20,
+        '/tmp/a-story',
+        'manual',
+        nowIso(),
+      );
+    seed.close();
+
+    db = openDb(tempRoot);
+    expect(db.getMeta('schema_version')).toBe('8');
+    expect(db.getQuestionById('seed-q1')?.slug).toBe('a-story');
+    expect(db.listProbeSets('seed-q1')).toEqual([]);
   });
 });
 
@@ -1013,6 +1072,72 @@ describe('disputes', () => {
     const again = db.markDisputeApplied(dispute.id);
     expect(again.appliedAt).toBe(applied.appliedAt);
     expect(() => db.markDisputeApplied('nope')).toThrow(/unknown dispute/);
+  });
+});
+
+describe('probe sets (NEE-345)', () => {
+  function makeProbeSet(
+    questionId: string,
+    overrides: Partial<Parameters<AceDb['createProbeSet']>[0]> = {},
+  ) {
+    return db.createProbeSet({
+      questionId,
+      attemptId: null,
+      probes: [
+        { question: 'What would the other engineer say?', source: 'derived' },
+        { question: 'How would this change at 10x scale?', source: 'bank' },
+      ],
+      model: 'claude-sonnet-5',
+      ...overrides,
+    });
+  }
+
+  it('round-trips a probe set', () => {
+    const q = makeQuestion({ category: 'behavioral', slug: 'a-story' });
+    const attempt = db.createAttempt(q.id);
+    const probeSet = db.createProbeSet({
+      questionId: q.id,
+      attemptId: attempt.id,
+      probes: [
+        { question: 'What would the other engineer say about how you handled it?', source: 'derived' },
+      ],
+      model: 'claude-sonnet-5',
+    });
+
+    expect(probeSet.questionId).toBe(q.id);
+    expect(probeSet.attemptId).toBe(attempt.id);
+    expect(probeSet.probes).toEqual([
+      { question: 'What would the other engineer say about how you handled it?', source: 'derived' },
+    ]);
+    expect(probeSet.model).toBe('claude-sonnet-5');
+    expect(probeSet.appliedAt).toBeNull();
+    expect(probeSet.at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    expect(db.getProbeSet(probeSet.id)).toEqual(probeSet);
+    expect(db.getProbeSet('nope')).toBeNull();
+  });
+
+  it('lists probe sets per question, newest first', () => {
+    const qa = makeQuestion({ category: 'behavioral', slug: 'a' });
+    const qb = makeQuestion({ category: 'behavioral', slug: 'b' });
+    const p1 = makeProbeSet(qa.id);
+    const p2 = makeProbeSet(qa.id);
+    makeProbeSet(qb.id);
+
+    expect(db.listProbeSets(qa.id).map((p) => p.id)).toEqual([p2.id, p1.id]);
+    expect(db.listProbeSets('nope')).toEqual([]);
+  });
+
+  it('markProbeSetApplied sets applied_at once and keeps the first value', () => {
+    const q = makeQuestion({ category: 'behavioral', slug: 'a-story' });
+    const probeSet = makeProbeSet(q.id);
+
+    const applied = db.markProbeSetApplied(probeSet.id);
+    expect(applied.appliedAt).not.toBeNull();
+
+    const again = db.markProbeSetApplied(probeSet.id);
+    expect(again.appliedAt).toBe(applied.appliedAt);
+    expect(() => db.markProbeSetApplied('nope')).toThrow(/unknown probe set/);
   });
 });
 
