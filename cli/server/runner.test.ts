@@ -1,10 +1,18 @@
 // @vitest-environment node
 //
-// Integration coverage for createRunner() against a real spawned child
-// process — NOT mocked child_process — in the style of the "engine busy
-// flags" describe block in workspace-reset.test.ts: Runner.cancel(runId)
-// kills the in-flight process tree, marks the run 'cancelled', broadcasts
-// run-done, and leaves no orphaned worker running (NEE-295).
+// Integration coverage for createRunner() against real spawned child
+// processes — NOT mocked child_process — in the style of the "engine busy
+// flags" describe block in workspace-reset.test.ts:
+//   * NEE-295 — Runner.cancel(runId) kills the in-flight process tree, marks
+//     the run 'cancelled', broadcasts run-done, and leaves no orphaned
+//     worker running.
+//   * NEE-333 — the vitest spawn args now request both the json and default
+//     reporters, with `--outputFile.json=` (not the old bare `--outputFile=`,
+//     which with two reporters would apply to both). parseVitestJson's
+//     unchanged parsing of the json-reporter file is covered separately in
+//     runner-parse.test.ts; a full real-vitest console.log-surfacing check
+//     lives at the UI/manual level (the TestConsole "Output" tab already
+//     streams run-output verbatim).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -68,6 +76,32 @@ function writeHangingVitestBin(heartbeatFile: string): void {
       "setInterval(() => { fs.writeFileSync(heartbeat, String(i++)); }, 20);",
       // Long enough that it would never exit on its own within the test.
       'setTimeout(() => process.exit(0), 60000);',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+}
+
+/** A fake `vitest` binary that records the argv it was invoked with, then
+ * exits immediately with a minimal-but-valid JSON report at whatever
+ * `--outputFile.json=`/`--outputFile=` path it finds in argv. */
+function writeArgvRecordingVitestBin(argvFile: string): void {
+  const binDir = path.join(tempRoot, 'node_modules', '.bin');
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(binDir, 'vitest'),
+    [
+      '#!/usr/bin/env node',
+      `const fs = require('fs');`,
+      `fs.writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2)));`,
+      'const path = require("path");',
+      'const argv = process.argv.slice(2);',
+      'const outArg = argv.find((a) => a.startsWith("--outputFile"));',
+      'const outPath = outArg.split("=")[1];',
+      'fs.writeFileSync(outPath, JSON.stringify({',
+      '  numTotalTests: 1, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0,',
+      '  testResults: [],',
+      '}));',
+      'process.exit(0);',
     ].join('\n'),
     { mode: 0o755 },
   );
@@ -163,5 +197,30 @@ describe('Runner.cancel() (NEE-295)', () => {
     const run = runner.start(question, null, 'manual');
     await done;
     expect(runner.cancel(run.id)).toBe(false);
+  });
+});
+
+describe('vitest spawn args (NEE-333)', () => {
+  it('requests both the json and default reporters, scoping the output file to json via --outputFile.json=', async () => {
+    const question = writeCodingQuestion('js-ts', 'argv-check');
+    const argvFile = path.join(tempRoot, 'argv.json');
+    writeArgvRecordingVitestBin(argvFile);
+
+    const bus = createBus();
+    const runner = createRunner({ db, bus, workspaceRoot: tempRoot });
+    const done = waitForBusEvent<{ status: string }>(bus, 'run-done');
+    runner.start(question, null, 'manual');
+    const result = await done;
+    expect(result.status).toBe('done');
+
+    const argv = JSON.parse(fs.readFileSync(argvFile, 'utf-8')) as string[];
+    expect(argv).toContain('--reporter=json');
+    expect(argv).toContain('--reporter=default');
+    expect(argv.some((a) => a.startsWith('--outputFile.json='))).toBe(true);
+    // The old bare flag — which with two reporters would apply to both,
+    // rather than scoping to json — must be gone.
+    expect(argv.some((a) => a.startsWith('--outputFile=') && !a.startsWith('--outputFile.json='))).toBe(
+      false,
+    );
   });
 });
