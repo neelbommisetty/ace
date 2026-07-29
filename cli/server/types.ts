@@ -31,6 +31,8 @@ import type {
   GenerationJobRow,
   GenerationJobStatus,
   HistoryItem,
+  Probe,
+  ProbeSetRow,
   QuestionRow,
   QuestionSource,
   QuestionWithStats,
@@ -42,7 +44,13 @@ import type {
   TestRunTrigger,
 } from '../../shared/wire-types.js';
 
-export type SnapshotTrigger = 'scaffold' | 'save' | 'review' | 'dispute-apply' | 'reset';
+export type SnapshotTrigger =
+  | 'scaffold'
+  | 'save'
+  | 'review'
+  | 'dispute-apply'
+  | 'probe-append'
+  | 'reset';
 
 export interface SnapshotRow {
   id: string;
@@ -171,6 +179,19 @@ export interface AceDb {
   getDispute(id: string): DisputeRow | null;
   listDisputes(questionId: string): DisputeRow[];
   markDisputeApplied(id: string): DisputeRow;
+
+  /** One probe generation round (NEE-345) — bounded to one per attempt (enforced by the route, not here). */
+  createProbeSet(p: {
+    questionId: string;
+    attemptId: string | null;
+    probes: Probe[];
+    model: string | null;
+  }): ProbeSetRow;
+  getProbeSet(id: string): ProbeSetRow | null;
+  /** Newest first. */
+  listProbeSets(questionId: string): ProbeSetRow[];
+  /** Stamps `appliedAt`; a no-op (returns the existing row) once already applied — mirrors markDisputeApplied. */
+  markProbeSetApplied(id: string): ProbeSetRow;
 
   addSnapshot(s: {
     questionId: string;

@@ -134,6 +134,11 @@ const STEP_SCHEMA_KEYS: Record<string, readonly string[]> = {
   generate: Object.keys(GeneratedQuestionSchema.shape),
   repair: Object.keys(GeneratedQuestionSchema.shape),
   'edge-audit': Object.keys(EdgeAuditSchema.shape),
+  // Hardcoded rather than `Object.keys(ProbeResultSchema.shape)` — probes.ts
+  // imports AiLog/NULL_AI_LOG from this file, so importing its schema back
+  // here would be circular. The literal is the schema's one top-level key
+  // and must be kept in sync with cli/server/probes.ts's ProbeResultSchema.
+  probe: ['probes'],
 };
 
 const EMPTY_SET: ReadonlySet<string> = new Set();

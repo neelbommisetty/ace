@@ -4,6 +4,7 @@ import { createBrainstormEngine, type BrainstormEngine } from './brainstorm.js';
 import { openDb } from './db.js';
 import { createDisputeEngine, type DisputeEngine } from './disputes.js';
 import { createGenerationEngine, type GenerationEngine } from './generation.js';
+import { createProbeEngine, type ProbeEngine } from './probes.js';
 import { reconcile } from './reconciler.js';
 import { createReviewEngine, type ReviewEngine } from './reviews.js';
 import { createRunner, type Runner } from './runner.js';
@@ -37,6 +38,7 @@ export interface WorkspaceSession {
   runner: Runner;
   reviews: ReviewEngine;
   disputes: DisputeEngine;
+  probes: ProbeEngine;
   generation: GenerationEngine;
   brainstorm: BrainstormEngine;
   watcher: { close(): Promise<void> } | null;
@@ -51,6 +53,7 @@ export interface EngineFactories {
   createRunner: typeof createRunner;
   createReviewEngine: typeof createReviewEngine;
   createDisputeEngine: typeof createDisputeEngine;
+  createProbeEngine: typeof createProbeEngine;
   createGenerationEngine: typeof createGenerationEngine;
   createBrainstormEngine: typeof createBrainstormEngine;
 }
@@ -59,6 +62,7 @@ const defaultEngines: EngineFactories = {
   createRunner,
   createReviewEngine,
   createDisputeEngine,
+  createProbeEngine,
   createGenerationEngine,
   createBrainstormEngine,
 };
@@ -68,7 +72,7 @@ export interface CreateWorkspaceSessionOptions {
   bus: Bus;
   /** Defaults to true (chokidar watcher attached inline). false returns watcher: null. */
   watch?: boolean;
-  /** Defaults to the real createRunner/createReviewEngine/createDisputeEngine/createGenerationEngine/createBrainstormEngine. */
+  /** Defaults to the real createRunner/createReviewEngine/createDisputeEngine/createProbeEngine/createGenerationEngine/createBrainstormEngine. */
   engines?: EngineFactories;
 }
 
@@ -126,6 +130,7 @@ export function createWorkspaceSession(opts: CreateWorkspaceSessionOptions): Wor
     runner: engines.createRunner({ db, bus, workspaceRoot }),
     reviews: engines.createReviewEngine({ db, bus, workspaceRoot, aiLog }),
     disputes: engines.createDisputeEngine({ db, bus, workspaceRoot, aiLog }),
+    probes: engines.createProbeEngine({ db, bus, workspaceRoot, aiLog }),
     generation: engines.createGenerationEngine({ db, bus, workspaceRoot, aiLog }),
     brainstorm: engines.createBrainstormEngine({ db, bus, workspaceRoot, aiLog }),
     watcher: null,
@@ -164,13 +169,13 @@ export function startSessionWatcher(session: WorkspaceSession): void {
  * The one place the session's disposable engines are enumerated for
  * teardown. The array's order IS the documented teardown contract (asserted
  * by session.test.ts): watcher (skipped when null) → runner → reviews →
- * disputes → generation → brainstorm → [beforeDbClose] → db.close — the
- * watcher/beforeDbClose/db.close steps stay explicit in the two close
+ * disputes → probes → generation → brainstorm → [beforeDbClose] → db.close —
+ * the watcher/beforeDbClose/db.close steps stay explicit in the two close
  * functions below; every engine dispose between them runs in this order.
- * Adding a sixth engine means adding its key here, so both
+ * Adding a seventh engine means adding its key here, so both
  * closeWorkspaceSession and closeWorkspaceSessionSafe pick it up at once.
  */
-const ENGINE_KEYS = ['runner', 'reviews', 'disputes', 'generation', 'brainstorm'] as const;
+const ENGINE_KEYS = ['runner', 'reviews', 'disputes', 'probes', 'generation', 'brainstorm'] as const;
 
 /**
  * Tears down a session in the exact order the previous startAceServer's

@@ -63,6 +63,11 @@ export const WIRE_SAFE_KEYS: Record<string, ReadonlySet<string>> = {
   'edge-audit': new Set(['description', 'testCode']), // edgeCases withheld — the names are hints
   dispute: new Set(['verdict', 'summary', 'details', 'failingTests', 'fixedTestCode', 'hint']),
   brainstorm: new Set(['reply', 'ideas']),
+  // Entirely wire-safe, same reasoning as dispute: the probe questions
+  // themselves are the whole point of the feature — there is no per-probe
+  // `rationale` field to withhold (deliberately not asked for; that would be
+  // pre-review grading, NEE-345's spec explicitly rules it out).
+  probe: new Set(['probes']),
   // Extraction over the finished review prose — derived from text the user
   // already sees, so every field is safe. (The `review` step itself streams
   // plain chatStream text via append(), never partials.)

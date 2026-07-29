@@ -15,7 +15,7 @@ const VALID_RESET_MODES: ReadonlySet<string> = new Set<WorkspaceResetMode>(['pro
 const SWAP_IN_PROGRESS_ERROR = 'a workspace reset or switch is already in progress';
 
 /**
- * The five idle-engine preconditions shared by POST /api/workspace/reset
+ * The six idle-engine preconditions shared by POST /api/workspace/reset
  * and POST /api/workspace/switch (NEE-164): both tear the session down,
  * which must never happen under a live test run or a paid LLM stream.
  * Returns the user-facing refusal, or null when every engine is idle.
@@ -29,6 +29,11 @@ function getBusyEngineError(session: WorkspaceSession): string | null {
   }
   if (session.disputes.isAnyRunning()) {
     return 'a dispute analysis is in progress — wait for it to finish and try again';
+  }
+  // NEE-345: a live paid probe call must not have its db closed out from
+  // under it any more than review/dispute/generation/brainstorm can.
+  if (session.probes.isAnyRunning()) {
+    return 'a follow-up probe run is in progress — wait for it to finish and try again';
   }
   if (session.generation.isAnyRunning()) {
     return 'a generation is in progress — wait for it to finish and try again';

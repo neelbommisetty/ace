@@ -23,6 +23,8 @@ import type {
   GenerationJobRow,
   GenerationJobStatus,
   HistoryItem,
+  Probe,
+  ProbeSetRow,
   QuestionRow,
   QuestionSource,
   QuestionStats,
@@ -158,6 +160,18 @@ function rowToDispute(r: SqlRow): DisputeRow {
     fixedTestCode: (r.fixed_test_code as string | null) ?? null,
     testRelPath: r.test_rel_path as string,
     hint: (r.hint as string | null) ?? null,
+    appliedAt: (r.applied_at as string | null) ?? null,
+  };
+}
+
+function rowToProbeSet(r: SqlRow): ProbeSetRow {
+  return {
+    id: r.id as string,
+    questionId: r.question_id as string,
+    attemptId: (r.attempt_id as string | null) ?? null,
+    at: r.at as string,
+    probes: JSON.parse(r.probes_json as string) as Probe[],
+    model: (r.model as string | null) ?? null,
     appliedAt: (r.applied_at as string | null) ?? null,
   };
 }
@@ -887,6 +901,52 @@ class SqliteAceDb implements AceDb {
       id,
     ) as SqlRow;
     return rowToDispute(row);
+  }
+
+  // -- probe sets -------------------------------------------------------------
+
+  createProbeSet(p: {
+    questionId: string;
+    attemptId: string | null;
+    probes: Probe[];
+    model: string | null;
+  }): ProbeSetRow {
+    const row = this.stmt(
+      `INSERT INTO probe_sets (id, question_id, attempt_id, at, probes_json, model)
+       VALUES (?, ?, ?, ?, ?, ?) RETURNING *`,
+    ).get(
+      uuidv7(),
+      p.questionId,
+      p.attemptId,
+      nowIso(),
+      JSON.stringify(p.probes),
+      p.model,
+    ) as SqlRow;
+    return rowToProbeSet(row);
+  }
+
+  getProbeSet(id: string): ProbeSetRow | null {
+    const r = this.stmt('SELECT * FROM probe_sets WHERE id = ?').get(id) as SqlRow | undefined;
+    return r ? rowToProbeSet(r) : null;
+  }
+
+  listProbeSets(questionId: string): ProbeSetRow[] {
+    const rows = this.stmt(
+      'SELECT * FROM probe_sets WHERE question_id = ? ORDER BY at DESC, id DESC',
+    ).all(questionId) as SqlRow[];
+    return rows.map(rowToProbeSet);
+  }
+
+  markProbeSetApplied(id: string): ProbeSetRow {
+    const existing = this.getProbeSet(id);
+    if (!existing) throw new Error(`unknown probe set: ${id}`);
+    // applying is one-way: the first applied_at sticks
+    if (existing.appliedAt != null) return existing;
+    const row = this.stmt('UPDATE probe_sets SET applied_at = ? WHERE id = ? RETURNING *').get(
+      nowIso(),
+      id,
+    ) as SqlRow;
+    return rowToProbeSet(row);
   }
 
   // -- snapshots ------------------------------------------------------------

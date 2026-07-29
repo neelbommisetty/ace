@@ -8,6 +8,7 @@ const AI_RUN_KINDS: ReadonlySet<string> = new Set<AiRunKind>([
   'review',
   'dispute',
   'brainstorm',
+  'probe',
 ]);
 
 export function registerAiRoutes(app: Hono, ctx: RouteContext): void {

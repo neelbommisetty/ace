@@ -14,6 +14,7 @@ import type { BrainstormEngine } from './brainstorm.js';
 import type { DisputeEngine } from './disputes.js';
 import type { GenerationEngine } from './generation.js';
 import { runImport, previewImport } from './importer.js';
+import type { ProbeEngine } from './probes.js';
 import type { ReviewEngine } from './reviews.js';
 import type { Runner } from './runner.js';
 import { createWorkspaceSession, type EngineFactories, type WorkspaceSession } from './session.js';
@@ -30,6 +31,7 @@ export const TOKEN = 'test-token';
 type RunnerOpts = Parameters<EngineFactories['createRunner']>[0];
 type ReviewOpts = Parameters<EngineFactories['createReviewEngine']>[0];
 type DisputeOpts = Parameters<EngineFactories['createDisputeEngine']>[0];
+type ProbeOpts = Parameters<EngineFactories['createProbeEngine']>[0];
 type GenerationOpts = Parameters<EngineFactories['createGenerationEngine']>[0];
 type BrainstormOpts = Parameters<EngineFactories['createBrainstormEngine']>[0];
 
@@ -52,6 +54,7 @@ export interface FakeEngineOverrides {
   runner?: EngineOverride<Runner, RunnerOpts>;
   reviews?: EngineOverride<ReviewEngine, ReviewOpts>;
   disputes?: EngineOverride<DisputeEngine, DisputeOpts>;
+  probes?: EngineOverride<ProbeEngine, ProbeOpts>;
   generation?: EngineOverride<GenerationEngine, GenerationOpts>;
   brainstorm?: EngineOverride<BrainstormEngine, BrainstormOpts>;
 }
@@ -88,6 +91,15 @@ export function fakeEngines(overrides: FakeEngineOverrides = {}): EngineFactorie
       const o = resolveOverride(overrides.disputes, opts);
       return {
         start: o.start ?? vi.fn(() => ({ disputeJobId: 'fake-dispute-job-id' })),
+        isRunning: o.isRunning ?? vi.fn(() => false),
+        isAnyRunning: o.isAnyRunning ?? vi.fn(() => false),
+        dispose: o.dispose ?? vi.fn(),
+      };
+    },
+    createProbeEngine: (opts) => {
+      const o = resolveOverride(overrides.probes, opts);
+      return {
+        start: o.start ?? vi.fn(() => ({ probeJobId: 'fake-probe-job-id' })),
         isRunning: o.isRunning ?? vi.fn(() => false),
         isAnyRunning: o.isAnyRunning ?? vi.fn(() => false),
         dispose: o.dispose ?? vi.fn(),

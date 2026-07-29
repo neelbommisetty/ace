@@ -256,4 +256,20 @@ UPDATE generation_jobs SET run_started_at = created_at;
   `
 CREATE INDEX idx_reviews_question_id ON reviews (question_id);
 `,
+  // Migration 8 (NEE-345): follow-up probes. Explicit index on question_id
+  // from the start — migration 7 exists only because that was forgotten for
+  // reviews; not repeating it here. Pure CREATE only.
+  `
+CREATE TABLE probe_sets (
+  id TEXT PRIMARY KEY,
+  question_id TEXT NOT NULL REFERENCES questions (id),
+  attempt_id TEXT,
+  at TEXT NOT NULL,
+  probes_json TEXT NOT NULL,
+  model TEXT,
+  applied_at TEXT
+);
+
+CREATE INDEX idx_probe_sets_question_id ON probe_sets (question_id);
+`,
 ];

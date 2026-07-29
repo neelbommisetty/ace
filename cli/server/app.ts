@@ -225,6 +225,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   routes.registerFileRoutes(app, ctx);
   routes.registerReviewRoutes(app, ctx);
   routes.registerDisputeRoutes(app, ctx);
+  routes.registerProbeRoutes(app, ctx);
   routes.registerGenerationRoutes(app, ctx);
   routes.registerBrainstormRoutes(app, ctx);
   routes.registerAiRoutes(app, ctx);

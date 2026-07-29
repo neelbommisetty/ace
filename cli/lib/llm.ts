@@ -83,6 +83,21 @@ function getBrainstormMockPayload() {
   };
 }
 
+function getProbeMockPayload() {
+  return {
+    probes: [
+      {
+        question: 'What would the other engineer say about how you handled it?',
+        source: 'derived',
+      },
+      {
+        question: 'How would your approach change if this happened at 10x the team size?',
+        source: 'derived',
+      },
+    ],
+  };
+}
+
 function getReviewExtractionMockPayload() {
   return {
     score: 4,
@@ -106,6 +121,10 @@ function getMockResponse(): string {
     return JSON.stringify(getBrainstormMockPayload(), null, 2);
   }
 
+  if (mode === 'probe') {
+    return JSON.stringify(getProbeMockPayload(), null, 2);
+  }
+
   if (mode === 'feedback') {
     return 'Overall 4/5\n\nClear solution structure and correct approach. Add a brief complexity note.';
   }
@@ -119,6 +138,7 @@ const MOCK_OBJECT_CANDIDATES: Array<() => unknown> = [
   getGenerateMockPayload,
   getDisputeMockPayload,
   getBrainstormMockPayload,
+  getProbeMockPayload,
   getReviewExtractionMockPayload,
 ];
 
@@ -186,7 +206,9 @@ type ModelTier = 'top' | 'mid' | 'basic';
 //   delta is negligible.
 // - mid:   'edge-audit' critiques a bounded artifact and the sandbox
 //   verify/repair loop backstops it; 'brainstorm' is idea turns, not the
-//   verified artifact.
+//   verified artifact; 'probe' selects/derives follow-up questions from a
+//   story already on the page — selection and derivation, not the graded
+//   review itself (NEE-345).
 // - basic: 'review-extract' mechanically extracts scores from already-
 //   written review prose — quality lives in the review call itself.
 //
@@ -214,6 +236,7 @@ const PURPOSE_TIERS: Record<LLMPurpose, ModelTier> = {
   dispute: 'top',
   'edge-audit': 'mid',
   brainstorm: 'mid',
+  probe: 'mid',
   'review-extract': 'basic',
 };
 

@@ -138,6 +138,26 @@ export interface DisputeRow {
   appliedAt: string | null;
 }
 
+/** One follow-up question offered by the probe engine (NEE-345). */
+export interface Probe {
+  question: string;
+  /** 'bank' — pulled from the question's hidden `.probes.md` generation-time
+   *  bank; 'derived' — written fresh from the candidate's own story text. */
+  source: 'bank' | 'derived';
+}
+
+/** One probe generation round for a question (NEE-345) — bounded to one per attempt. */
+export interface ProbeSetRow {
+  id: string;
+  questionId: string;
+  attemptId: string | null;
+  at: string;
+  probes: Probe[];
+  model: string | null;
+  /** Stamped once the probes have been appended to the story file on disk. */
+  appliedAt: string | null;
+}
+
 export type GenerationJobStatus = 'running' | 'llm_done' | 'done' | 'error';
 
 export interface GenerationJobRow {
@@ -185,7 +205,7 @@ export interface BrainstormSessionRow {
   updatedAt: string;
 }
 
-export type AiRunKind = 'generation' | 'review' | 'dispute' | 'brainstorm';
+export type AiRunKind = 'generation' | 'review' | 'dispute' | 'brainstorm' | 'probe';
 export type AiRunStatus = 'running' | 'done' | 'error';
 export type AiStepKind = 'llm' | 'sandbox' | 'static-check' | 'scaffold';
 export type AiStepStatus = 'running' | 'done' | 'error' | 'skipped';
@@ -239,7 +259,14 @@ export interface ProviderSettings {
  * keys one-for-one; that file imports this type rather than redeclaring it,
  * so the wire shape and the resolution policy can never drift apart.
  */
-export type LLMPurpose = 'generate' | 'edge-audit' | 'review' | 'review-extract' | 'brainstorm' | 'dispute';
+export type LLMPurpose =
+  | 'generate'
+  | 'edge-audit'
+  | 'review'
+  | 'review-extract'
+  | 'brainstorm'
+  | 'dispute'
+  | 'probe';
 
 /** The exact provider + model id a purpose resolves to right now (NEE-303). */
 export interface ResolvedModel {
@@ -414,6 +441,13 @@ export interface SseEventMap {
   'dispute-started': { disputeJobId: string; questionId: string; testRunId: string };
   'dispute-done': { disputeJobId: string; questionId: string; dispute: DisputeRow };
   'dispute-error': { disputeJobId: string; questionId: string; message: string };
+  /**
+   * Follow-up probes (NEE-345). Deliberately no `probes-chunk` — one paid
+   * structured call, no streaming surface: see cli/server/probes.ts.
+   */
+  'probes-started': { probeJobId: string; questionId: string };
+  'probes-done': { probeJobId: string; questionId: string; probeSet: ProbeSetRow };
+  'probes-error': { probeJobId: string; questionId: string; message: string };
   'brainstorm-started': { sessionId: string };
   'brainstorm-done': { sessionId: string; turn: BrainstormTurn };
   'brainstorm-error': { sessionId: string; message: string };
