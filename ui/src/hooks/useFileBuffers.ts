@@ -11,6 +11,83 @@ const SAVE_DEBOUNCE_MS = 600;
 const SAVE_RETRY_BASE_MS = 1000;
 const SAVE_RETRY_MAX_MS = 30_000;
 
+/**
+ * Buffers parked in localStorage by the unload flush (NEE-358).
+ *
+ * The pagehide flush is fire-and-forget by necessity — the tab is going away,
+ * nothing is left to read the response — so its PUT can be rejected (a 409
+ * from the stale-write precondition, because a background server write moved
+ * disk in the window before that write's file-changed even reached us) or
+ * simply never arrive, and the user's last typing would exist nowhere. The
+ * closing tab therefore writes the buffer here FIRST; the next load of the
+ * same file compares it against disk and either drops it (the flush landed) or
+ * puts the text back in front of the user.
+ */
+const UNLOAD_STASH_PREFIX = 'ace-unload-buffer:';
+/** Bounds abandoned keys (question deleted, workspace gone) rather than growing forever. */
+const UNLOAD_STASH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface UnloadStash {
+  /** Attempt the text was typed under; a different one means the file may have been reset. */
+  attemptId: string | null;
+  content: string;
+  /** Disk hash the buffer was based on — how the restore tells "never landed" from "disk moved". */
+  savedHash: string;
+  at: number;
+}
+
+function stashKey(relPath: string): string {
+  return `${UNLOAD_STASH_PREFIX}${relPath}`;
+}
+
+/** Best-effort: a full or disabled localStorage must never break the unload path. */
+function writeUnloadStash(relPath: string, entry: UnloadStash): void {
+  try {
+    window.localStorage.setItem(stashKey(relPath), JSON.stringify(entry));
+  } catch {
+    // quota exceeded / storage disabled — the keepalive PUT is still the primary path
+  }
+}
+
+/**
+ * Drops the stash for `relPath`. Called on every successful write: a pagehide
+ * that did NOT end in an unload (bfcache, a hidden-then-restored tab) leaves a
+ * stash behind that the still-mounted tab goes on to supersede, and a stale
+ * one would otherwise resurface as a bogus conflict in the next tab.
+ */
+function clearUnloadStash(relPath: string): void {
+  try {
+    window.localStorage.removeItem(stashKey(relPath));
+  } catch {
+    // storage disabled — nothing was ever stashed either
+  }
+}
+
+/** Reads and REMOVES the stash for `relPath`; a single restore attempt is all it gets. */
+function takeUnloadStash(relPath: string): UnloadStash | null {
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage.getItem(stashKey(relPath));
+    if (raw != null) window.localStorage.removeItem(stashKey(relPath));
+  } catch {
+    return null;
+  }
+  if (raw == null) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<UnloadStash>;
+    if (typeof parsed?.content !== 'string' || typeof parsed?.savedHash !== 'string') return null;
+    if (typeof parsed.at !== 'number' || Date.now() - parsed.at > UNLOAD_STASH_TTL_MS) return null;
+    return {
+      attemptId: typeof parsed.attemptId === 'string' ? parsed.attemptId : null,
+      content: parsed.content,
+      savedHash: parsed.savedHash,
+      at: parsed.at,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Reload GETs still outstanding, keyed by relPath (NEE-355). */
 type ReloadMap = Map<string, Set<Promise<void>>>;
 
@@ -182,14 +259,51 @@ export function useFileBuffers({
     [filesRef, updateFile],
   );
 
+  const attemptIdRef = useLatestRef(attempt?.id ?? null);
+
+  /**
+   * Puts a buffer parked by a previous tab's unload flush back in front of the
+   * user (NEE-358). Runs right after the initial load, so `savedContent` /
+   * `savedHash` are what disk holds NOW:
+   *
+   *  - stash === disk content → the keepalive flush landed; drop it silently.
+   *  - stash's basis hash === the current disk hash → disk never moved, so the
+   *    flush was lost (rejected, or never sent). Restore it as an ordinary
+   *    dirty buffer and save it immediately.
+   *  - otherwise → disk moved on since (the 409 case: another tab, or a
+   *    server-side append). Both versions matter, so restore the buffer and
+   *    raise the conflict banner rather than picking a winner.
+   */
+  const restoreUnloadStash = useCallback(
+    (relPath: string) => {
+      const stash = takeUnloadStash(relPath);
+      if (stash == null) return;
+      const f = filesRef.current[relPath];
+      if (!f || !f.loaded || f.info.readonly) return;
+      // Typed under a different attempt — a fresh attempt may have reset this
+      // file to the stub, and resurrecting the old text there would be wrong.
+      const attemptId = attemptIdRef.current;
+      if (stash.attemptId != null && attemptId != null && stash.attemptId !== attemptId) return;
+      if (stash.content === f.savedContent) return; // the unload flush landed after all
+      const conflict = stash.savedHash !== f.savedHash;
+      updateFile(relPath, { buffer: stash.content, saveState: 'unsaved', conflict });
+      if (!conflict) void saveFileRef.current(relPath);
+    },
+    [filesRef, updateFile, attemptIdRef],
+  );
+
   useCancellableEffect((cancelled) => {
     for (const info of editorFiles) {
-      loadFileInto(info.relPath).catch((e: unknown) => {
-        if (cancelled()) return;
-        updateFile(info.relPath, {
-          loadError: e instanceof Error ? e.message : `Failed to load ${info.name}`,
+      loadFileInto(info.relPath)
+        .then(() => {
+          if (!cancelled()) restoreUnloadStash(info.relPath);
+        })
+        .catch((e: unknown) => {
+          if (cancelled()) return;
+          updateFile(info.relPath, {
+            loadError: e instanceof Error ? e.message : `Failed to load ${info.name}`,
+          });
         });
-      });
     }
     // editorFiles is stable per mount (RoomInner is keyed by question+attempt)
   }, []);
@@ -340,6 +454,7 @@ export function useFileBuffers({
       try {
         const { hash } = await putFile(relPath, content, { savedHash: f.savedHash });
         saveAttempts.current.delete(relPath);
+        clearUnloadStash(relPath);
         updateFile(relPath, (cur) => ({
           savedContent: content,
           savedHash: hash,
@@ -472,17 +587,29 @@ export function useFileBuffers({
       for (const timer of timers.values()) window.clearTimeout(timer);
       timers.clear();
       for (const [relPath, f] of Object.entries(filesRef.current)) {
-        if (f.loaded && !f.info.readonly && !f.conflict && f.buffer !== f.savedContent) {
-          // savedHash rides along (NEE-359): there is no client left to show a
-          // conflict banner for an unload flush, so it must not be the one
-          // write that silently overwrites a newer version on disk.
-          flushFileSave(relPath, f.buffer, f.savedHash);
-        }
+        if (!f.loaded || f.info.readonly) continue;
+        if (!f.conflict && f.buffer === f.savedContent) continue;
+        // Park the buffer BEFORE flushing it. The flush is fire-and-forget by
+        // necessity, so it can be rejected (409 stale-write) or lost with
+        // nothing left to notice, and a conflicted buffer is deliberately not
+        // flushed at all — in every one of those cases this stash is the only
+        // remaining copy of the user's text, and the next load restores it.
+        writeUnloadStash(relPath, {
+          attemptId: attemptIdRef.current,
+          content: f.buffer,
+          savedHash: f.savedHash,
+          at: Date.now(),
+        });
+        if (f.conflict) continue;
+        // savedHash rides along (NEE-359): there is no client left to show a
+        // conflict banner for an unload flush, so it must not be the one
+        // write that silently overwrites a newer version on disk.
+        flushFileSave(relPath, f.buffer, f.savedHash);
       }
     };
     window.addEventListener('pagehide', onPageHide);
     return () => window.removeEventListener('pagehide', onPageHide);
-  }, [readonly, filesRef]);
+  }, [readonly, filesRef, attemptIdRef]);
 
   const firstEditSent = useRef(false);
   const handleChange = useCallback(
@@ -542,6 +669,7 @@ export function useFileBuffers({
         // be rejected by the stale-write precondition it is resolving.
         return putFile(relPath, content)
           .then(({ hash }) => {
+            clearUnloadStash(relPath);
             updateFile(relPath, (cur) => ({
               savedContent: content,
               savedHash: hash,

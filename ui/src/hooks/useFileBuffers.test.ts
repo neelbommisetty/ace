@@ -139,6 +139,7 @@ const SOLUTION = fileInfo({ relPath: 'solution.ts', readonly: false });
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
   getFile.mockImplementation((relPath: string) =>
     Promise.resolve({ path: relPath, content: `// ${relPath}`, hash: `hash-${relPath}` }),
   );
@@ -709,6 +710,137 @@ describe('useFileBuffers overlapping same-tab saves (NEE-359)', () => {
     });
     expect(result.current.files['solution.ts'].conflict).toBe(false);
     expect(result.current.files['solution.ts'].buffer).toBe('C2');
+  });
+});
+
+// The pagehide flush is fire-and-forget: nothing reads its response, so a 409
+// (or a dropped request) took the closing tab's last edits with it — even
+// though the leave guard had just prompted about them.
+describe('useFileBuffers unload stash (NEE-358)', () => {
+  const KEY = 'ace-unload-buffer:solution.ts';
+
+  function seedStash(entry: Record<string, unknown>) {
+    window.localStorage.setItem(KEY, JSON.stringify(entry));
+  }
+
+  function firePageHide() {
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'));
+    });
+  }
+
+  it('parks the dirty buffer in localStorage before the fire-and-forget flush', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    act(() => {
+      result.current.handleChange('solution.ts', 'my last keystrokes');
+    });
+    firePageHide();
+
+    expect(flushFileSave).toHaveBeenCalledWith('solution.ts', 'my last keystrokes', 'hash-solution.ts');
+    expect(JSON.parse(window.localStorage.getItem(KEY) ?? 'null')).toMatchObject({
+      attemptId: 'att-1',
+      content: 'my last keystrokes',
+      savedHash: 'hash-solution.ts',
+    });
+  });
+
+  it('parks a CONFLICTED buffer too — the one the flush deliberately never sends', async () => {
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+
+    act(() => {
+      result.current.handleChange('solution.ts', 'my unsaved work');
+    });
+    fireSse('file-changed', { relPath: 'solution.ts', hash: 'hash-from-tab-a' });
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].conflict).toBe(true);
+    });
+
+    firePageHide();
+
+    expect(flushFileSave).not.toHaveBeenCalled();
+    expect(JSON.parse(window.localStorage.getItem(KEY) ?? 'null')).toMatchObject({
+      content: 'my unsaved work',
+    });
+  });
+
+  it('restores a stash whose flush never landed and saves it, with no bogus conflict', async () => {
+    // disk is untouched (same hash the stash was based on) → the PUT was lost
+    seedStash({
+      attemptId: 'att-1',
+      content: 'the text the 409 swallowed',
+      savedHash: 'hash-solution.ts',
+      at: Date.now(),
+    });
+
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].buffer).toBe('the text the 409 swallowed');
+    });
+    expect(result.current.files['solution.ts'].conflict).toBe(false);
+    await waitFor(() => {
+      expect(putFile).toHaveBeenCalledWith('solution.ts', 'the text the 409 swallowed', {
+        savedHash: 'hash-solution.ts',
+      });
+    });
+    expect(window.localStorage.getItem(KEY)).toBeNull();
+  });
+
+  it('restores it as a conflict when disk moved on since — both versions survive', async () => {
+    seedStash({
+      attemptId: 'att-1',
+      content: 'the text the 409 swallowed',
+      savedHash: 'hash-before-the-server-append',
+      at: Date.now(),
+    });
+
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].conflict).toBe(true);
+    });
+    // the buffer is the closing tab's text; disk's newer version is the
+    // savedContent the banner's "Reload" would adopt
+    expect(result.current.files['solution.ts'].buffer).toBe('the text the 409 swallowed');
+    expect(result.current.files['solution.ts'].savedContent).toBe('// solution.ts');
+    expect(putFile).not.toHaveBeenCalled();
+  });
+
+  it('drops a stash the flush actually landed, and one from another attempt', async () => {
+    seedStash({
+      attemptId: 'att-1',
+      content: '// solution.ts',
+      savedHash: 'hash-before',
+      at: Date.now(),
+    });
+    const first = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(first.result.current.files['solution.ts'].loaded).toBe(true);
+    });
+    expect(first.result.current.files['solution.ts'].saveState).toBe('saved');
+    expect(first.result.current.files['solution.ts'].conflict).toBe(false);
+    expect(window.localStorage.getItem(KEY)).toBeNull();
+    first.unmount();
+
+    // A fresh attempt may have reset the file to its stub; text typed under the
+    // old attempt must not be resurrected on top of that.
+    seedStash({
+      attemptId: 'att-999',
+      content: 'from a previous attempt',
+      savedHash: 'hash-solution.ts',
+      at: Date.now(),
+    });
+    const { result } = setup([SOLUTION]);
+    await waitFor(() => {
+      expect(result.current.files['solution.ts'].loaded).toBe(true);
+    });
+    expect(result.current.files['solution.ts'].buffer).toBe('// solution.ts');
+    expect(window.localStorage.getItem(KEY)).toBeNull();
   });
 });
 
