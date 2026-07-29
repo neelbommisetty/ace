@@ -109,15 +109,30 @@ export function parseReviewDimensions(body: string): Record<string, number> | nu
 export function hasMeaningfulNotes(notes: string): boolean {
   let inComment = false;
   for (const raw of notes.split('\n')) {
-    const line = raw.trim();
-    if (inComment) {
-      if (line.includes('-->')) inComment = false;
-      continue;
+    // Strip the commented spans out of the line; whatever is left is the
+    // user's own content. Scanning by index rather than by line prefix is
+    // what lets a sentence typed right after a hint's `-->` still count —
+    // a line-prefix test would silently discard it.
+    let rest = raw;
+    let visible = '';
+    while (rest.length > 0) {
+      if (inComment) {
+        const close = rest.indexOf('-->');
+        if (close === -1) break;
+        inComment = false;
+        rest = rest.slice(close + 3);
+      } else {
+        const open = rest.indexOf('<!--');
+        if (open === -1) {
+          visible += rest;
+          break;
+        }
+        visible += rest.slice(0, open);
+        inComment = true;
+        rest = rest.slice(open + 4);
+      }
     }
-    if (line.startsWith('<!--')) {
-      if (!line.includes('-->')) inComment = true;
-      continue;
-    }
+    const line = visible.trim();
     if (line.length > 0 && !line.startsWith('#')) return true;
   }
   return false;
@@ -161,11 +176,16 @@ const GUARD_NOUN: Record<QuestionType, string> = {
 /**
  * Exact-baseline check: true when `content`'s sha1 matches the pristine
  * scaffold snapshot (captured on first room open, re-recorded after a
- * fresh-attempt reset) for `relFile`. Shared by both branches below — the
- * one guard that cannot be fooled by template content, since it never
- * inspects the text itself. Never compares against 'reset' snapshots —
- * those hold the user's own pre-reset content, which they may legitimately
- * restore.
+ * fresh-attempt reset) for `relFile`. Shared by both branches below.
+ *
+ * Scope, precisely: this catches a BYTE-IDENTICAL scaffold, nothing more. It
+ * is exact-hash equality, not a similarity measure — one stray character
+ * defeats it, at which point only the heuristics above are left. So it is a
+ * backstop against the template's own boilerplate fooling those heuristics,
+ * NOT a general "did the user actually do the work" check.
+ *
+ * Never compares against 'reset' snapshots — those hold the user's own
+ * pre-reset content, which they may legitimately restore.
  */
 function isUnchangedSinceScaffold(
   question: QuestionRow,
@@ -191,9 +211,10 @@ export function getReviewGuardError(question: QuestionRow, db?: AceDb): string |
     if (!hasMeaningfulNotes(notes)) {
       return `${primary} has no ${noun} notes yet — write your ${noun} before requesting a review`;
     }
-    // Template-content-independent guard (see isUnchangedSinceScaffold):
-    // catches a freshly scaffolded story/notes file whose hint comments or
-    // boilerplate happen to defeat hasMeaningfulNotes.
+    // Backstop for the case where the template's own boilerplate defeats
+    // hasMeaningfulNotes: an untouched scaffold is caught by hash even when
+    // the heuristic reads it as written. Exact equality only — see
+    // isUnchangedSinceScaffold.
     if (db && isUnchangedSinceScaffold(question, db, primary, notes)) {
       return `${primary} is unchanged since it was scaffolded — write your ${noun} before requesting a review`;
     }

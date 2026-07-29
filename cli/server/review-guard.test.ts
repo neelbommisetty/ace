@@ -237,6 +237,16 @@ We shipped a retry strategy under deadline pressure.
     expect(hasMeaningfulNotes(notes)).toBe(true);
   });
 
+  it('counts content typed on the same line as a comment, on either side', () => {
+    // Writing straight after the hint instead of on a fresh line is a normal
+    // editing habit; a line-prefix scan would silently discard it.
+    expect(hasMeaningfulNotes('## Situation\n<!-- hint --> I owned the rollback.\n')).toBe(true);
+    expect(hasMeaningfulNotes('## Situation\nI owned the rollback. <!-- hint -->\n')).toBe(true);
+    expect(
+      hasMeaningfulNotes('## Situation\n<!-- hint spanning\n     two lines --> I owned it.\n'),
+    ).toBe(true);
+  });
+
   it('still rejects the pre-existing single-line-comment cases (unchanged behaviour)', () => {
     expect(hasMeaningfulNotes('# Heading\n<!-- a hint -->\n')).toBe(false);
     expect(hasMeaningfulNotes('# Heading\n\nSome real content.\n')).toBe(true);
