@@ -279,11 +279,13 @@ describe('Room keyboard shortcuts overlay (NEE-309)', () => {
     renderRoom();
     await screen.findByTestId('editor-file:///solution.ts');
 
-    // problem pane starts open at default test width; collapsing it swaps in the expander button
-    fireEvent.keyDown(window, { key: 'p', altKey: true });
+    // problem pane starts open at default test width; collapsing it swaps in the expander button.
+    // Matches by e.code (physical KeyP), not e.key, since macOS composes Option+letter into an
+    // alt-glyph character in e.key (see Room.tsx handler) — code is what a real browser reports.
+    fireEvent.keyDown(window, { key: 'π', code: 'KeyP', altKey: true });
     await screen.findByTitle('Show problem pane');
 
-    fireEvent.keyDown(window, { key: 'p', altKey: true });
+    fireEvent.keyDown(window, { key: 'π', code: 'KeyP', altKey: true });
     await waitFor(() => {
       expect(screen.queryByTitle('Show problem pane')).toBeNull();
     });

@@ -228,20 +228,27 @@ function RoomInner({
       }
       if (!e.altKey || e.metaKey || e.ctrlKey) return;
       if (isEditableTarget(e.target)) return;
-      switch (e.key) {
-        case 'p':
+      // Match on e.code (physical key), not e.key: on macOS, holding
+      // Option/Alt while typing a letter composes an alt-glyph character
+      // (e.g. Option+P -> 'π', Option+C -> 'ç', Option+E is a dead/compose
+      // key) — e.key reports that composed character across Chrome, Safari,
+      // and Firefox, so matching on e.key left these bindings non-functional
+      // on the Mac dev/run platform. e.code reports the physical key
+      // regardless of layout or modifier composition.
+      switch (e.code) {
+        case 'KeyP':
           e.preventDefault();
           setProblemOpen((v) => !v);
           break;
-        case 'i':
+        case 'KeyI':
           e.preventDefault();
           setAiOpen((v) => !v);
           break;
-        case 'c':
+        case 'KeyC':
           e.preventDefault();
           setConsoleOpen((v) => !v);
           break;
-        case 'e':
+        case 'KeyE':
           e.preventDefault();
           editorInstanceRef.current?.focus();
           break;
