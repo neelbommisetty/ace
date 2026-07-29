@@ -6,6 +6,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { getQuestionsDir } from '../lib/paths.js';
+import {
+  buildHarnessEntry,
+  buildHarnessHtml,
+  parsePreviewEntryId,
+  parsePreviewPagePath,
+  resolvePreviewTarget,
+} from './preview-harness.js';
 import type { Bus } from './sse.js';
 import type { PreviewStatus } from './types.js';
 
@@ -129,16 +136,90 @@ interface ViteDevServerLike {
   close(): Promise<void>;
   waitForRequestsIdle?: (ignoredId?: string) => Promise<void>;
   watcher?: { close(): Promise<void> };
+  transformIndexHtml(url: string, html: string): Promise<string>;
   httpServer: {
     address(): { address: string; port: number } | string | null;
     close(cb?: (err?: Error) => void): unknown;
     closeAllConnections?: () => void;
   } | null;
-  middlewares: { use(fn: (req: unknown, res: unknown, next: () => void) => void): void };
+  middlewares: {
+    use(fn: (req: PreviewHttpReq, res: PreviewHttpRes, next: (err?: unknown) => void) => void): void;
+  };
+}
+
+/** Minimal connect req/res shapes the preview middlewares touch. */
+interface PreviewHttpReq {
+  url?: string;
+  method?: string;
+}
+interface PreviewHttpRes {
+  statusCode: number;
+  setHeader(name: string, value: string): void;
+  end(body?: string): void;
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms).unref());
+}
+
+/**
+ * NEE-350: serves the synthesised per-question page + entry module. Virtual
+ * only — nothing is ever written into the user's question folder (its
+ * contents are the user's artifact and are hashed for snapshots).
+ *
+ *  - GET /preview/<category>/<slug>/  → index.html (through
+ *    transformIndexHtml, so plugin-react injects its refresh preamble)
+ *  - /@ace-preview/<category>/<slug>/entry.js → the harness entry module
+ */
+function acePreviewHarnessPlugin(questionsDir: string): Record<string, unknown> {
+  return {
+    name: 'ace-preview-harness',
+    resolveId(id: string): string | undefined {
+      return parsePreviewEntryId(id) != null ? id : undefined;
+    },
+    load(id: string): string | undefined {
+      const parsed = parsePreviewEntryId(id);
+      if (parsed == null) return undefined;
+      const resolution = resolvePreviewTarget(questionsDir, parsed.category, parsed.slug);
+      if (!resolution.ok) {
+        // The page can outlive its question (deleted mid-session) — keep the
+        // failure readable in-pane instead of a vite error overlay.
+        return `const el = document.getElementById('root');\nif (el) el.textContent = ${JSON.stringify(
+          resolution.reason,
+        )};\n`;
+      }
+      return buildHarnessEntry(resolution.target);
+    },
+    configureServer(server: ViteDevServerLike): () => void {
+      // Post-internal: /preview/* collides with nothing vite serves, and the
+      // page itself needs no transform pipeline.
+      return () => {
+        server.middlewares.use((req, res, next) => {
+          void (async () => {
+            const pathname = (req.url ?? '').split('?')[0];
+            const parsed = req.method === 'GET' ? parsePreviewPagePath(pathname) : null;
+            if (parsed == null) {
+              next();
+              return;
+            }
+            const resolution = resolvePreviewTarget(questionsDir, parsed.category, parsed.slug);
+            if (!resolution.ok) {
+              res.statusCode = 404;
+              res.setHeader('content-type', 'text/plain; charset=utf-8');
+              res.end(resolution.reason);
+              return;
+            }
+            const html = await server.transformIndexHtml(
+              req.url ?? pathname,
+              buildHarnessHtml(resolution.target),
+            );
+            res.setHeader('content-type', 'text/html; charset=utf-8');
+            res.end(html);
+          })().catch((err: unknown) => next(err));
+        });
+      };
+    },
+  };
 }
 
 export interface PreviewManager {
@@ -300,6 +381,7 @@ export function createPreviewManager(opts: CreatePreviewManagerOptions): Preview
         },
         plugins: [
           pluginReactMod.default(),
+          acePreviewHarnessPlugin(questionsDir),
           {
             name: 'ace-preview-activity',
             configureServer(s: ViteDevServerLike) {
