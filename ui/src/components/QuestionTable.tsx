@@ -1,5 +1,6 @@
 import type { MouseEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
+import { hasTests, lookupCategoryConfig } from '@shared/categories';
 import { relTime } from '../lib/format';
 import type { SortDir, SortKey } from '../lib/libraryOrder';
 import type { QuestionWithStats } from '../types';
@@ -25,6 +26,16 @@ export interface QuestionTableProps {
    * without a Library round trip. Omitted (or empty) renders a plain link.
    */
   linkQuery?: string;
+}
+
+/**
+ * True unless `category` is a known no-test category (design/behavioral,
+ * NEE-353) — an unknown category degrades to "has tests" so it keeps the
+ * pre-existing dash rather than being mislabeled "no tests".
+ */
+function categoryHasTests(category: string): boolean {
+  const config = lookupCategoryConfig(category);
+  return config ? hasTests(config) : true;
 }
 
 function SortableHeader({
@@ -163,6 +174,21 @@ export function QuestionTable({
                         }
                       >
                         {q.stats.lastRun.passed}/{q.stats.lastRun.total}
+                      </span>
+                    )
+                  ) : !categoryHasTests(q.category) ? (
+                    // Design/behavioral questions never produce a test run
+                    // (NEE-353) — 'solved' status here means a completed
+                    // review exists, so say that instead of leaving a bare
+                    // '—' that reads as "unknown" rather than "not
+                    // applicable".
+                    q.stats.status === 'solved' ? (
+                      <span className="run-pass" title="Solved via a completed review">
+                        reviewed
+                      </span>
+                    ) : (
+                      <span className="cell-dim" title="This category has no automated tests">
+                        no tests
                       </span>
                     )
                   ) : (

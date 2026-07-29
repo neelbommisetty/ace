@@ -171,3 +171,34 @@ describe('QuestionTable — sortable headers (NEE-298)', () => {
     expect(screen.queryByText('Room for question')).toBeNull();
   });
 });
+
+// NEE-353: design/behavioral questions never produce a test run, so the
+// "Last run" cell must say something honest instead of a bare '—' (which
+// reads as "unknown", not "not applicable").
+describe('QuestionTable — Last run column for no-test categories (NEE-353)', () => {
+  it('shows "reviewed" for a solved (reviewed) prose row instead of a dash', () => {
+    renderTable([
+      question({
+        category: 'behavioral',
+        stats: { attemptCount: 1, lastRun: null, lastActivityAt: null, status: 'solved', imported: false },
+      }),
+    ]);
+    expect(screen.getByText('reviewed')).toBeInTheDocument();
+  });
+
+  it('shows "no tests" for an unreviewed prose row instead of a dash', () => {
+    renderTable([
+      question({
+        category: 'design-fe',
+        stats: { attemptCount: 1, lastRun: null, lastActivityAt: null, status: 'in-progress', imported: false },
+      }),
+    ]);
+    expect(screen.getByText('no tests')).toBeInTheDocument();
+  });
+
+  it('still shows a dash for an untouched coding row (has tests, no run yet)', () => {
+    renderTable([question()]); // default: js-ts, not-attempted, lastRun null
+    // Attempts and Last run are both '—' for an untouched row.
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(1);
+  });
+});
