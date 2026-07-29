@@ -91,6 +91,8 @@ const {
   getTestRuns,
   getReviews,
   getDisputes,
+  getProbeSets,
+  startProbes,
   getSettings,
   getAttempt,
   startFreshAttempt,
@@ -122,6 +124,8 @@ const {
     getTestRuns: vi.fn(),
     getReviews: vi.fn(),
     getDisputes: vi.fn(),
+    getProbeSets: vi.fn(),
+    startProbes: vi.fn(),
     getSettings: vi.fn(),
     getAttempt: vi.fn(),
     startFreshAttempt: vi.fn(),
@@ -147,6 +151,8 @@ vi.mock('../api', () => ({
   getTestRuns,
   getReviews,
   getDisputes,
+  getProbeSets,
+  startProbes,
   getSettings,
   getAttempt,
   startFreshAttempt,
@@ -234,6 +240,7 @@ beforeEach(() => {
   getTestRuns.mockResolvedValue([]);
   getReviews.mockResolvedValue([]);
   getDisputes.mockResolvedValue([]);
+  getProbeSets.mockResolvedValue([]);
   getSettings.mockResolvedValue({
     openai: { configured: true, masked: '...abcd', baseUrl: null },
     anthropic: { configured: false, masked: null, baseUrl: null },

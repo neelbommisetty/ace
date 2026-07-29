@@ -58,6 +58,7 @@ const CONFIGURED_SETTINGS: SettingsInfo = {
     'review-extract': { provider: 'openai', model: 'gpt-5.6-luna' },
     brainstorm: { provider: 'openai', model: 'gpt-5.6-terra' },
     dispute: { provider: 'openai', model: 'gpt-5.6-sol' },
+    probe: { provider: 'openai', model: 'gpt-5.6-terra' },
   },
 };
 

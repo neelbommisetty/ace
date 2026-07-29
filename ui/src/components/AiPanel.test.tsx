@@ -25,6 +25,14 @@ const QUESTION: QuestionRow = {
   missingAt: null,
 };
 
+const BEHAVIORAL_QUESTION: QuestionRow = {
+  ...QUESTION,
+  id: 'q-2',
+  category: 'behavioral',
+  slug: 'conflict-navigated',
+  title: 'A Conflict You Navigated',
+};
+
 const KEYLESS_SETTINGS: SettingsInfo = {
   openai: { configured: false, masked: null, baseUrl: null },
   anthropic: { configured: false, masked: null, baseUrl: null },
@@ -45,6 +53,7 @@ const KEYED_SETTINGS: SettingsInfo = {
     'review-extract': { provider: 'anthropic', model: 'claude-haiku-4-5' },
     brainstorm: { provider: 'anthropic', model: 'claude-sonnet-5' },
     dispute: { provider: 'anthropic', model: 'claude-opus-5' },
+    probe: { provider: 'anthropic', model: 'claude-sonnet-5' },
   },
 };
 
@@ -114,5 +123,87 @@ describe('AiPanel — keyless gating (NEE-303)', () => {
     });
 
     expect(screen.getByRole('button', { name: /Reviewing…/ })).toBeDisabled();
+  });
+});
+
+describe('AiPanel — follow-up probes gating (NEE-345)', () => {
+  it('never renders the probes button for a non-prose category, keyed or not', () => {
+    renderPanel({ question: QUESTION, settings: KEYED_SETTINGS, onRequestProbes: vi.fn() });
+    expect(screen.queryByRole('button', { name: /Follow-up probes/ })).not.toBeInTheDocument();
+  });
+
+  it('hides the probes button (and shows the no-key notice) when no key is configured', () => {
+    renderPanel({
+      question: BEHAVIORAL_QUESTION,
+      settings: KEYLESS_SETTINGS,
+      onRequestProbes: vi.fn(),
+    });
+    expect(screen.queryByRole('button', { name: /Follow-up probes/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/to request follow-up probes\./)).toBeInTheDocument();
+  });
+
+  it('does not render the probes button while settings are still loading (null)', () => {
+    renderPanel({ question: BEHAVIORAL_QUESTION, settings: null, onRequestProbes: vi.fn() });
+    expect(screen.queryByRole('button', { name: /Follow-up probes/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/No LLM API key configured/)).not.toBeInTheDocument();
+  });
+
+  it('renders an enabled probes button naming the resolved model for a prose category once keyed', () => {
+    renderPanel({
+      question: BEHAVIORAL_QUESTION,
+      settings: KEYED_SETTINGS,
+      onRequestProbes: vi.fn(),
+    });
+    const button = screen.getByRole('button', {
+      name: 'Follow-up probes · anthropic/claude-sonnet-5',
+    });
+    expect(button).toBeEnabled();
+  });
+
+  it('never renders the probes button in readonly mode (no onRequestProbes), regardless of key state', () => {
+    renderPanel({ question: BEHAVIORAL_QUESTION, settings: KEYLESS_SETTINGS });
+    expect(screen.queryByRole('button', { name: /Follow-up probes/ })).not.toBeInTheDocument();
+
+    renderPanel({ question: BEHAVIORAL_QUESTION, settings: KEYED_SETTINGS });
+    expect(screen.queryByRole('button', { name: /Follow-up probes/ })).not.toBeInTheDocument();
+  });
+
+  it('disables the probes button while a probe round is running', () => {
+    renderPanel({
+      question: BEHAVIORAL_QUESTION,
+      settings: KEYED_SETTINGS,
+      onRequestProbes: vi.fn(),
+      probesRunning: true,
+    });
+    expect(screen.getByRole('button', { name: /Drafting probes…/ })).toBeDisabled();
+  });
+
+  it('renders the returned probes as a read-only list with the "answer in story.md" hint', () => {
+    renderPanel({
+      question: BEHAVIORAL_QUESTION,
+      settings: KEYED_SETTINGS,
+      onRequestProbes: vi.fn(),
+      probeSets: [
+        {
+          id: 'ps-1',
+          questionId: 'q-2',
+          attemptId: null,
+          at: new Date().toISOString(),
+          model: 'claude-sonnet-5',
+          appliedAt: new Date().toISOString(),
+          probes: [
+            { question: 'What would the other engineer say?', source: 'derived' },
+            { question: 'How would this change at 10x scale?', source: 'bank' },
+          ],
+        },
+      ],
+    });
+
+    expect(screen.getByText('What would the other engineer say?')).toBeInTheDocument();
+    expect(screen.getByText('How would this change at 10x scale?')).toBeInTheDocument();
+    expect(screen.getByText(/answer these in/)).toBeInTheDocument();
+    expect(screen.getByText('story.md')).toBeInTheDocument();
+    // No textarea anywhere — answers are typed in the Monaco editor, not here.
+    expect(document.querySelector('textarea')).toBeNull();
   });
 });
