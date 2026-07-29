@@ -5,10 +5,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getProbeBankMd, scaffoldQuestionAt } from '../lib/scaffold.js';
 import type { LLMMessage, LLMProvider } from '../lib/llm.js';
 import { createAiLog } from './ai-log.js';
+import { readBlob } from './blobs.js';
 import { openDb } from './db.js';
 import {
   appendProbesToStory,
@@ -214,16 +215,29 @@ describe('hasProbeSetForAttempt', () => {
     const question = writeQuestion('conflict-bound-unit', { story: REAL_STORY });
     expect(hasProbeSetForAttempt(db, question.id, 'attempt-1')).toBe(false);
 
+    const probeSet = db.createProbeSet({
+      questionId: question.id,
+      attemptId: 'attempt-1',
+      probes: [{ question: 'x', source: 'derived' }],
+      model: 'm',
+    });
+    db.markProbeSetApplied(probeSet.id);
+
+    expect(hasProbeSetForAttempt(db, question.id, 'attempt-1')).toBe(true);
+    expect(hasProbeSetForAttempt(db, question.id, 'attempt-2')).toBe(false);
+    expect(hasProbeSetForAttempt(db, question.id, null)).toBe(false);
+  });
+
+  it('ignores an appliedAt-null row — an orphan from a failed story write must not 409 forever (NEE-357)', () => {
+    const question = writeQuestion('conflict-bound-orphan', { story: REAL_STORY });
     db.createProbeSet({
       questionId: question.id,
       attemptId: 'attempt-1',
       probes: [{ question: 'x', source: 'derived' }],
       model: 'm',
     });
-
-    expect(hasProbeSetForAttempt(db, question.id, 'attempt-1')).toBe(true);
-    expect(hasProbeSetForAttempt(db, question.id, 'attempt-2')).toBe(false);
-    expect(hasProbeSetForAttempt(db, question.id, null)).toBe(false);
+    // Never applied (as if the story.md write had thrown) — not counted.
+    expect(hasProbeSetForAttempt(db, question.id, 'attempt-1')).toBe(false);
   });
 });
 
@@ -277,6 +291,101 @@ describe('createProbeEngine', () => {
     expect(snapshots).not.toBeNull();
 
     expect(engine.isRunning(question.id)).toBe(false);
+  });
+
+  it('re-reads story.md fresh right before appending — content written during the LLM call is never lost (NEE-357)', async () => {
+    const question = writeQuestion('conflict-fresh-read', { story: REAL_STORY });
+    const storyAbs = path.join(question.dirPath, 'story.md');
+    const midCallEdit = `${REAL_STORY}\n## Result\nWe shipped the change and cut p99 latency by 40%.\n`;
+    const { llm } = makeFakeLlm([
+      () => {
+        // Simulate the client's 600ms autosave landing on disk while the
+        // (10-60s, in reality) LLM call is still in flight — the fake only
+        // resolves once this write has happened.
+        fs.writeFileSync(storyAbs, midCallEdit, 'utf8');
+        return TWO_PROBES;
+      },
+    ]);
+    const engine = createProbeEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+    });
+
+    const done = waitFor('probes-done');
+    engine.start(question, 'attempt-1');
+    await done;
+
+    const storyContent = fs.readFileSync(storyAbs, 'utf8');
+    // Nothing the user typed mid-call is reverted.
+    expect(storyContent).toContain('We shipped the change and cut p99 latency by 40%.');
+    expect(storyContent).toContain('## Follow-ups');
+    expect(storyContent).toContain('### Probe 1 —');
+
+    // The snapshot recorded is of the FRESH content, not the stale pre-call
+    // read — it's an actual recovery point, not a copy of already-known-stale
+    // content.
+    const snapshot = db.getFirstSnapshot(
+      question.id,
+      `questions/behavioral/${question.slug}/story.md`,
+      'probe-append',
+    );
+    expect(snapshot).not.toBeNull();
+    const snapshotContent = readBlob(tempRoot, snapshot!.hash);
+    expect(snapshotContent).toContain('We shipped the change and cut p99 latency by 40%.');
+  });
+
+  it('a simulated write failure after the LLM call leaves the probe set unapplied without 409-ing later requests forever (NEE-357)', async () => {
+    const question = writeQuestion('conflict-write-fail', { story: REAL_STORY });
+    const storyAbs = path.join(question.dirPath, 'story.md');
+    const { llm } = makeFakeLlm([() => TWO_PROBES]);
+    const engine = createProbeEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+    });
+
+    const originalWriteFileSync = fs.writeFileSync.bind(fs);
+    const writeSpy = vi
+      .spyOn(fs, 'writeFileSync')
+      .mockImplementation((file: unknown, ...args: unknown[]) => {
+        if (file === storyAbs) throw new Error('simulated disk failure');
+        return (originalWriteFileSync as (...a: unknown[]) => unknown)(file, ...args);
+      });
+
+    const errored = waitFor('probes-error');
+    engine.start(question, 'attempt-1');
+    await errored;
+    writeSpy.mockRestore();
+
+    // The paid output is preserved (mirrors generation.ts's llm_done patch)
+    // but never marked applied, since the story.md write never landed.
+    const rows = db.listProbeSets(question.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].appliedAt).toBeNull();
+
+    // The orphaned, unapplied row must not poison the bound for this attempt
+    // forever — this is the NEE-357 fix under test.
+    expect(hasProbeSetForAttempt(db, question.id, 'attempt-1')).toBe(false);
+
+    // A later run for the same attempt succeeds normally.
+    const { llm: llm2 } = makeFakeLlm([() => TWO_PROBES]);
+    const engine2 = createProbeEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm: llm2,
+      resolveProvider: FAKE_PROVIDER,
+    });
+    const done = waitFor('probes-done');
+    engine2.start(question, 'attempt-1');
+    await done;
+
+    expect(db.listProbeSets(question.id).filter((p) => p.appliedAt != null)).toHaveLength(1);
   });
 
   it('degrades gracefully with no .probes.md: the prompt says "none" and every probe returned is still accepted', async () => {

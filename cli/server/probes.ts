@@ -93,13 +93,24 @@ export function getProbeGuardError(question: QuestionRow): string | null {
  * The bound (NEE-345): one probe set per attempt. `attemptId: null` is its
  * own bucket (no active attempt — a readonly/legacy edge case the room never
  * actually surfaces the button for).
+ *
+ * Only counts APPLIED probe sets (NEE-357): `createProbeSet` deliberately
+ * persists the paid LLM output before the story.md write lands (see the
+ * comment above that call in `runJob`) so a failed write never loses the
+ * probes themselves — but that means a row with `appliedAt: null` records a
+ * round that never actually reached the story file. Counting it here would
+ * 409 every later attempt at this question forever with no way to recover.
+ * An unapplied row is invisible to the bound; the next successful run is
+ * simply a fresh probe set with the orphan left behind for forensics.
  */
 export function hasProbeSetForAttempt(
   db: AceDb,
   questionId: string,
   attemptId: string | null,
 ): boolean {
-  return db.listProbeSets(questionId).some((p) => p.attemptId === attemptId);
+  return db
+    .listProbeSets(questionId)
+    .some((p) => p.attemptId === attemptId && p.appliedAt != null);
 }
 
 // ---------------------------------------------------------------------------
@@ -226,9 +237,16 @@ ${bankSection}`;
         model: getModelId(provider, 'probe'),
       });
 
-      // Snapshot the pre-append story (trigger 'probe-append'), then the
-      // additive, idempotent-across-rounds write — see appendProbesToStory.
-      const hash = saveBlob(workspaceRoot, story);
+      // Re-read story.md now, right before computing the append (NEE-357):
+      // the LLM call above took 10-60s, and the file autosaves every 600ms —
+      // `story` above is a pre-call snapshot that may be badly stale by now.
+      // appendProbesToStory is pure specifically so it can be re-run against
+      // whatever is on disk this instant instead of clobbering it with what
+      // was there when the call started. The snapshot below records this
+      // SAME fresh read, not the stale pre-call one, so it's an actual
+      // recovery point rather than a copy of already-known-stale content.
+      const freshStory = readFileOr(storyAbs);
+      const hash = saveBlob(workspaceRoot, freshStory);
       db.addSnapshot({
         questionId: question.id,
         attemptId,
@@ -236,7 +254,7 @@ ${bankSection}`;
         hash,
         trigger: 'probe-append',
       });
-      const updated = appendProbesToStory(story, result.probes);
+      const updated = appendProbesToStory(freshStory, result.probes);
       writeWorkspaceFile(workspaceRoot, toWorkspaceRelPath(workspaceRoot, storyAbs), updated);
 
       probeSet = db.markProbeSetApplied(probeSet.id);

@@ -132,6 +132,28 @@ describe('POST /api/questions/:category/:slug/probes', () => {
     setProviderConfigured();
     const question = scaffoldStory('conflict-bound', { story: REAL_STORY });
     const attempt = ws.session.db.createAttempt(question.id);
+    const probeSet = ws.session.db.createProbeSet({
+      questionId: question.id,
+      attemptId: attempt.id,
+      probes: [{ question: 'What would the other engineer say?', source: 'derived' }],
+      model: 'claude-sonnet-5',
+    });
+    // The bound only counts APPLIED probe sets (NEE-357) — an unapplied row
+    // (as if the story.md write had failed) must not 409 forever.
+    ws.session.db.markProbeSetApplied(probeSet.id);
+    const fetch = buildApp();
+    const res = await fetch(`/api/questions/behavioral/${question.slug}/probes`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/already been generated/);
+  });
+
+  it('an unapplied probe set (as if the story.md write had failed) does not trip the bound (NEE-357)', async () => {
+    setProviderConfigured();
+    const question = scaffoldStory('conflict-orphaned', { story: REAL_STORY });
+    const attempt = ws.session.db.createAttempt(question.id);
     ws.session.db.createProbeSet({
       questionId: question.id,
       attemptId: attempt.id,
@@ -142,9 +164,7 @@ describe('POST /api/questions/:category/:slug/probes', () => {
     const res = await fetch(`/api/questions/behavioral/${question.slug}/probes`, {
       method: 'POST',
     });
-    expect(res.status).toBe(409);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toMatch(/already been generated/);
+    expect(res.status).toBe(202);
   });
 
   it('a probe set for a DIFFERENT attempt does not trip the bound', async () => {
