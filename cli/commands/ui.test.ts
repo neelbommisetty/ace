@@ -6,6 +6,12 @@ import { uiTokenPath } from '../lib/ui-token.js';
 import { parseArgs, resolveToken } from './ui.js';
 
 describe('parseArgs', () => {
+  // 4280, NOT 4242 (NEE-360) — 4242 is the local ai-sub-proxy's port, and
+  // ace binding it first would starve the proxy on reboot-order races.
+  it('defaults to port 4280, off the ai-sub-proxy port', () => {
+    expect(parseArgs([]).port).toBe(4280);
+  });
+
   it('defaults rotateToken to false', () => {
     expect(parseArgs([]).rotateToken).toBe(false);
   });

@@ -177,6 +177,64 @@ describe('getModel fetch-tap threading (NEE-322)', () => {
   });
 });
 
+// chatStream never had a fetch tap at all before NEE-361 — mirrors the
+// chatObjectStream threading above exactly, per the ticket's "same contract"
+// instruction. The default `ai` mock's textStream (empty async generator) is
+// enough here; no loadWithStreamResult override needed.
+describe('chatStream fetch-tap threading (NEE-361)', () => {
+  it('passes a fetch to both factories only when onStreamActivity is provided', async () => {
+    writeConfig({ OPENAI_API_KEY: 'k1', ANTHROPIC_API_KEY: 'k2' });
+    const { llm, createOpenAI, createAnthropic } = await load();
+
+    await llm.chatStream('openai', MESSAGES, { onStreamActivity: () => {} });
+    await llm.chatStream('anthropic', MESSAGES, { onStreamActivity: () => {} });
+
+    expect(typeof createOpenAI.mock.calls[0][0]!.fetch).toBe('function');
+    expect(typeof createAnthropic.mock.calls[0][0]!.fetch).toBe('function');
+  });
+
+  it('omits fetch entirely when onStreamActivity is not provided — construction unchanged', async () => {
+    writeConfig({ OPENAI_API_KEY: 'k1', ANTHROPIC_API_KEY: 'k2' });
+    const { llm, createOpenAI, createAnthropic } = await load();
+
+    await llm.chatStream('openai', MESSAGES);
+    await llm.chatStream('anthropic', MESSAGES);
+
+    expect('fetch' in createOpenAI.mock.calls[0][0]!).toBe(false);
+    expect('fetch' in createAnthropic.mock.calls[0][0]!).toBe(false);
+  });
+
+  it('the threaded fetch fires the activity callback on raw chunks, even with no text output', async () => {
+    writeConfig({ ANTHROPIC_API_KEY: 'k2' });
+    // Only ping frames, exactly like the buffering-proxy scenario NEE-361
+    // fixes — no text chunk would ever come out of this response body.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode('event: ping\n\n'));
+                controller.close();
+              },
+            }),
+          ),
+      ),
+    );
+    const { llm, createAnthropic } = await load();
+
+    const onStreamActivity = vi.fn();
+    await llm.chatStream('anthropic', MESSAGES, { onStreamActivity });
+    const tapped = createAnthropic.mock.calls[0][0]!.fetch as typeof fetch;
+    const response = await tapped('http://localhost:4280/v1/messages');
+    await response.text();
+
+    expect(onStreamActivity).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(200);
+  });
+});
+
 describe('key validation probe URLs', () => {
   it('probes {base}/models, stripping trailing slashes env values may carry', async () => {
     const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response('{}', { status: 200 }));
@@ -250,5 +308,47 @@ describe('key validation error messages', () => {
       valid: false,
       error: '404 Not Found from http://localhost:4242/v1',
     });
+  });
+});
+
+// NEE-360: a bare 2xx used to be accepted outright — ace's own SPA
+// catch-all (cli/server/routes/static.ts) serves index.html with a 200 for
+// ANY extension-less GET, so pointing a base URL at ace's own port (or any
+// misconfigured proxy) would green-check the key and every subsequent paid
+// call would then die with a bare 404.
+describe('key validation false-pass hardening (NEE-360)', () => {
+  it('rejects an HTML 200 body as an actionable error, not a valid key', async () => {
+    const html = '<!doctype html>\n<html><body>The Room</body></html>';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(html, { status: 200 })));
+    const { llm } = await load();
+
+    const openai = await llm.validateOpenAIKey('k', 'http://localhost:4280/v1');
+    const anthropic = await llm.validateAnthropicKey('k', 'http://localhost:4280/v1');
+
+    expect(openai.valid).toBe(false);
+    expect(openai.error).toMatch(/HTML page/i);
+    expect(anthropic.valid).toBe(false);
+    expect(anthropic.error).toMatch(/HTML page/i);
+  });
+
+  it('rejects JSON that is not a models-list body (no "data" array)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    const { llm } = await load();
+
+    const result = await llm.validateAnthropicKey('k', 'http://localhost:4280/v1');
+
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/not a models-list response/i);
+  });
+
+  it('accepts a genuine models-list body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ object: 'list', data: [] }), { status: 200 })),
+    );
+    const { llm } = await load();
+
+    expect(await llm.validateOpenAIKey('k')).toEqual({ valid: true });
+    expect(await llm.validateAnthropicKey('k')).toEqual({ valid: true });
   });
 });

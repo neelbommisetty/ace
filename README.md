@@ -33,7 +33,7 @@ Everything runs on your machine. `ace init` bootstraps a plain-files workspace u
 
 ## Architecture
 
-`ace ui` starts a Hono server (default port 4242, scanning upward if it's taken) bound to `127.0.0.1` and gated by a per-session token. The server in [`cli/server/`](cli/server) owns the workspace session: a SQLite database via `node:sqlite`, a chokidar watcher that reconciles disk edits with the editor, programmatic Vitest execution, and engines for reviews, disputes, brainstorming, and verified generation — all streamed to the React app over SSE.
+`ace ui` starts a Hono server (default port 4280, scanning upward if it's taken) bound to `127.0.0.1` and gated by a per-session token. The server in [`cli/server/`](cli/server) owns the workspace session: a SQLite database via `node:sqlite`, a chokidar watcher that reconciles disk edits with the editor, programmatic Vitest execution, and engines for reviews, disputes, brainstorming, and verified generation — all streamed to the React app over SSE.
 
 The UI in [`ui/src/`](ui/src) is a React + Monaco single-page app talking to that server's REST + SSE API. Shared logic lives in [`cli/lib/`](cli/lib) — category metadata, workspace discovery, global config with explicit precedence (`~/.ace/config.json`, then `~/.ace/.env`, then environment), and the LLM layer. Prompt files under [`cli/prompts/`](cli/prompts) and Handlebars templates under [`cli/templates/`](cli/templates) separate question authoring, review, brainstorming, and dispute analysis by domain.
 

@@ -7,7 +7,14 @@ import { loadOrCreateUiToken, rotateUiToken, uiTokenPath } from '../lib/ui-token
 import { startAceServer, type AceServer } from '../server/index.js';
 import { recordRecentWorkspace } from '../server/workspace-registry.js';
 
-const DEFAULT_PORT = 4242;
+// 4242 used to be the default here too — collided head-on with the local
+// ai-sub-proxy, which the README tells users to point ANTHROPIC_BASE_URL at
+// on that exact port (NEE-360). A reboot-order race meant ace could bind
+// 4242 first and the proxy would never start, or the proxy could be down and
+// every LLM call would loop back into ace's own SPA (see the hardened
+// validateAnthropicKey/validateOpenAIKey in lib/llm.ts for the other half of
+// that failure mode). ace now defaults to a port the proxy never touches.
+const DEFAULT_PORT = 4280;
 const PORT_SCAN_RANGE = 10;
 
 export interface UiFlags {

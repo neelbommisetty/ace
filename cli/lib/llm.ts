@@ -368,19 +368,45 @@ function toCallInput(
 export async function chatStream(
   provider: LLMProvider,
   messages: LLMMessage[],
-  opts?: { abortSignal?: AbortSignal; purpose?: LLMPurpose },
+  opts?: {
+    abortSignal?: AbortSignal;
+    purpose?: LLMPurpose;
+    /** Same contract as chatObjectStream's onStreamActivity (NEE-322):
+     *  fired on every raw chunk of the underlying HTTP response body,
+     *  including frames that never materialise a text delta — the only
+     *  liveness signal that survives a buffering proxy or a long
+     *  adaptive-thinking pause (NEE-361). Swallow contract identical to
+     *  onPartial elsewhere: a logging bug must never kill a paid call. */
+    onStreamActivity?: () => void;
+  },
 ): Promise<AsyncIterable<string>> {
+  const fireActivity = (): void => {
+    try {
+      opts?.onStreamActivity?.();
+    } catch {
+      // Swallowed by contract — a logging bug must never kill a paid call.
+    }
+  };
+
   if (mockLlm) {
     const response = getMockResponse();
     return {
       async *[Symbol.asyncIterator]() {
+        fireActivity();
         yield response;
       },
     };
   }
 
   const result = streamText({
-    model: getModel(provider, opts?.purpose ?? 'generate'),
+    // The tapped fetch is scoped to THIS call's model — same threading as
+    // chatObjectStream; without the callback getModel receives no fetch at
+    // all and construction is unchanged.
+    model: getModel(
+      provider,
+      opts?.purpose ?? 'generate',
+      opts?.onStreamActivity ? withResponseActivityTap(fireActivity) : undefined,
+    ),
     ...toCallInput(messages),
     abortSignal: opts?.abortSignal,
   });
@@ -529,6 +555,65 @@ function probeFailure(response: Response, base: string): string {
   return `${reason} from ${base}`;
 }
 
+/**
+ * A 2xx status alone is not proof a provider answered: ace's own SPA
+ * catch-all (cli/server/routes/static.ts) serves index.html with a 200 for
+ * ANY extension-less GET, so a misconfigured base URL that loops back into
+ * ace itself (or a proxy that renders an error page) would otherwise
+ * green-check the key and every subsequent paid call would die with a bare
+ * 404 (NEE-360). The real /v1/models endpoint always answers with a JSON
+ * object carrying a `data` array — demand that shape and name what was
+ * actually found when it's missing.
+ */
+async function describeUnexpectedBody(response: Response): Promise<string> {
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    return 'the response body could not be read';
+  }
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return 'an empty body';
+  if (/^<(!doctype|html)/i.test(trimmed)) return 'an HTML page, not a provider API response';
+  try {
+    JSON.parse(trimmed);
+    return 'JSON that is not a models-list response (no "data" array)';
+  } catch {
+    return 'a non-JSON body';
+  }
+}
+
+async function validateModelsListResponse(
+  response: Response,
+  base: string,
+): Promise<{ valid: boolean; error?: string }> {
+  let body: unknown;
+  try {
+    body = await response.clone().json();
+  } catch {
+    const description = await describeUnexpectedBody(response);
+    return {
+      valid: false,
+      error:
+        `${base} returned a 2xx status but ${description} — check that this is the ` +
+        'right provider (or proxy) address and that something is actually listening on it.',
+    };
+  }
+  if (
+    typeof body !== 'object' ||
+    body === null ||
+    !Array.isArray((body as Record<string, unknown>).data)
+  ) {
+    return {
+      valid: false,
+      error:
+        `${base} returned a 2xx status but the body is not a models-list response ` +
+        '(no "data" array) — check that this is the right provider (or proxy) address.',
+    };
+  }
+  return { valid: true };
+}
+
 export async function validateOpenAIKey(
   apiKey: string,
   baseUrl?: string,
@@ -547,7 +632,7 @@ export async function validateOpenAIKey(
     if (!response.ok) {
       return { valid: false, error: probeFailure(response, base) };
     }
-    return { valid: true };
+    return await validateModelsListResponse(response, base);
   } catch (err: any) {
     const message = err?.message || 'Unknown error';
     return { valid: false, error: `${message} (${base})` };
@@ -576,7 +661,7 @@ export async function validateAnthropicKey(
     if (!response.ok) {
       return { valid: false, error: probeFailure(response, base) };
     }
-    return { valid: true };
+    return await validateModelsListResponse(response, base);
   } catch (err: any) {
     const message = err?.message || 'Unknown error';
     return { valid: false, error: `${message} (${base})` };
