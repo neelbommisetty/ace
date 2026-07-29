@@ -62,12 +62,13 @@ vi.mock('./screens/NewQuestion', () => ({
 afterEach(() => {
   vi.clearAllMocks();
   sessionStorage.clear();
+  localStorage.clear();
   sseHandlers.clear();
   window.history.pushState({}, '', '/');
 });
 
 async function renderApp(expectMainText = 'Library') {
-  sessionStorage.setItem('ace-token', 'test-token');
+  localStorage.setItem('ace-token', 'test-token');
   const { App } = await import('./App');
   render(<App />);
   act(() => {

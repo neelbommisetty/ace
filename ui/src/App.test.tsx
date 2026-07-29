@@ -59,11 +59,12 @@ vi.mock('./api', async (importOriginal) => {
 });
 
 /**
- * `api.ts` reads the SSE/auth token from `sessionStorage` at module-eval
- * time, and App.tsx tracks "first hello epoch seen" in a module-level
- * variable — both need a fresh module instance per test. `vi.resetModules`
- * plus a dynamic re-import (after `vi.mock` registrations, which persist
- * across resets) gives each test an isolated App + resetSuppress instance.
+ * `api.ts` reads the SSE/auth token from `localStorage` at module-eval
+ * time (NEE-308), and App.tsx tracks "first hello epoch seen" in a
+ * module-level variable — both need a fresh module instance per test.
+ * `vi.resetModules` plus a dynamic re-import (after `vi.mock` registrations,
+ * which persist across resets) gives each test an isolated App +
+ * resetSuppress instance.
  *
  * The routed app only renders once the first hello has been seen (NEE-164),
  * so the helper emits one by default; pass `null` to keep the app in its
@@ -75,7 +76,7 @@ async function renderApp(
     epoch: 'epoch-a',
   },
 ) {
-  sessionStorage.setItem('ace-token', 'test-token');
+  localStorage.setItem('ace-token', 'test-token');
   vi.resetModules();
   const [{ App }, resetSuppress] = await Promise.all([
     import('./App'),
@@ -115,6 +116,7 @@ function stubLocationReplace() {
 afterEach(() => {
   vi.clearAllMocks();
   sessionStorage.clear();
+  localStorage.clear();
   sseHandlers.clear();
   if (originalLocation != null) {
     // @ts-expect-error -- restoring the real Location object stubbed above

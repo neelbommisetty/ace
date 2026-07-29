@@ -43,6 +43,9 @@ ${chalk.bold('Getting started:')}
   ace ui --port 4300
   ace ui --no-open
 
+  ${chalk.dim('# Invalidate every open session (rotates the persisted ~/.ace/ui-token)')}
+  ace ui --rotate-token
+
 ${chalk.dim('Generating questions, running tests, reviews, disputes and progress all')}
 ${chalk.dim('live in the app itself — run `ace ui` and work from there.')}
 `);

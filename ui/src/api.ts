@@ -28,11 +28,15 @@ import type {
   WorkspaceSwitchResult,
 } from './types';
 
-// Token bootstrap (module init): ?t= → sessionStorage → strip from the URL.
+// Token bootstrap (module init): ?t= → localStorage → strip from the URL.
+// localStorage (not sessionStorage, NEE-308) so a second tab and a
+// bookmarked bare URL both reuse the last-seen token instead of 401ing.
+const TOKEN_KEY = 'ace-token';
+
 const bootParams = new URLSearchParams(window.location.search);
 const urlToken = bootParams.get('t');
 if (urlToken) {
-  sessionStorage.setItem('ace-token', urlToken);
+  localStorage.setItem(TOKEN_KEY, urlToken);
   bootParams.delete('t');
   const qs = bootParams.toString();
   history.replaceState(
@@ -42,10 +46,22 @@ if (urlToken) {
   );
 }
 
-const token: string | null = sessionStorage.getItem('ace-token');
+let token: string | null = localStorage.getItem(TOKEN_KEY);
 
 export function getToken(): string | null {
   return token;
+}
+
+/**
+ * The exact URL that will re-authenticate this tab, built from whatever
+ * token is currently known (even one that just 401'd) — since the CLI now
+ * persists its token across plain restarts (NEE-308), this is the correct
+ * relaunch URL for the common case, and gives the "Token expired" screen
+ * something more actionable than "go find the URL in the terminal".
+ */
+export function getRelaunchUrl(): string | null {
+  if (!token) return null;
+  return `${window.location.origin}${window.location.pathname}?t=${encodeURIComponent(token)}`;
 }
 
 export class ApiError extends Error {
@@ -82,27 +98,48 @@ function fileWriteBody(relPath: string, content: string): Record<string, unknown
     : { path: relPath, content, expectedRoot: workspaceAnchor };
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
+function doFetch(path: string, init: RequestInit | undefined, bearer: string | null): Promise<Response> {
+  return fetch(path, {
     ...init,
     headers: {
       ...(init?.body ? { 'content-type': 'application/json' } : {}),
-      authorization: `Bearer ${token ?? ''}`,
+      authorization: `Bearer ${bearer ?? ''}`,
     },
   });
+}
+
+async function toApiError(res: Response): Promise<ApiError> {
+  let message = `${res.status} ${res.statusText}`;
+  try {
+    const body = (await res.json()) as { error?: string };
+    if (body && typeof body.error === 'string') message = body.error;
+  } catch {
+    // non-JSON error body; keep the status text
+  }
+  return new ApiError(res.status, message);
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  let res = await doFetch(path, init, token);
+  if (res.status === 401) {
+    // localStorage is shared across tabs of this origin: another tab may
+    // have just completed a fresh `?t=` handshake (e.g. after the user
+    // relaunched `ace ui` and opened the new URL there) and written a
+    // different token in the time since this tab last read it. Retry once
+    // against whatever is there NOW before giving up — this is what lets a
+    // background tab recover without the user ever seeing "Token expired".
+    const latest = localStorage.getItem(TOKEN_KEY);
+    if (latest && latest !== token) {
+      token = latest;
+      res = await doFetch(path, init, token);
+    }
+  }
   if (res.status === 401) {
     unauthorizedHandler?.();
     throw new ApiError(401, 'unauthorized');
   }
   if (!res.ok) {
-    let message = `${res.status} ${res.statusText}`;
-    try {
-      const body = (await res.json()) as { error?: string };
-      if (body && typeof body.error === 'string') message = body.error;
-    } catch {
-      // non-JSON error body; keep the status text
-    }
-    throw new ApiError(res.status, message);
+    throw await toApiError(res);
   }
   return (await res.json()) as T;
 }

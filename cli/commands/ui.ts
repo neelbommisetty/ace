@@ -1,23 +1,25 @@
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import chalk from 'chalk';
 import { isWorkspaceInitialized, resolveWorkspaceRoot } from '../lib/paths.js';
+import { loadOrCreateUiToken, rotateUiToken, uiTokenPath } from '../lib/ui-token.js';
 import { startAceServer, type AceServer } from '../server/index.js';
 import { recordRecentWorkspace } from '../server/workspace-registry.js';
 
 const DEFAULT_PORT = 4242;
 const PORT_SCAN_RANGE = 10;
 
-interface UiFlags {
+export interface UiFlags {
   port: number;
   workspace: string | null;
   open: boolean;
+  rotateToken: boolean;
 }
 
-function parseArgs(args: string[]): UiFlags {
-  const flags: UiFlags = { port: DEFAULT_PORT, workspace: null, open: true };
+/** Exported for unit tests (NEE-308) — parseArgs itself has no I/O. */
+export function parseArgs(args: string[]): UiFlags {
+  const flags: UiFlags = { port: DEFAULT_PORT, workspace: null, open: true, rotateToken: false };
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -33,10 +35,24 @@ function parseArgs(args: string[]): UiFlags {
       flags.workspace = value;
     } else if (arg === '--no-open') {
       flags.open = false;
+    } else if (arg === '--rotate-token') {
+      flags.rotateToken = true;
     }
   }
 
   return flags;
+}
+
+/**
+ * ACE_UI_TOKEN always wins (e.g. CI/scripted launches); otherwise the token
+ * persists across restarts at ~/.ace/ui-token (NEE-308) so a plain restart
+ * never invalidates tabs already open on the previously printed URL.
+ * --rotate-token deliberately mints + persists a fresh one instead. Exported
+ * for unit tests — the only I/O is the already independently-tested
+ * ui-token.ts pair.
+ */
+export function resolveToken(rotateToken: boolean): string {
+  return process.env.ACE_UI_TOKEN || (rotateToken ? rotateUiToken() : loadOrCreateUiToken());
 }
 
 function findUiDir(): string | null {
@@ -107,7 +123,7 @@ export async function run(args: string[]): Promise<void> {
     root = isWorkspaceInitialized(detected) ? detected : null;
   }
 
-  const token = process.env.ACE_UI_TOKEN || randomUUID();
+  const token = resolveToken(flags.rotateToken);
   const uiDir = findUiDir();
   if (!uiDir) {
     console.warn(chalk.yellow('ACE UI is not built — serving the API only. Run: npm run build'));
@@ -143,6 +159,13 @@ export async function run(args: string[]): Promise<void> {
     console.log(`  ${chalk.dim('Workspace:')} ${chalk.yellow('none mounted')} — no questions/ found here; pick one in the browser`);
   }
   console.log(`  ${chalk.dim('URL:')}       ${chalk.green(url)}\n`);
+  if (!process.env.ACE_UI_TOKEN) {
+    console.log(
+      chalk.dim(
+        `  Token:      persisted at ${uiTokenPath()} — reused across restarts; pass --rotate-token to invalidate open sessions.\n`,
+      ),
+    );
+  }
   console.log(chalk.dim('  Press Ctrl+C to stop.\n'));
 
   if (flags.open) openBrowser(url);

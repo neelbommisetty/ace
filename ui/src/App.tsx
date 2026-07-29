@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router';
-import { getToken, setUnauthorizedHandler, setWorkspaceAnchor } from './api';
+import { getRelaunchUrl, getToken, setUnauthorizedHandler, setWorkspaceAnchor } from './api';
 import { Toast } from './components/Toast';
 import { WorkspacePicker, WorkspaceSwitchDialog } from './components/WorkspacePicker';
 import { consumeSuppressForReset, isSuppressArmed } from './lib/resetSuppress';
@@ -200,15 +200,29 @@ function ConnectingNotice() {
 }
 
 function TokenNotice({ expired }: { expired: boolean }) {
+  // Once a token has ever been seen (i.e. we're on the "expired" path, not
+  // "missing"), the CLI's token now persists across a plain restart
+  // (NEE-308) — so the last-known token still builds the exact URL a
+  // relaunch will accept, rather than sending the user to dig it out of the
+  // terminal.
+  const relaunchUrl = expired ? getRelaunchUrl() : null;
   return (
     <div className="token-screen">
       <div className="token-card">
         <div className="rail-logo">A</div>
         <h1>{expired ? 'Token expired' : 'Token missing'}</h1>
-        <p>
-          This page needs the access token printed by the CLI. Relaunch with{' '}
-          <code>ace ui</code> and open the URL it prints (it carries <code>?t=…</code>).
-        </p>
+        {relaunchUrl ? (
+          <p>
+            Run <code>ace ui</code> again, then open this exact URL:
+            <br />
+            <code>{relaunchUrl}</code>
+          </p>
+        ) : (
+          <p>
+            This page needs the access token printed by the CLI. Relaunch with{' '}
+            <code>ace ui</code> and open the URL it prints (it carries <code>?t=…</code>).
+          </p>
+        )}
       </div>
     </div>
   );
