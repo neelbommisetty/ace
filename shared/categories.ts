@@ -54,7 +54,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
   'web-components': {
     slug: 'web-components',
     name: 'React Components',
-    shortName: 'React',
+    shortName: 'Components',
     hint: 'Props, events, composition, reusable UI',
     type: 'coding',
     group: 'react',
@@ -66,7 +66,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
   'react-apps': {
     slug: 'react-apps',
     name: 'React Web Apps',
-    shortName: 'React',
+    shortName: 'React App',
     hint: 'Hooks, state, routing, full features',
     type: 'coding',
     group: 'react',
