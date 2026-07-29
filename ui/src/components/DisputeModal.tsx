@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { DiffEditor } from '@monaco-editor/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { applyDispute, getFile, startDispute } from '../api';
 import { EDITOR_APPEARANCE, EDITOR_THEME } from '../editor-options';
 import { DISPUTE_VERDICT_LABELS } from '../lib/review';
+import { Modal } from './Modal';
 import { useSseEvent } from '../sse';
 import type { DisputeRow } from '../types';
 
@@ -36,6 +37,8 @@ export function DisputeModal({
   const [originalCode, setOriginalCode] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const headingId = useId();
+  const argumentRef = useRef<HTMLTextAreaElement>(null);
 
   // Match completion events by QUESTION, not jobId: the server allows one
   // dispute per question at a time, and with a fast engine (mock mode
@@ -89,103 +92,103 @@ export function DisputeModal({
     dispute.appliedAt == null;
 
   return (
-    <div
-      className="modal-overlay"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget && phase !== 'running' && !applying) onClose();
-      }}
+    <Modal
+      labelledBy={headingId}
+      onClose={onClose}
+      canClose={phase !== 'running' && !applying}
+      initialFocusRef={argumentRef}
+      wide={dispute?.fixedTestCode != null}
     >
-      <div className={`modal ${dispute?.fixedTestCode != null ? 'modal-wide' : ''}`}>
-        <div className="modal-header">
-          <h2>Dispute failing test</h2>
-          <button className="icon-btn" onClick={onClose} title="Close">
-            ✕
-          </button>
-        </div>
-        <div className="modal-body">
-          <div className="dispute-test-line">
-            <span className="case-glyph run-fail">✕</span>
-            <span className="mono">{testName}</span>
-          </div>
-
-          {phase === 'input' && (
-            <>
-              <p className="dialog-note">
-                An LLM re-reads the problem, your solution and the failing tests, then rules on
-                whether the test itself is wrong. Costs one LLM call; the verdict is kept in your
-                history.
-              </p>
-              <label className="field-label" htmlFor="dispute-argument">
-                Your case (optional)
-              </label>
-              <textarea
-                id="dispute-argument"
-                className="dispute-argument"
-                rows={4}
-                placeholder="Why do you think the test is wrong?"
-                value={argument}
-                onChange={(e) => setArgument(e.target.value)}
-              />
-            </>
-          )}
-
-          {phase === 'running' && (
-            <div className="results-running">
-              <span className="pulse-dot" /> analyzing the failure…
-            </div>
-          )}
-
-          {phase === 'error' && error != null && <div className="error-note">{error}</div>}
-
-          {phase === 'done' && dispute != null && (
-            <DisputeResult dispute={dispute} originalCode={originalCode} />
-          )}
-          {applyError != null && <div className="error-note">{applyError}</div>}
-        </div>
-        <div className="modal-footer">
-          {phase === 'input' && (
-            <>
-              <button className="btn" onClick={onClose}>
-                Cancel
-              </button>
-              <button className="btn btn-accent" onClick={analyze}>
-                Analyze
-              </button>
-            </>
-          )}
-          {phase === 'running' && (
-            <button className="btn" onClick={onClose}>
-              Close (keeps analyzing)
-            </button>
-          )}
-          {phase === 'error' && (
-            <>
-              <button className="btn" onClick={onClose}>
-                Close
-              </button>
-              <button className="btn btn-accent" onClick={() => setPhase('input')}>
-                Try again
-              </button>
-            </>
-          )}
-          {phase === 'done' &&
-            (canApply ? (
-              <>
-                <button className="btn" onClick={onClose} disabled={applying}>
-                  Reject
-                </button>
-                <button className="btn btn-accent" onClick={apply} disabled={applying}>
-                  {applying ? 'Applying…' : 'Apply fixed test'}
-                </button>
-              </>
-            ) : (
-              <button className="btn" onClick={onClose}>
-                Close
-              </button>
-            ))}
-        </div>
+      <div className="modal-header">
+        <h2 id={headingId}>Dispute failing test</h2>
+        <button className="icon-btn" onClick={onClose} title="Close">
+          ✕
+        </button>
       </div>
-    </div>
+      <div className="modal-body">
+        <div className="dispute-test-line">
+          <span className="case-glyph run-fail">✕</span>
+          <span className="mono">{testName}</span>
+        </div>
+
+        {phase === 'input' && (
+          <>
+            <p className="dialog-note">
+              An LLM re-reads the problem, your solution and the failing tests, then rules on
+              whether the test itself is wrong. Costs one LLM call; the verdict is kept in your
+              history.
+            </p>
+            <label className="field-label" htmlFor="dispute-argument">
+              Your case (optional)
+            </label>
+            <textarea
+              id="dispute-argument"
+              className="dispute-argument"
+              rows={4}
+              placeholder="Why do you think the test is wrong?"
+              value={argument}
+              onChange={(e) => setArgument(e.target.value)}
+              ref={argumentRef}
+            />
+          </>
+        )}
+
+        {phase === 'running' && (
+          <div className="results-running">
+            <span className="pulse-dot" /> analyzing the failure…
+          </div>
+        )}
+
+        {phase === 'error' && error != null && <div className="error-note">{error}</div>}
+
+        {phase === 'done' && dispute != null && (
+          <DisputeResult dispute={dispute} originalCode={originalCode} />
+        )}
+        {applyError != null && <div className="error-note">{applyError}</div>}
+      </div>
+      <div className="modal-footer">
+        {phase === 'input' && (
+          <>
+            <button className="btn" onClick={onClose}>
+              Cancel
+            </button>
+            <button className="btn btn-accent" onClick={analyze}>
+              Analyze
+            </button>
+          </>
+        )}
+        {phase === 'running' && (
+          <button className="btn" onClick={onClose}>
+            Close (keeps analyzing)
+          </button>
+        )}
+        {phase === 'error' && (
+          <>
+            <button className="btn" onClick={onClose}>
+              Close
+            </button>
+            <button className="btn btn-accent" onClick={() => setPhase('input')}>
+              Try again
+            </button>
+          </>
+        )}
+        {phase === 'done' &&
+          (canApply ? (
+            <>
+              <button className="btn" onClick={onClose} disabled={applying}>
+                Reject
+              </button>
+              <button className="btn btn-accent" onClick={apply} disabled={applying}>
+                {applying ? 'Applying…' : 'Apply fixed test'}
+              </button>
+            </>
+          ) : (
+            <button className="btn" onClick={onClose}>
+              Close
+            </button>
+          ))}
+      </div>
+    </Modal>
   );
 }
 

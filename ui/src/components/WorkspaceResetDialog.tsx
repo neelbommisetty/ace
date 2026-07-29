@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { ApiError, resetWorkspace } from '../api';
 import { armSuppressNextReset, disarmSuppressNextReset } from '../lib/resetSuppress';
+import { Modal } from './Modal';
 import type { WorkspaceResetMode, WorkspaceResetResult } from '../types';
 
 const CONSEQUENCES: Record<WorkspaceResetMode, string[]> = {
@@ -45,6 +46,8 @@ export function WorkspaceResetDialog({
 }) {
   const [input, setInput] = useState('');
   const [state, setState] = useState<DialogState>({ kind: 'idle' });
+  const headingId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const busy = state.kind === 'busy';
   const done = state.kind === 'done';
@@ -84,73 +87,72 @@ export function WorkspaceResetDialog({
   };
 
   return (
-    <div
-      className="modal-overlay"
-      onMouseDown={(e) => {
-        // Blocked while busy (mid-request) AND while done: the done state's
-        // only exit is the "Go to Library" button, which navigates away —
-        // a stray backdrop click must not be able to skip that.
-        if (e.target === e.currentTarget && !busy && !done) onClose();
-      }}
+    // Blocked while busy (mid-request) AND while done: the done state's only
+    // exit is the "Go to Library" button, which navigates away — a stray
+    // backdrop click / Escape must not be able to skip that.
+    <Modal
+      labelledBy={headingId}
+      onClose={onClose}
+      canClose={!busy && !done}
+      initialFocusRef={inputRef}
     >
-      <div className="modal">
-        <div className="modal-header">
-          <h2>{done ? DONE_HEADING[mode] : TITLE[mode]}</h2>
-          {!done && (
-            <button className="icon-btn" onClick={onClose} title="Close" disabled={busy}>
-              ✕
-            </button>
-          )}
-        </div>
-        <div className="modal-body">
-          {done ? (
-            <DoneBody mode={mode} result={state.result} />
-          ) : (
-            <>
-              <ul className="reset-consequences">
-                {CONSEQUENCES[mode].map((line) => (
-                  <li key={line}>{line}</li>
-                ))}
-              </ul>
-              <p className="dialog-note">
-                Type the workspace folder name <strong>{folderName}</strong> to confirm.
-              </p>
-              <input
-                className="key-input mono"
-                autoComplete="off"
-                spellCheck={false}
-                autoCorrect="off"
-                autoCapitalize="off"
-                placeholder={folderName}
-                value={input}
-                disabled={busy}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') confirm();
-                }}
-              />
-              {state.kind === 'error' && <div className="error-note">{state.message}</div>}
-            </>
-          )}
-        </div>
-        <div className="modal-footer">
-          {done ? (
-            <button className="btn btn-accent" onClick={goToLibrary}>
-              Go to Library
-            </button>
-          ) : (
-            <>
-              <button className="btn" onClick={onClose} disabled={busy}>
-                Cancel
-              </button>
-              <button className="btn btn-danger" onClick={confirm} disabled={!canConfirm}>
-                {busy ? 'Archiving…' : mode === 'full' ? 'Reset workspace' : 'Clear progress'}
-              </button>
-            </>
-          )}
-        </div>
+      <div className="modal-header">
+        <h2 id={headingId}>{done ? DONE_HEADING[mode] : TITLE[mode]}</h2>
+        {!done && (
+          <button className="icon-btn" onClick={onClose} title="Close" disabled={busy}>
+            ✕
+          </button>
+        )}
       </div>
-    </div>
+      <div className="modal-body">
+        {done ? (
+          <DoneBody mode={mode} result={state.result} />
+        ) : (
+          <>
+            <ul className="reset-consequences">
+              {CONSEQUENCES[mode].map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+            <p className="dialog-note">
+              Type the workspace folder name <strong>{folderName}</strong> to confirm.
+            </p>
+            <input
+              className="key-input mono"
+              autoComplete="off"
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="off"
+              placeholder={folderName}
+              value={input}
+              disabled={busy}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') confirm();
+              }}
+              ref={inputRef}
+            />
+            {state.kind === 'error' && <div className="error-note">{state.message}</div>}
+          </>
+        )}
+      </div>
+      <div className="modal-footer">
+        {done ? (
+          <button className="btn btn-accent" onClick={goToLibrary}>
+            Go to Library
+          </button>
+        ) : (
+          <>
+            <button className="btn" onClick={onClose} disabled={busy}>
+              Cancel
+            </button>
+            <button className="btn btn-danger" onClick={confirm} disabled={!canConfirm}>
+              {busy ? 'Archiving…' : mode === 'full' ? 'Reset workspace' : 'Clear progress'}
+            </button>
+          </>
+        )}
+      </div>
+    </Modal>
   );
 }
 

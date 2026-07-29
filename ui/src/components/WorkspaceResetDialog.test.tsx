@@ -173,4 +173,85 @@ describe('WorkspaceResetDialog', () => {
     // @ts-expect-error -- restoring the real Location object stubbed above
     window.location = original;
   });
+
+  it('has dialog semantics labelled by its heading', () => {
+    render(<WorkspaceResetDialog mode="full" folderName={FOLDER} onClose={vi.fn()} />);
+    const dialog = screen.getByRole('dialog', { name: 'Reset workspace?' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+  });
+
+  it('focuses the confirmation input on mount', () => {
+    render(<WorkspaceResetDialog mode="progress" folderName={FOLDER} onClose={vi.fn()} />);
+    expect(input()).toHaveFocus();
+  });
+
+  it('restores focus to the invoking element on close (unmount)', () => {
+    const trigger = document.createElement('button');
+    trigger.textContent = 'Reset workspace';
+    document.body.appendChild(trigger);
+    trigger.focus();
+
+    const { unmount } = render(
+      <WorkspaceResetDialog mode="progress" folderName={FOLDER} onClose={vi.fn()} />,
+    );
+    expect(trigger).not.toHaveFocus();
+
+    unmount();
+    expect(trigger).toHaveFocus();
+    trigger.remove();
+  });
+
+  it('closes on Escape while idle', () => {
+    const onClose = vi.fn();
+    render(<WorkspaceResetDialog mode="progress" folderName={FOLDER} onClose={onClose} />);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not close on Escape while busy (request in flight)', () => {
+    resetWorkspace.mockReturnValue(new Promise(() => {}));
+    const onClose = vi.fn();
+    render(<WorkspaceResetDialog mode="full" folderName={FOLDER} onClose={onClose} />);
+
+    fireEvent.change(input(), { target: { value: FOLDER } });
+    fireEvent.click(confirmButton());
+    expect(screen.getByText('Archiving…')).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('does not close on Escape once done (only "Go to Library" exits)', async () => {
+    resetWorkspace.mockResolvedValue({
+      mode: 'progress',
+      archivedTo: '/workspace/.ace-archive-2026-07-20',
+      restored: { questions: 0, files: 0 },
+      workspace: {} as never,
+    });
+    const onClose = vi.fn();
+    render(<WorkspaceResetDialog mode="progress" folderName={FOLDER} onClose={onClose} />);
+
+    fireEvent.change(input(), { target: { value: FOLDER } });
+    fireEvent.click(confirmButton());
+    await screen.findByRole('button', { name: 'Go to Library' });
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('traps Tab within the dialog (first <-> last wrap)', () => {
+    render(<WorkspaceResetDialog mode="progress" folderName={FOLDER} onClose={vi.fn()} />);
+    const closeBtn = screen.getByTitle('Close');
+    const cancelBtn = screen.getByRole('button', { name: 'Cancel' });
+
+    // The confirm button is disabled (input doesn't match yet) so it's
+    // excluded from the focusable set — Cancel is the last stop.
+    closeBtn.focus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(cancelBtn).toHaveFocus();
+
+    cancelBtn.focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(closeBtn).toHaveFocus();
+  });
 });
