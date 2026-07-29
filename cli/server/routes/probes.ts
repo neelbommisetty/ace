@@ -29,8 +29,19 @@ export function registerProbeRoutes(app: Hono, ctx: RouteContext): void {
     return c.json({ probeJobId }, 202);
   });
 
+  // Scoped to a single attempt (NEE-345 follow-up): the POST bound
+  // (hasProbeSetForAttempt) is per-attempt, but without this the GET handed
+  // back every attempt's probe sets — the UI had no way to tell "already
+  // generated for attempt 2" from "attempt 1's probes are still sitting
+  // here". `attemptId` mirrors the same `string | null` bucketing
+  // hasProbeSetForAttempt uses: omit the query param for the null bucket
+  // (no active attempt), pass the id otherwise.
   app.get('/api/questions/:category/:slug/probes', lookupQuestion, (c) => {
     const { db } = ctx.requireSession();
-    return c.json(db.listProbeSets(c.get('question').id));
+    const attemptId = c.req.query('attemptId') ?? null;
+    const sets = db
+      .listProbeSets(c.get('question').id)
+      .filter((p) => p.attemptId === attemptId);
+    return c.json(sets);
   });
 }

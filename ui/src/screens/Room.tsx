@@ -196,6 +196,11 @@ function RoomInner({
 
   // Solved question opened as a read-only reference: no active attempt.
   const readonly = attempt == null;
+  // "the active attempt" from the room's point of view: the live attempt
+  // when editable, or the ended reference attempt in a readonly room. Used
+  // both to mint "Start new attempt"/"New attempt" below and (NEE-345
+  // follow-up) to scope which attempt's probe sets useReviewPanel fetches.
+  const refAttempt = attempt ?? latestAttempt;
 
   // Prev/next + "Next question" (NEE-310) — walk the Library's ordering
   // (recomputed by the outer Room from the full list + this room's context
@@ -232,13 +237,19 @@ function RoomInner({
   });
   startRunRef.current = runs.startRun;
 
-  const review = useReviewPanel({ question, flushSaves, editorFiles, loadFileInto, startRunRef });
+  const review = useReviewPanel({
+    question,
+    attemptId: refAttempt?.id ?? null,
+    flushSaves,
+    editorFiles,
+    loadFileInto,
+    startRunRef,
+  });
 
   // ---- fresh attempt ------------------------------------------------------
   // "Start new attempt" (readonly banner) or "↺ New attempt" (active TopBar)
   // mints attempt N+1 off of: the live attempt when editable, or the ended
   // latestAttempt when this is a readonly reference.
-  const refAttempt = attempt ?? latestAttempt;
   const [freshOpen, setFreshOpen] = useState(false);
   const [freshBusy, setFreshBusy] = useState(false);
   const [freshError, setFreshError] = useState<string | null>(null);

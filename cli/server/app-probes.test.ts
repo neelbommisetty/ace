@@ -187,7 +187,7 @@ describe('POST /api/questions/:category/:slug/probes', () => {
 });
 
 describe('GET /api/questions/:category/:slug/probes', () => {
-  it('lists probe sets for the question, newest first', async () => {
+  it('lists probe sets in the null-attempt bucket, newest first, when no attemptId is given', async () => {
     const question = scaffoldStory('conflict-list', { story: REAL_STORY });
     const first = ws.session.db.createProbeSet({
       questionId: question.id,
@@ -213,6 +213,51 @@ describe('GET /api/questions/:category/:slug/probes', () => {
     const fetch = buildApp();
     const res = await fetch(`/api/questions/behavioral/${question.slug}/probes`);
     expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+  });
+
+  // NEE-345 follow-up: the POST bound is per-attempt (hasProbeSetForAttempt),
+  // but the GET used to return every attempt's probe sets regardless — the
+  // UI had no way to tell attempt 1's stale probes from attempt 2 having
+  // none yet. `attemptId` scopes the response the same way the bound scopes
+  // the write.
+  it('only returns probe sets for the requested attemptId, not other attempts on the same question', async () => {
+    const question = scaffoldStory('conflict-scoped', { story: REAL_STORY });
+    const attemptOne = ws.session.db.createAttempt(question.id);
+    ws.session.db.patchAttempt(attemptOne.id, { end: { reason: 'abandoned' } });
+    const attemptTwo = ws.session.db.createAttempt(question.id);
+    ws.session.db.createProbeSet({
+      questionId: question.id,
+      attemptId: attemptOne.id,
+      probes: [{ question: 'attempt 1 probe', source: 'derived' }],
+      model: 'claude-sonnet-5',
+    });
+    const fetch = buildApp();
+
+    const attemptTwoRes = await fetch(
+      `/api/questions/behavioral/${question.slug}/probes?attemptId=${attemptTwo.id}`,
+    );
+    expect(await attemptTwoRes.json()).toEqual([]);
+
+    const attemptOneRes = await fetch(
+      `/api/questions/behavioral/${question.slug}/probes?attemptId=${attemptOne.id}`,
+    );
+    const attemptOneBody = (await attemptOneRes.json()) as ProbeSetRow[];
+    expect(attemptOneBody).toHaveLength(1);
+    expect(attemptOneBody[0].attemptId).toBe(attemptOne.id);
+  });
+
+  it('treats a missing attemptId as the null bucket, distinct from any real attempt', async () => {
+    const question = scaffoldStory('conflict-scoped-null', { story: REAL_STORY });
+    const attempt = ws.session.db.createAttempt(question.id);
+    ws.session.db.createProbeSet({
+      questionId: question.id,
+      attemptId: attempt.id,
+      probes: [{ question: 'attempt probe', source: 'derived' }],
+      model: 'claude-sonnet-5',
+    });
+    const fetch = buildApp();
+    const res = await fetch(`/api/questions/behavioral/${question.slug}/probes`);
     expect(await res.json()).toEqual([]);
   });
 });

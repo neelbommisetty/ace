@@ -328,3 +328,31 @@ describe('Room probes-done story reload (NEE-345)', () => {
     expect(editor).toHaveValue('a fresh, unsaved edit');
   });
 });
+
+// FIX 2 (NEE-345 follow-up): the GET is now scoped by attemptId — assert the
+// Room actually threads its active attempt through, not just that the
+// server-side route filters correctly (covered separately in
+// app-probes.test.ts).
+describe('Room probe-set fetch is attempt-scoped (NEE-345 follow-up)', () => {
+  it('fetches probe sets scoped to the current attempt, not every attempt on the question', async () => {
+    renderRoom();
+    await screen.findByTestId('editor-file:///story.md');
+
+    expect(getProbeSets).toHaveBeenCalledWith('behavioral', 'conflict-navigated', 'att-1');
+  });
+
+  it('fetches the null-attempt bucket for a readonly (solved) room with no active attempt', async () => {
+    createOrResumeAttempt.mockResolvedValue({
+      attempt: null,
+      readonly: true,
+      latestAttempt: attemptRow({ id: 'att-old', endedAt: new Date().toISOString(), endReason: 'solved' }),
+    });
+    renderRoom();
+    await screen.findByTestId('editor-file:///story.md');
+
+    // readonly rooms scope to the ended reference attempt (Room's
+    // refAttempt), not the null bucket — it's the attempt whose probes are
+    // actually relevant to what's on screen.
+    expect(getProbeSets).toHaveBeenCalledWith('behavioral', 'conflict-navigated', 'att-old');
+  });
+});

@@ -29,12 +29,22 @@ import { useLatestRef } from './useLatestRef';
  */
 export function useReviewPanel({
   question,
+  attemptId,
   flushSaves,
   editorFiles,
   loadFileInto,
   startRunRef,
 }: {
   question: QuestionRow;
+  /**
+   * The room's notion of "the active attempt" (NEE-345 follow-up) — the live
+   * attempt when editable, or the ended reference attempt in a readonly
+   * room (Room.tsx's `refAttempt`). Threaded through so probe sets are
+   * fetched scoped to the same attempt bucket the server's own bound
+   * (hasProbeSetForAttempt) uses, instead of every attempt's probes ever
+   * generated for this question.
+   */
+  attemptId: string | null;
   flushSaves: () => Promise<void>;
   editorFiles: QuestionFileInfo[];
   loadFileInto: (relPath: string, opts?: { onlyIfClean?: boolean }) => Promise<void>;
@@ -72,13 +82,13 @@ export function useReviewPanel({
           if (!cancelled()) setDisputes(rows);
         })
         .catch(() => {});
-      getProbeSets(question.category, question.slug)
+      getProbeSets(question.category, question.slug, attemptId)
         .then((rows) => {
           if (!cancelled()) setProbeSets(rows);
         })
         .catch(() => {});
     },
-    [question.category, question.slug],
+    [question.category, question.slug, attemptId],
   );
 
   useCancellableEffect((cancelled) => {

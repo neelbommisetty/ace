@@ -345,8 +345,18 @@ export function startProbes(category: string, slug: string): Promise<{ probeJobI
   return request(questionPath(category, slug, '/probes'), { method: 'POST' });
 }
 
-export function getProbeSets(category: string, slug: string): Promise<ProbeSetRow[]> {
-  return request(questionPath(category, slug, '/probes'));
+/**
+ * Scoped to a single attempt (NEE-345 follow-up) — the server buckets by
+ * exact `attemptId` equality (see hasProbeSetForAttempt), null included, so
+ * `attemptId: null` here must omit the query param, not send the string
+ * "null".
+ */
+export function getProbeSets(
+  category: string,
+  slug: string,
+  attemptId: string | null,
+): Promise<ProbeSetRow[]> {
+  return request(withQuery(questionPath(category, slug, '/probes'), { attemptId: attemptId ?? undefined }));
 }
 
 export function startFreshAttempt(
