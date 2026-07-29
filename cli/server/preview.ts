@@ -67,6 +67,21 @@ function containingNodeModulesDir(entryFile: string): string {
   return real.slice(0, idx + marker.length - 1);
 }
 
+/**
+ * Resolves `vite` and `@vitejs/plugin-react` together from ONE origin — a
+ * partial hit returns null. plugin-react imports `vite/internal` relative to
+ * its own tree, so pairing vite from one node_modules with plugin-react from
+ * another injects that sibling vite's (rolldown-native) plugins into a
+ * foreign plugin container and every transform dies (NEE-368:
+ * "Missing field `moduleType`" when the workspace has only a transitive
+ * vite 7 hoisted by vitest).
+ */
+function tryResolvePair(fromDir: string): { vite: string; pluginReact: string } | null {
+  const vite = tryResolveFrom(fromDir, 'vite');
+  const pluginReact = tryResolveFrom(fromDir, '@vitejs/plugin-react');
+  return vite != null && pluginReact != null ? { vite, pluginReact } : null;
+}
+
 function missingDepMessage(name: string, workspaceRoot: string): string {
   const install =
     name === 'react' || name === 'react-dom'
@@ -81,11 +96,12 @@ function missingDepMessage(name: string, workspaceRoot: string): string {
 /**
  * Resolves the four packages the preview needs, workspace-first.
  *
- *  - `vite` / `@vitejs/plugin-react` are imported by the ACE PROCESS, so when
- *    the workspace doesn't have them they may fall back to ace's own
- *    node_modules (`fallbackDir`, default: this file's dir — a source/dev
- *    install of ace has both as devDependencies; a published install does
- *    not, which is a true miss and reports the install command).
+ *  - `vite` / `@vitejs/plugin-react` are imported by the ACE PROCESS and are
+ *    resolved AS A PAIR from a single origin (see tryResolvePair): the
+ *    workspace only when it has both, otherwise ace's own node_modules for
+ *    both (`fallbackDir`, default: this file's dir — a source/dev install of
+ *    ace has both as devDependencies; a published install does not, which is
+ *    a true miss and reports the install command).
  *  - `react` / `react-dom` are imported by the BROWSER module graph, which
  *    Vite resolves from the question file upward — an ace-side fallback could
  *    never serve them, so they get no fallback and a miss is reported as-is.
@@ -97,16 +113,19 @@ export function resolvePreviewDependencies(
   const fallbackDir = opts.fallbackDir === undefined ? import.meta.dirname : opts.fallbackDir;
   const questionsDir = getQuestionsDir(workspaceRoot);
 
-  const resolved: Record<string, string> = {};
-  for (const name of ['vite', '@vitejs/plugin-react'] as const) {
-    const entry =
-      tryResolveFrom(workspaceRoot, name) ??
-      (fallbackDir != null ? tryResolveFrom(fallbackDir, name) : null);
-    if (entry == null) {
-      return { ok: false, missing: name, message: missingDepMessage(name, workspaceRoot) };
-    }
-    resolved[name] = entry;
+  const pair =
+    tryResolvePair(workspaceRoot) ?? (fallbackDir != null ? tryResolvePair(fallbackDir) : null);
+  if (pair == null) {
+    const viteAnywhere =
+      tryResolveFrom(workspaceRoot, 'vite') ??
+      (fallbackDir != null ? tryResolveFrom(fallbackDir, 'vite') : null);
+    const missing = viteAnywhere == null ? 'vite' : '@vitejs/plugin-react';
+    return { ok: false, missing, message: missingDepMessage(missing, workspaceRoot) };
   }
+  const resolved: Record<string, string> = {
+    vite: pair.vite,
+    '@vitejs/plugin-react': pair.pluginReact,
+  };
   for (const name of ['react', 'react-dom'] as const) {
     const entry = tryResolveFrom(questionsDir, name) ?? tryResolveFrom(workspaceRoot, name);
     if (entry == null) {

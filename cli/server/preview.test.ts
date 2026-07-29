@@ -110,6 +110,48 @@ describe('resolvePreviewDependencies', () => {
     expect(result.message).toContain('npm install --save-dev react react-dom');
   });
 
+  // NEE-368: a fake vite (not a symlink to ace's — that would realpath back
+  // into ace's tree and prove nothing) stands in for the transitive vite 7
+  // that vitest hoists into old-template workspaces.
+  function addFakeWorkspaceVite(root: string): string {
+    const viteDir = path.join(root, 'node_modules', 'vite');
+    fs.mkdirSync(viteDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(viteDir, 'package.json'),
+      JSON.stringify({ name: 'vite', version: '7.3.1', main: 'index.js' }),
+      'utf-8',
+    );
+    fs.writeFileSync(path.join(viteDir, 'index.js'), 'module.exports = {};\n', 'utf-8');
+    return path.join(viteDir, 'index.js');
+  }
+
+  it('NEE-368: never mixes trees — workspace vite without plugin-react falls back as a pair', () => {
+    const ws = track(makePreviewWorkspace({ nodeModules: false }));
+    const fakeViteEntry = addFakeWorkspaceVite(ws.root);
+    // react/react-dom must resolve workspace-side (they get no ace fallback).
+    for (const name of ['react', 'react-dom']) {
+      fs.symlinkSync(path.join(ACE_NODE_MODULES, name), path.join(ws.root, 'node_modules', name));
+    }
+    const result = resolvePreviewDependencies(ws.root);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(fs.realpathSync(result.deps.viteEntry)).not.toBe(fs.realpathSync(fakeViteEntry));
+    expect(fs.realpathSync(result.deps.viteEntry)).toContain(fs.realpathSync(ACE_NODE_MODULES));
+    expect(fs.realpathSync(result.deps.pluginReactEntry)).toContain(
+      fs.realpathSync(ACE_NODE_MODULES),
+    );
+  });
+
+  it('NEE-368: partial workspace pair with no fallback reports plugin-react as the miss', () => {
+    const ws = track(makePreviewWorkspace({ nodeModules: false }));
+    addFakeWorkspaceVite(ws.root);
+    const result = resolvePreviewDependencies(ws.root, { fallbackDir: null });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.missing).toBe('@vitejs/plugin-react');
+    expect(result.message).toContain('npm install --save-dev vite @vitejs/plugin-react');
+  });
+
   it('resolves everything through the workspace node_modules symlink', () => {
     const ws = track(makePreviewWorkspace());
     const result = resolvePreviewDependencies(ws.root, { fallbackDir: null });
