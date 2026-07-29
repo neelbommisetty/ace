@@ -8,4 +8,5 @@ export const EDITOR_APPEARANCE = {
   fontSize: 16,
   fontFamily: "'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace",
   fontLigatures: true,
+  wordWrap: 'on' as const,
 };
