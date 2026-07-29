@@ -162,6 +162,23 @@ function BackButton() {
   );
 }
 
+/**
+ * Scopes a title lookup to the table row's own Link. Once a question is also
+ * suggested by the Practice next card (NEE-310), a bare text query for its
+ * title ambiguously matches both the row and the card's <span> — the row's
+ * accessible link name stays the one unique anchor (the card's own link text
+ * is "Start →", never the title).
+ */
+function findRoomLink(title: string) {
+  return screen.findByRole('link', { name: title });
+}
+function roomLink(title: string) {
+  return screen.getByRole('link', { name: title });
+}
+function queryRoomLink(title: string) {
+  return screen.queryByRole('link', { name: title });
+}
+
 /** Mirrors App.tsx's Library ⇄ room routing, with a probe for the current
  * search string and a manual Back trigger to simulate the browser Back
  * button a real room's own '← Library' link (or history swipe) would fire. */
@@ -227,7 +244,7 @@ describe('Library', () => {
     getGenerationJobs.mockResolvedValue({ jobs: [] });
     renderLibrary();
 
-    await screen.findByText('Closures and Scope');
+    await findRoomLink('Closures and Scope');
     expect(screen.queryByRole('link', { name: 'New question' })).toBeNull();
     // The topbar workspace button shows the basename, keeps the full root
     // in its tooltip, and opens the App-level switch dialog (NEE-164).
@@ -311,7 +328,7 @@ describe('Library', () => {
     fireEvent.click(button);
 
     expect(installStarterPack).toHaveBeenCalledTimes(1);
-    expect(await screen.findByText('Debounce with Cancel and Flush')).toBeInTheDocument();
+    expect(await findRoomLink('Debounce with Cancel and Flush')).toBeInTheDocument();
   });
 
   it('explains a no-op install instead of looking broken', async () => {
@@ -427,7 +444,7 @@ describe('Library', () => {
     renderLibrary();
 
     await screen.findByText('Solved Question');
-    expect(screen.getByText('Not Attempted Question')).toBeInTheDocument();
+    expect(roomLink('Not Attempted Question')).toBeInTheDocument();
 
     const select = screen.getByTitle('Filter by status');
     expect(screen.getByRole('option', { name: 'Not attempted' })).toBeInTheDocument();
@@ -437,7 +454,7 @@ describe('Library', () => {
     fireEvent.change(select, { target: { value: 'solved' } });
 
     expect(screen.getByText('Solved Question')).toBeInTheDocument();
-    expect(screen.queryByText('Not Attempted Question')).toBeNull();
+    expect(queryRoomLink('Not Attempted Question')).toBeNull();
   });
 
   it('gives the last-run chip a distinct, non-green style for compile-error and no-tests (NEE-332)', async () => {
@@ -471,7 +488,7 @@ describe('Library', () => {
     getGenerationJobs.mockResolvedValue({ jobs: [] });
     renderLibrary();
 
-    await screen.findByText('Compile Error Question');
+    await findRoomLink('Compile Error Question');
 
     const compileChip = screen.getByText('compile error');
     expect(compileChip.className).toContain('run-fail');
@@ -537,7 +554,7 @@ describe('Library', () => {
       getGenerationJobs.mockResolvedValue({ jobs: [] });
       renderLibrary();
 
-      await screen.findByText('Closures and Scope');
+      await findRoomLink('Closures and Scope');
       expect(screen.queryByText('Archived Question')).toBeNull();
 
       const select = screen.getByTitle('Filter by status');
@@ -545,7 +562,7 @@ describe('Library', () => {
       fireEvent.change(select, { target: { value: 'archived' } });
 
       expect(await screen.findByText('Archived Question')).toBeInTheDocument();
-      expect(screen.queryByText('Closures and Scope')).toBeNull();
+      expect(queryRoomLink('Closures and Scope')).toBeNull();
     });
 
     it('archives a row via its own row-action control without navigating the row', async () => {
@@ -561,7 +578,7 @@ describe('Library', () => {
         </MemoryRouter>,
       );
 
-      await screen.findByText('Closures and Scope');
+      await findRoomLink('Closures and Scope');
       const archiveButton = screen.getByRole('button', { name: 'Archive' });
       fireEvent.click(archiveButton);
 
@@ -618,6 +635,59 @@ describe('Library', () => {
     });
   });
 
+  // NEE-310: the Practice next card next to Resume.
+  describe('Practice next card (NEE-310)', () => {
+    it('shows a suggestion with a one-line reason when an unsolved question exists', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue([
+        question({ id: 'q-unsolved', slug: 'unsolved-question', title: 'Unsolved Question' }),
+      ]);
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibrary();
+
+      expect(await screen.findByText('Practice next')).toBeInTheDocument();
+      // the card's own title span — the table row link carries the same
+      // text, so scope this to the non-link element the card renders.
+      expect(screen.getByText('Unsolved Question', { selector: 'span.resume-title' })).toBeInTheDocument();
+      expect(screen.getByText(/not attempted/, { selector: 'span.resume-detail' })).toBeInTheDocument();
+      const startLink = screen.getByRole('link', { name: 'Start →' });
+      expect(startLink).toHaveAttribute('href', '/q/js-ts/unsolved-question');
+    });
+
+    it('hides the card entirely once every question is solved', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue([
+        question({
+          id: 'q-solved',
+          slug: 'solved-question',
+          title: 'Solved Question',
+          stats: {
+            attemptCount: 1,
+            lastRun: { passed: 2, total: 2, at: new Date().toISOString(), status: 'done' },
+            lastActivityAt: new Date().toISOString(),
+            status: 'solved',
+            imported: false,
+          },
+        }),
+      ]);
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibrary();
+
+      await screen.findByText('Solved Question');
+      expect(screen.queryByText('Practice next')).toBeNull();
+    });
+
+    it('hides the card when the library has no questions at all', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue([]);
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibrary();
+
+      await screen.findByText('No questions yet');
+      expect(screen.queryByText('Practice next')).toBeNull();
+    });
+  });
+
   // NEE-298: search/filter/sort as URL state.
   describe('search, filter, sort, and URL state (NEE-298)', () => {
     function twoQuestions(): QuestionWithStats[] {
@@ -663,7 +733,7 @@ describe('Library', () => {
       getGenerationJobs.mockResolvedValue({ jobs: [] });
       renderLibrary(['/?category=js-ts&status=in-progress&difficulty=medium&q=closures&sort=title&dir=asc']);
 
-      await screen.findByText('Closures and Scope');
+      await findRoomLink('Closures and Scope');
       expect(screen.queryByText('Binary Search Basics')).toBeNull();
       expect(screen.getByTitle('Filter by status')).toHaveValue('in-progress');
       expect(screen.getByTitle('Filter by difficulty')).toHaveValue('medium');
@@ -681,10 +751,10 @@ describe('Library', () => {
       getGenerationJobs.mockResolvedValue({ jobs: [] });
       renderLibraryWithRoomAndProbe();
 
-      await screen.findByText('Closures and Scope');
+      await findRoomLink('Closures and Scope');
       fireEvent.change(screen.getByTitle('Filter by difficulty'), { target: { value: 'hard' } });
 
-      await waitFor(() => expect(screen.queryByText('Closures and Scope')).toBeNull());
+      await waitFor(() => expect(queryRoomLink('Closures and Scope')).toBeNull());
       expect(screen.getByText('Binary Search Basics')).toBeInTheDocument();
       expect(screen.getByTestId('url-params').textContent).toContain('difficulty=hard');
     });
@@ -695,21 +765,21 @@ describe('Library', () => {
       getGenerationJobs.mockResolvedValue({ jobs: [] });
       renderLibraryWithRoomAndProbe();
 
-      await screen.findByText('Closures and Scope');
+      await findRoomLink('Closures and Scope');
       expect(screen.getByText('Binary Search Basics')).toBeInTheDocument();
 
       const search = screen.getByPlaceholderText('Search titles…');
       fireEvent.change(search, { target: { value: 'binary' } });
 
       // Debounced: not applied on the very next tick...
-      expect(screen.getByText('Closures and Scope')).toBeInTheDocument();
+      expect(roomLink('Closures and Scope')).toBeInTheDocument();
       // ...but is applied (and lands in the URL) once the debounce fires.
-      await waitFor(() => expect(screen.queryByText('Closures and Scope')).toBeNull());
+      await waitFor(() => expect(queryRoomLink('Closures and Scope')).toBeNull());
       expect(screen.getByText('Binary Search Basics')).toBeInTheDocument();
       expect(screen.getByTestId('url-params').textContent).toContain('q=binary');
 
       fireEvent.change(search, { target: { value: '' } });
-      await waitFor(() => expect(screen.getByText('Closures and Scope')).toBeInTheDocument());
+      await waitFor(() => expect(roomLink('Closures and Scope')).toBeInTheDocument());
       expect(screen.getByText('Binary Search Basics')).toBeInTheDocument();
       expect(screen.getByTestId('url-params').textContent).not.toContain('q=');
     });
@@ -720,7 +790,7 @@ describe('Library', () => {
       getGenerationJobs.mockResolvedValue({ jobs: [] });
       renderLibraryWithRoomAndProbe();
 
-      await screen.findByText('Closures and Scope');
+      await findRoomLink('Closures and Scope');
       // Default order: newest-activity-first (unchanged from before NEE-298).
       expect(rowTitlesInOrder()).toEqual(['Binary Search Basics', 'Closures and Scope']);
 
@@ -746,7 +816,7 @@ describe('Library', () => {
       getGenerationJobs.mockResolvedValue({ jobs: [] });
       renderLibrary();
 
-      await screen.findByText('Closures and Scope');
+      await findRoomLink('Closures and Scope');
       fireEvent.click(screen.getByRole('button', { name: 'Title' }));
 
       expect(rowTitlesInOrder()).toEqual(['Binary Search Basics', 'Closures and Scope']);
@@ -758,7 +828,7 @@ describe('Library', () => {
       getGenerationJobs.mockResolvedValue({ jobs: [] });
       renderLibrary(['/?category=js-ts&status=in-progress&difficulty=medium&q=closures']);
 
-      await screen.findByText('Closures and Scope');
+      await findRoomLink('Closures and Scope');
       expect(screen.getByText('4 filters')).toBeInTheDocument();
 
       fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
@@ -791,7 +861,7 @@ describe('Library', () => {
       getGenerationJobs.mockResolvedValue({ jobs: [] });
       renderLibraryWithRoomAndProbe();
 
-      await screen.findByText('Closures and Scope');
+      await findRoomLink('Closures and Scope');
       fireEvent.click(screen.getByRole('button', { name: 'JS/TS' }));
       fireEvent.click(within(screen.getByRole('columnheader', { name: 'Attempts' })).getByRole('button', {
         name: 'Attempts',
@@ -807,7 +877,7 @@ describe('Library', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Go back' }));
 
-      await screen.findByText('Closures and Scope');
+      await findRoomLink('Closures and Scope');
       expect(screen.getByTestId('url-params').textContent).toBe(
         'category=js-ts&sort=attempts&dir=desc',
       );

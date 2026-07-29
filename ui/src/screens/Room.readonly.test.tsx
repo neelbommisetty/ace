@@ -110,6 +110,7 @@ const {
   ApiErrorMock,
   createOrResumeAttempt,
   getQuestionDetail,
+  getQuestions,
   getFile,
   putFile,
   getTestRuns,
@@ -140,6 +141,7 @@ const {
     ApiErrorMock,
     createOrResumeAttempt: vi.fn(),
     getQuestionDetail: vi.fn(),
+    getQuestions: vi.fn(),
     getFile: vi.fn(),
     putFile: vi.fn(),
     getTestRuns: vi.fn(),
@@ -167,6 +169,7 @@ vi.mock('../api', () => ({
   ApiError: ApiErrorMock,
   createOrResumeAttempt,
   getQuestionDetail,
+  getQuestions,
   getFile,
   putFile,
   getTestRuns,
@@ -266,6 +269,7 @@ function renderRoom() {
 
 beforeEach(() => {
   getQuestionDetail.mockResolvedValue(questionDetail());
+  getQuestions.mockResolvedValue([]);
   getFile.mockImplementation((relPath: string) =>
     Promise.resolve({ path: relPath, content: `// ${relPath}`, hash: `hash-${relPath}` }),
   );

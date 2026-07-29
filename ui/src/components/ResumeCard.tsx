@@ -6,9 +6,12 @@ import { CategoryChip, DifficultyChip } from './Chip';
 export function ResumeCard({
   attempt,
   question,
+  linkQuery,
 }: {
   attempt: AttemptRow;
   question: QuestionRow;
+  /** The Library's current filter/search/sort query string (NEE-310), minus the leading '?'. */
+  linkQuery?: string;
 }) {
   return (
     <div className="resume-card">
@@ -24,7 +27,10 @@ export function ResumeCard({
           </span>
         </span>
       </div>
-      <Link className="btn btn-accent" to={`/q/${question.category}/${question.slug}`}>
+      <Link
+        className="btn btn-accent"
+        to={`/q/${question.category}/${question.slug}${linkQuery ? `?${linkQuery}` : ''}`}
+      >
         Resume →
       </Link>
     </div>

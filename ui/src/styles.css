@@ -251,6 +251,18 @@ code {
   gap: 6px;
 }
 
+.room-solved-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.room-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .room-solved-badge {
   font-weight: 600;
 }
@@ -511,6 +523,31 @@ code {
 .resume-detail {
   color: var(--dim);
   font-size: 12px;
+}
+
+/* Resume + Practice next sit side by side on wide viewports, stack on narrow
+   ones (NEE-310) — the two cards keep their own gap either way. */
+.suggestion-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.suggestion-row > .resume-card,
+.suggestion-row > .practice-next-card {
+  flex: 1 1 320px;
+}
+
+.practice-next-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--cat);
+  border-radius: 8px;
+  padding: 12px 16px;
 }
 
 .filter-row {

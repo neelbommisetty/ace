@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { OnMount } from '@monaco-editor/react';
-import { Link, useParams } from 'react-router';
-import { ApiError, createOrResumeAttempt, getQuestionDetail, startFreshAttempt } from '../api';
+import { Link, useParams, useSearchParams } from 'react-router';
+import { ApiError, createOrResumeAttempt, getQuestionDetail, getQuestions, startFreshAttempt } from '../api';
 import { AiPanel } from '../components/AiPanel';
 import { DisputeModal } from '../components/DisputeModal';
 import { EditorPane } from '../components/EditorPane';
@@ -19,10 +19,36 @@ import { useLocalStorageState } from '../hooks/useLocalStorageState';
 import { usePaneLayout } from '../hooks/usePaneLayout';
 import { useReviewPanel } from '../hooks/useReviewPanel';
 import { useTestRuns } from '../hooks/useTestRuns';
+import {
+  fallbackOrderParams,
+  hasLibraryOrderContext,
+  libraryOrderQueryString,
+  nextInOrder,
+  nextUnsolvedInOrder,
+  orderedQuestions,
+  parseLibraryOrderParams,
+  prevInOrder,
+} from '../lib/libraryOrder';
 import { CONSOLE_DEFAULT_HEIGHT, PANE_DEFAULT_WIDTH } from '../lib/paneLayout';
 import { useSseConnected } from '../sse';
-import type { AttemptRow, QuestionDetail, TestRunTrigger } from '../types';
+import type { AttemptRow, QuestionDetail, QuestionWithStats, TestRunTrigger } from '../types';
 import { NotFound } from './NotFound';
+
+/**
+ * Library-order navigation context (NEE-310): the full questions list plus
+ * the query string to carry onward, resolved once by the outer `Room` and
+ * threaded down to `RoomInner` so prev/next/"Next question" can recompute
+ * the Library's exact ordering without a round trip back to it.
+ */
+interface RoomNav {
+  ordered: QuestionWithStats[];
+  /** Query string (no leading '?') to append to every onward room link, so the context survives a whole chain of questions. */
+  linkQuery: string;
+}
+
+function roomHref(q: QuestionWithStats, linkQuery: string): string {
+  return `/q/${q.category}/${q.slug}${linkQuery ? `?${linkQuery}` : ''}`;
+}
 
 // Layout-only default check (NEE-290): "is the window at least this wide,
 // right now". Never wired to a resize listener — it seeds a useState
@@ -46,6 +72,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 export function Room() {
   const { category = '', slug = '' } = useParams();
+  const [searchParams] = useSearchParams();
   const [loaded, setLoaded] = useState<{
     detail: QuestionDetail;
     // null when the question is solved and opened as a readonly reference —
@@ -88,6 +115,36 @@ export function Room() {
     [category, slug, reloadKey],
   );
 
+  // Full questions list for prev/next + "Next question" (NEE-310). Best
+  // effort: a failure here just leaves nav empty — the room itself still
+  // works, it only loses the walk-the-library affordances.
+  const [questions, setQuestions] = useState<QuestionWithStats[] | null>(null);
+  useCancellableEffect(
+    (cancelled) => {
+      getQuestions()
+        .then((qs) => {
+          if (!cancelled()) setQuestions(qs);
+        })
+        .catch(() => {
+          if (!cancelled()) setQuestions(null);
+        });
+    },
+    [category, slug, reloadKey],
+  );
+
+  // The Library's ordering, recomputed here from the full list + whatever
+  // context params this room was opened with — falling back to a
+  // same-category default order for a bare deep link (NEE-310).
+  const nav: RoomNav = useMemo(() => {
+    const params = hasLibraryOrderContext(searchParams)
+      ? parseLibraryOrderParams(searchParams)
+      : fallbackOrderParams(category);
+    return {
+      ordered: questions != null ? orderedQuestions(questions, params) : [],
+      linkQuery: libraryOrderQueryString(searchParams),
+    };
+  }, [questions, searchParams, category]);
+
   if (notFound) {
     return <NotFound message={`No question at ${category}/${slug}.`} />;
   }
@@ -115,6 +172,7 @@ export function Room() {
       detail={loaded.detail}
       attempt={loaded.attempt}
       latestAttempt={loaded.latestAttempt}
+      nav={nav}
       onReload={() => setReloadKey((k) => k + 1)}
     />
   );
@@ -124,11 +182,13 @@ function RoomInner({
   detail,
   attempt,
   latestAttempt,
+  nav,
   onReload,
 }: {
   detail: QuestionDetail;
   attempt: AttemptRow | null;
   latestAttempt: AttemptRow | null;
+  nav: RoomNav;
   onReload: () => void;
 }) {
   const question = detail.question;
@@ -136,6 +196,16 @@ function RoomInner({
 
   // Solved question opened as a read-only reference: no active attempt.
   const readonly = attempt == null;
+
+  // Prev/next + "Next question" (NEE-310) — walk the Library's ordering
+  // (recomputed by the outer Room from the full list + this room's context
+  // params) so moving between questions needs no Library round trip.
+  const prevQuestion = useMemo(() => prevInOrder(nav.ordered, question.id), [nav.ordered, question.id]);
+  const nextQuestion = useMemo(() => nextInOrder(nav.ordered, question.id), [nav.ordered, question.id]);
+  const nextUnsolvedQuestion = useMemo(
+    () => nextUnsolvedInOrder(nav.ordered, question.id),
+    [nav.ordered, question.id],
+  );
 
   const [autorun, setAutorun] = useLocalStorageState('ace-autorun', false);
   // NEE-331: format dirty editable buffers before Run — opt-in, next to autorun.
@@ -282,17 +352,29 @@ function RoomInner({
         onRun={hasTests && !readonly ? () => runs.startRun('manual') : undefined}
         onStop={runs.stopRun}
         onFreshAttempt={readonly ? undefined : openFresh}
+        prevTo={prevQuestion != null ? roomHref(prevQuestion, nav.linkQuery) : undefined}
+        nextTo={nextQuestion != null ? roomHref(nextQuestion, nav.linkQuery) : undefined}
       />
       {readonly && (
         <div className="room-solved-banner">
           <span className="room-solved-banner-text">
             <span className="room-solved-badge">✓ Solved</span> — read-only reference
           </span>
-          {latestAttempt != null && (
-            <button className="btn btn-small btn-accent" onClick={openFresh}>
-              Start new attempt
-            </button>
-          )}
+          <span className="room-solved-banner-actions">
+            {nextUnsolvedQuestion != null && (
+              <Link
+                className="btn btn-small btn-accent"
+                to={roomHref(nextUnsolvedQuestion, nav.linkQuery)}
+              >
+                Next question →
+              </Link>
+            )}
+            {latestAttempt != null && (
+              <button className="btn btn-small" onClick={openFresh}>
+                Start new attempt
+              </button>
+            )}
+          </span>
         </div>
       )}
       {!connected && <div className="sse-strip">reconnecting…</div>}

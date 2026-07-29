@@ -1,12 +1,12 @@
 import type { MouseEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { relTime } from '../lib/format';
+import type { SortDir, SortKey } from '../lib/libraryOrder';
 import type { QuestionWithStats } from '../types';
 import { CategoryChip, DifficultyChip, StatusChip } from './Chip';
 
-/** The four click-to-sort columns (NEE-298) — Category/Difficulty/Status stay display-only. */
-export type SortKey = 'title' | 'attempts' | 'lastRun' | 'lastActivity';
-export type SortDir = 'asc' | 'desc';
+/** Re-exported from lib/libraryOrder (NEE-310) so existing `from '../components/QuestionTable'` imports keep working. */
+export type { SortDir, SortKey };
 
 export interface QuestionTableProps {
   questions: QuestionWithStats[];
@@ -18,6 +18,13 @@ export interface QuestionTableProps {
   onArchive?: (question: QuestionWithStats) => void;
   /** Row action (NEE-296): the Archived filter's Restore. */
   onUnarchive?: (question: QuestionWithStats) => void;
+  /**
+   * The Library's current filter/search/sort query string (NEE-310), minus
+   * the leading '?'. Appended to each row's room link/navigate so the room
+   * can recompute this exact ordering for prev/next and "Next question"
+   * without a Library round trip. Omitted (or empty) renders a plain link.
+   */
+  linkQuery?: string;
 }
 
 function SortableHeader({
@@ -50,9 +57,18 @@ function SortableHeader({
   );
 }
 
-export function QuestionTable({ questions, sort, onSortChange, onArchive, onUnarchive }: QuestionTableProps) {
+export function QuestionTable({
+  questions,
+  sort,
+  onSortChange,
+  onArchive,
+  onUnarchive,
+  linkQuery,
+}: QuestionTableProps) {
   const navigate = useNavigate();
   const showActions = onArchive != null || onUnarchive != null;
+  const roomHref = (q: QuestionWithStats) =>
+    `/q/${q.category}/${q.slug}${linkQuery ? `?${linkQuery}` : ''}`;
   return (
     <div className="table-wrap">
       <table className="question-table">
@@ -105,7 +121,7 @@ export function QuestionTable({ questions, sort, onSortChange, onArchive, onUnar
                         // The row action button lives in its own cell and
                         // stops propagation itself, so it never reaches here.
                         if (e.target instanceof Element && e.target.closest('a')) return;
-                        navigate(`/q/${q.category}/${q.slug}`);
+                        navigate(roomHref(q));
                       }
                 }
                 title={missing ? 'Question directory is missing on disk' : undefined}
@@ -114,7 +130,7 @@ export function QuestionTable({ questions, sort, onSortChange, onArchive, onUnar
                   {missing ? (
                     q.title
                   ) : (
-                    <Link className="row-link" to={`/q/${q.category}/${q.slug}`}>
+                    <Link className="row-link" to={roomHref(q)}>
                       {q.title}
                     </Link>
                   )}

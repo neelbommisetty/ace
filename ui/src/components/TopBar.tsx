@@ -1,3 +1,4 @@
+import { Link } from 'react-router';
 import { formatClock } from '../lib/format';
 import type { QuestionRow } from '../types';
 import { CategoryChip, DifficultyChip } from './Chip';
@@ -11,6 +12,8 @@ export function TopBar({
   onRun,
   onStop,
   onFreshAttempt,
+  prevTo,
+  nextTo,
 }: {
   question: QuestionRow;
   seconds: number;
@@ -23,6 +26,12 @@ export function TopBar({
   /** Stops the in-flight run (NEE-295). Present whenever onRun is. */
   onStop?: () => void;
   onFreshAttempt?: () => void;
+  /**
+   * Prev/next hrefs (NEE-310), walking the Library's current ordering —
+   * undefined at either end of the (filtered) list, which hides that link.
+   */
+  prevTo?: string;
+  nextTo?: string;
 }) {
   return (
     <header className="topbar">
@@ -35,6 +44,20 @@ export function TopBar({
         <span className="topbar-suggested" title="Suggested time">
           ~{question.suggestedMinutes}m
         </span>
+        {(prevTo != null || nextTo != null) && (
+          <span className="room-nav">
+            {prevTo != null && (
+              <Link className="btn btn-small" to={prevTo} title="Previous question in this order">
+                ← Prev
+              </Link>
+            )}
+            {nextTo != null && (
+              <Link className="btn btn-small" to={nextTo} title="Next question in this order">
+                Next →
+              </Link>
+            )}
+          </span>
+        )}
       </div>
       <div className="topbar-right">
         {onFreshAttempt && (

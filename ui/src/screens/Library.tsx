@@ -10,71 +10,27 @@ import {
   unarchiveQuestion,
 } from '../api';
 import { ImportBanner } from '../components/ImportBanner';
-import { QuestionTable, type SortDir, type SortKey } from '../components/QuestionTable';
+import { PracticeNextCard } from '../components/PracticeNextCard';
+import { QuestionTable } from '../components/QuestionTable';
 import { ResumeCard } from '../components/ResumeCard';
 import { showActionToast } from '../components/Toast';
 import { CATEGORY_SLUGS, categoryShortName } from '../lib/categories';
+import {
+  DEFAULT_SORT_DIR,
+  libraryOrderQueryString,
+  orderedQuestions,
+  parseDifficultyFilter,
+  parseSortKey,
+  parseStatusFilter,
+  type SortDir,
+  type SortKey,
+} from '../lib/libraryOrder';
+import { pickPracticeNext } from '../lib/practiceNext';
 import { openWorkspaceSwitchDialog } from '../lib/switchSignal';
 import { useSseEvent } from '../sse';
-import type { Difficulty, QuestionStatus, QuestionWithStats, SettingsInfo, WorkspaceInfo } from '../types';
-
-type StatusFilter = 'all' | QuestionStatus | 'archived';
-type DifficultyFilter = 'all' | Difficulty;
+import type { QuestionWithStats, SettingsInfo, WorkspaceInfo } from '../types';
 
 const SEARCH_DEBOUNCE_MS = 300;
-
-// Each sort key's direction the *first* time it's clicked — text sorts
-// start A→Z, everything else (counts, timestamps) starts biggest/newest
-// first, matching the table's prior hardcoded newest-activity-first order.
-const DEFAULT_SORT_DIR: Record<SortKey, SortDir> = {
-  title: 'asc',
-  attempts: 'desc',
-  lastRun: 'desc',
-  lastActivity: 'desc',
-};
-
-function parseStatusFilter(raw: string | null): StatusFilter {
-  return raw === 'not-attempted' || raw === 'in-progress' || raw === 'solved' || raw === 'archived'
-    ? raw
-    : 'all';
-}
-
-function parseDifficultyFilter(raw: string | null): DifficultyFilter {
-  return raw === 'easy' || raw === 'medium' || raw === 'hard' ? raw : 'all';
-}
-
-function parseSortKey(raw: string | null): SortKey {
-  return raw === 'title' || raw === 'attempts' || raw === 'lastRun' || raw === 'lastActivity'
-    ? raw
-    : 'lastActivity';
-}
-
-function sortDirMultiplier(dir: SortDir): number {
-  return dir === 'asc' ? 1 : -1;
-}
-
-// Generalizes the previously-hardcoded newest-activity-first order
-// (Library.tsx:96-100) across all four sortable columns; ascending, the
-// caller negates for descending.
-function compareBySortKey(a: QuestionWithStats, b: QuestionWithStats, key: SortKey): number {
-  switch (key) {
-    case 'title':
-      return a.title.localeCompare(b.title);
-    case 'attempts':
-      return a.stats.attemptCount - b.stats.attemptCount;
-    case 'lastRun': {
-      const at = a.stats.lastRun?.at ?? '';
-      const bt = b.stats.lastRun?.at ?? '';
-      return at.localeCompare(bt);
-    }
-    case 'lastActivity':
-    default: {
-      const at = a.stats.lastActivityAt ?? a.createdAt;
-      const bt = b.stats.lastActivityAt ?? b.createdAt;
-      return at.localeCompare(bt);
-    }
-  }
-}
 
 export function Library() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -273,17 +229,26 @@ export function Library() {
   // show up at all — everywhere else they're hidden by default (NEE-296).
   const visible = useMemo(() => {
     if (questions == null) return [];
-    const needle = searchQuery.trim().toLowerCase();
-    return questions
-      .filter((q) => (statusFilter === 'archived' ? q.archivedAt != null : q.archivedAt == null))
-      .filter((q) => categoryFilter === '' || q.category === categoryFilter)
-      .filter(
-        (q) => statusFilter === 'all' || statusFilter === 'archived' || q.stats.status === statusFilter,
-      )
-      .filter((q) => difficultyFilter === 'all' || q.difficulty === difficultyFilter)
-      .filter((q) => needle === '' || q.title.toLowerCase().includes(needle))
-      .sort((a, b) => sortDirMultiplier(sortDir) * compareBySortKey(a, b, sortKey));
+    return orderedQuestions(questions, {
+      category: categoryFilter,
+      status: statusFilter,
+      difficulty: difficultyFilter,
+      search: searchQuery,
+      sortKey,
+      sortDir,
+    });
   }, [questions, categoryFilter, statusFilter, difficultyFilter, searchQuery, sortKey, sortDir]);
+
+  // Carried onward into the room (NEE-310) so prev/next and "Next question"
+  // can recompute this exact ordering without a Library round trip.
+  const linkQuery = useMemo(() => libraryOrderQueryString(searchParams), [searchParams]);
+
+  // Pure heuristic over the already-fetched stats (NEE-310) — null hides the
+  // card entirely (nothing left unsolved to suggest).
+  const practiceNext = useMemo(
+    () => (questions == null ? null : pickPracticeNext(questions)),
+    [questions],
+  );
 
   // Archive is reversible (Toast undo, or the Archived filter's Restore row
   // action) so it fires immediately with no confirmation — the Library
@@ -366,11 +331,17 @@ export function Library() {
             onImported={refetch}
           />
         )}
-        {workspace?.activeAttempt != null && (
-          <ResumeCard
-            attempt={workspace.activeAttempt.attempt}
-            question={workspace.activeAttempt.question}
-          />
+        {(workspace?.activeAttempt != null || practiceNext != null) && (
+          <div className="suggestion-row">
+            {workspace?.activeAttempt != null && (
+              <ResumeCard
+                attempt={workspace.activeAttempt.attempt}
+                question={workspace.activeAttempt.question}
+                linkQuery={linkQuery}
+              />
+            )}
+            {practiceNext != null && <PracticeNextCard suggestion={practiceNext} />}
+          </div>
         )}
         {questions != null && (
           <>
@@ -469,6 +440,7 @@ export function Library() {
                 onSortChange={handleSort}
                 onArchive={handleArchive}
                 onUnarchive={handleUnarchive}
+                linkQuery={linkQuery}
               />
             )}
           </>
