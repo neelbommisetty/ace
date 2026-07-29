@@ -47,8 +47,8 @@ Repo note: for seed-question maintenance in this repo, test updates are allowed 
 
 Adding new questions:
 
-- For end-users in a workspace: use `ace generate`
-- For this repo's seed questions: use `npm run ace generate` to scaffold, then clean up the generated files for use as a seed question
+- For end-users in a workspace: use the app's `/new` screen (`ace ui`) — the CLI's old `ace generate` command retired at the M2 cut line and no longer exists; only `init` / `setup` / `ui` remain in `cli/commands/`
+- For this repo's seed questions: write a throwaway script that calls `scaffoldQuestionAt()` (`cli/lib/scaffold.ts`) against the repo root, run it once, then delete the script before committing
 - Never create question folders manually
 
 ## Common Dev Commands (Repo)

@@ -34,6 +34,20 @@ export const STARTER_PACK: readonly StarterQuestion[] = [
   { category: 'web-components', slug: 'star-rating', title: 'Accessible Star Rating' },
   { category: 'react-apps', slug: 'task-board', title: 'Sprint Task Board' },
   { category: 'design-fe', slug: 'infinite-news-feed', title: 'Infinite News Feed' },
+  { category: 'behavioral', slug: 'deadline-tradeoffs', title: 'Trade-offs Under a Deadline' },
+  {
+    category: 'behavioral',
+    slug: 'influence-without-authority',
+    title: 'Winning Over a Skeptical Team',
+  },
+  { category: 'behavioral', slug: 'peer-disagreement', title: 'Peer Disagreement' },
+  { category: 'behavioral', slug: 'ambiguous-requirements', title: 'Ambiguous Requirements' },
+  {
+    category: 'behavioral',
+    slug: 'hard-feedback-received',
+    title: 'Hard Feedback You Received',
+  },
+  { category: 'behavioral', slug: 'project-that-failed', title: 'A Project That Failed' },
 ];
 
 /**
