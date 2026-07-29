@@ -138,7 +138,12 @@ export function createRunner(opts: {
     }
     const parsed = raw === null ? null : parseVitestJson(raw);
 
-    if (parsed) {
+    if (parsed && parsed.compileError != null) {
+      // vitest ran, emitted its JSON envelope, but the suite never
+      // collected (syntax error / broken import) — surface this as its own
+      // status rather than a vacuous "0/0 passed" done run (NEE-332).
+      finishEntry(entry, { status: 'compile-error', errorMessage: parsed.compileError });
+    } else if (parsed) {
       const summary: TestRunSummary = {
         ...parsed.summary,
         durationMs: Date.now() - entry.startedAt,

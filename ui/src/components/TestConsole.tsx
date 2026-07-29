@@ -97,9 +97,10 @@ export function TestConsole({
           />
         ) : (
           <div className="output-tab">
-            {lastRun?.status === 'error' && !running && (
+            {(lastRun?.status === 'error' || lastRun?.status === 'compile-error') && !running && (
               <div className="run-error-block">
-                <strong>Run failed:</strong> {lastRun.errorMessage ?? 'unknown error'}
+                <strong>{lastRun.status === 'compile-error' ? 'Compilation failed:' : 'Run failed:'}</strong>{' '}
+                {lastRun.errorMessage ?? 'unknown error'}
               </div>
             )}
             {runError && <div className="run-error-block">{runError}</div>}
@@ -145,26 +146,44 @@ function ResultsTab({
               Run failed: {lastRun.errorMessage ?? 'unknown error'} — see Output for details.
             </div>
           )}
+          {lastRun.status === 'compile-error' && (
+            <div className="results-banner results-banner-error compile-error-banner">
+              <div className="compile-error-title">✕ Compilation failed</div>
+              <pre className="compile-error-text">
+                {lastRun.errorMessage ?? 'Unknown error — see Output for details.'}
+              </pre>
+            </div>
+          )}
           {lastRun.status === 'cancelled' && (
             <div className="results-banner results-banner-dim">Run was cancelled.</div>
           )}
-          {lastRun.summary && (
-            <div
-              className={`results-summary ${
-                lastRun.summary.failed > 0 ? 'summary-fail' : 'summary-pass'
-              }`}
-            >
-              <span className="mono">
-                {lastRun.summary.passed}/{lastRun.summary.total}
-              </span>{' '}
-              passed
-              {lastRun.summary.skipped > 0 && ` · ${lastRun.summary.skipped} skipped`}
-              {' · '}
-              {formatDuration(lastRun.summary.durationMs)}
-              {' · '}
-              {relTime(lastRun.at)}
-            </div>
-          )}
+          {lastRun.status === 'done' &&
+            lastRun.summary &&
+            (lastRun.summary.total === 0 ? (
+              <div className="results-summary summary-neutral">
+                <span className="mono">no tests found</span>
+                {' · '}
+                {formatDuration(lastRun.summary.durationMs)}
+                {' · '}
+                {relTime(lastRun.at)}
+              </div>
+            ) : (
+              <div
+                className={`results-summary ${
+                  lastRun.summary.failed > 0 ? 'summary-fail' : 'summary-pass'
+                }`}
+              >
+                <span className="mono">
+                  {lastRun.summary.passed}/{lastRun.summary.total}
+                </span>{' '}
+                passed
+                {lastRun.summary.skipped > 0 && ` · ${lastRun.summary.skipped} skipped`}
+                {' · '}
+                {formatDuration(lastRun.summary.durationMs)}
+                {' · '}
+                {relTime(lastRun.at)}
+              </div>
+            ))}
           {lastRun.results && lastRun.results.length > 0 && (
             <CaseList
               key={lastRun.runId}

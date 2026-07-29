@@ -153,12 +153,22 @@ function ActivityTab({
             <li key={run.id} className="activity-item">
               <span className="mono">
                 {run.status === 'done' && run.total != null ? (
-                  <span className={run.failed === 0 ? 'run-pass' : 'run-fail'}>
-                    {run.passed}/{run.total}
-                  </span>
+                  run.total === 0 ? (
+                    <span className="cell-dim">no tests found</span>
+                  ) : (
+                    <span className={run.failed === 0 ? 'run-pass' : 'run-fail'}>
+                      {run.passed}/{run.total}
+                    </span>
+                  )
                 ) : (
-                  <span className={run.status === 'error' ? 'run-fail' : 'cell-dim'}>
-                    {run.status}
+                  <span
+                    className={
+                      run.status === 'error' || run.status === 'compile-error'
+                        ? 'run-fail'
+                        : 'cell-dim'
+                    }
+                  >
+                    {run.status === 'compile-error' ? 'compile error' : run.status}
                   </span>
                 )}
                 {run.durationMs != null && (

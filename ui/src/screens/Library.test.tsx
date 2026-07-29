@@ -250,4 +250,46 @@ describe('Library', () => {
     expect(screen.getByText('Solved Question')).toBeInTheDocument();
     expect(screen.queryByText('Not Attempted Question')).toBeNull();
   });
+
+  it('gives the last-run chip a distinct, non-green style for compile-error and no-tests (NEE-332)', async () => {
+    getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+    getQuestions.mockResolvedValue([
+      question({
+        id: 'q-compile-error',
+        slug: 'compile-error-question',
+        title: 'Compile Error Question',
+        stats: {
+          attemptCount: 1,
+          lastRun: { passed: 0, total: 0, at: new Date().toISOString(), status: 'compile-error' },
+          lastActivityAt: new Date().toISOString(),
+          status: 'in-progress',
+          imported: false,
+        },
+      }),
+      question({
+        id: 'q-no-tests',
+        slug: 'no-tests-question',
+        title: 'No Tests Question',
+        stats: {
+          attemptCount: 1,
+          lastRun: { passed: 0, total: 0, at: new Date().toISOString(), status: 'done' },
+          lastActivityAt: new Date().toISOString(),
+          status: 'in-progress',
+          imported: false,
+        },
+      }),
+    ] as QuestionWithStats[]);
+    getGenerationJobs.mockResolvedValue({ jobs: [] });
+    renderLibrary();
+
+    await screen.findByText('Compile Error Question');
+
+    const compileChip = screen.getByText('compile error');
+    expect(compileChip.className).toContain('run-fail');
+    expect(compileChip.className).not.toContain('run-pass');
+
+    const noTestsChip = screen.getByText('no tests');
+    expect(noTestsChip.className).not.toContain('run-pass');
+    expect(noTestsChip.className).not.toContain('run-fail');
+  });
 });

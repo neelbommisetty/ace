@@ -25,7 +25,16 @@ export type AttemptEventType =
   | 'pause'
   | 'resume';
 export type TestRunTrigger = 'manual' | 'save';
-export type TestRunStatus = 'running' | 'done' | 'error' | 'cancelled';
+/**
+ * 'compile-error' (NEE-332): vitest ran but the suite never collected —
+ * a syntax error or broken import in the solution/test file. Distinct from
+ * 'error' (the run itself couldn't be executed/produced no parseable
+ * report) and from a 'done' run with total:0 (a suite that collected fine
+ * but genuinely defines zero tests — neutral, not an error). errorMessage
+ * carries the ANSI-stripped transform/import failure for both 'error' and
+ * 'compile-error'.
+ */
+export type TestRunStatus = 'running' | 'done' | 'error' | 'cancelled' | 'compile-error';
 export type FileKind = 'readme' | 'solution' | 'test' | 'notes';
 
 export interface QuestionRow {
@@ -245,7 +254,14 @@ export interface QuestionFileInfo {
 
 export interface QuestionStats {
   attemptCount: number;
-  lastRun: { passed: number; total: number; at: string } | null;
+  /**
+   * The latest run whose outcome is knowable — status 'done' or
+   * 'compile-error' (a still-running/errored/cancelled run never shadows
+   * whatever finished before it). `status` lets table/list chips render a
+   * compile failure distinctly instead of folding it into total/passed
+   * (which would read as a vacuous, green "0/0 passed").
+   */
+  lastRun: { passed: number; total: number; at: string; status: 'done' | 'compile-error' } | null;
   lastActivityAt: string | null;
   status: QuestionStatus;
   imported: boolean;

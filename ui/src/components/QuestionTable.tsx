@@ -45,15 +45,23 @@ export function QuestionTable({ questions }: { questions: QuestionWithStats[] })
                 <td className="num mono">{q.stats.attemptCount || '—'}</td>
                 <td className="num mono">
                   {q.stats.lastRun ? (
-                    <span
-                      className={
-                        q.stats.lastRun.passed === q.stats.lastRun.total
-                          ? 'run-pass'
-                          : 'run-fail'
-                      }
-                    >
-                      {q.stats.lastRun.passed}/{q.stats.lastRun.total}
-                    </span>
+                    q.stats.lastRun.status === 'compile-error' ? (
+                      <span className="run-fail" title="Latest run failed to compile">
+                        compile error
+                      </span>
+                    ) : q.stats.lastRun.total === 0 ? (
+                      <span className="cell-dim">no tests</span>
+                    ) : (
+                      <span
+                        className={
+                          q.stats.lastRun.passed === q.stats.lastRun.total
+                            ? 'run-pass'
+                            : 'run-fail'
+                        }
+                      >
+                        {q.stats.lastRun.passed}/{q.stats.lastRun.total}
+                      </span>
+                    )
                   ) : (
                     '—'
                   )}

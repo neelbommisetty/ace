@@ -722,6 +722,31 @@ describe('question stats', () => {
     expect(stats.imported).toBe(true);
     expect(stats.status).toBe('in-progress');
   });
+
+  it('a compile-error run surfaces in lastRun (not solved, not shadowed by a stale done run)', () => {
+    const q = makeQuestion();
+    db.createAttempt(q.id);
+    const passing = db.createTestRun({ questionId: q.id, attemptId: null, trigger: 'manual' });
+    db.finishTestRun(passing.id, {
+      status: 'done',
+      summary: { total: 2, passed: 2, failed: 0, skipped: 0, durationMs: 10 },
+      results: [],
+    });
+    expect(db.listQuestions()[0].stats.status).toBe('solved');
+
+    // a later syntax error must knock status off 'solved' and surface as
+    // the latest run — not silently fall back to the earlier passing run.
+    const broken = db.createTestRun({ questionId: q.id, attemptId: null, trigger: 'save' });
+    db.finishTestRun(broken.id, {
+      status: 'compile-error',
+      errorMessage: 'SyntaxError: Unexpected token',
+    });
+    const stats = db.listQuestions()[0].stats;
+    expect(stats.status).toBe('in-progress');
+    expect(stats.lastRun?.status).toBe('compile-error');
+    expect(stats.lastRun?.total).toBe(0);
+    expect(stats.lastRun?.at).toBe(db.getTestRun(broken.id)!.at);
+  });
 });
 
 describe('reviews and meta', () => {

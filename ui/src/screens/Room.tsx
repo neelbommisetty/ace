@@ -241,14 +241,21 @@ function RoomInner({
                 title="Show test console"
               >
                 Tests ▴
-                {runs.lastRun?.summary && (
-                  <span
-                    className={`mono ${runs.lastRun.summary.failed > 0 ? 'run-fail' : 'run-pass'}`}
-                  >
-                    {' '}
-                    {runs.lastRun.summary.passed}/{runs.lastRun.summary.total}
-                  </span>
+                {runs.lastRun?.status === 'compile-error' && (
+                  <span className="mono run-fail"> compile error</span>
                 )}
+                {runs.lastRun?.status === 'done' &&
+                  runs.lastRun.summary &&
+                  (runs.lastRun.summary.total === 0 ? (
+                    <span className="mono cell-dim"> no tests</span>
+                  ) : (
+                    <span
+                      className={`mono ${runs.lastRun.summary.failed > 0 ? 'run-fail' : 'run-pass'}`}
+                    >
+                      {' '}
+                      {runs.lastRun.summary.passed}/{runs.lastRun.summary.total}
+                    </span>
+                  ))}
               </button>
             ))}
         </div>

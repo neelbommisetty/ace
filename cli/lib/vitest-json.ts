@@ -31,22 +31,46 @@ interface VitestAssertionResult {
   failureMessages?: string[];
 }
 
+interface VitestFileResult {
+  assertionResults?: VitestAssertionResult[];
+  // Present on a file that failed to collect at all (syntax error, broken
+  // import, etc): vitest's jest-style reporter still emits an entry for it
+  // with an empty assertionResults array and the transform/import error
+  // here, un-stripped of ANSI color codes.
+  message?: string;
+}
+
 interface VitestJsonOutput {
+  // false when the run as a whole didn't succeed — including a suite that
+  // never collected. Absent on report shapes that predate this field
+  // (older fixtures / synthetic reports); treated as true when absent so
+  // parseVitestJson's success-detection is opt-in, not a regression risk
+  // for any caller that never sees `success` in the wild.
+  success?: boolean;
   numTotalTests?: number;
   numPassedTests?: number;
   numFailedTests?: number;
   numPendingTests?: number;
-  testResults?: Array<{ assertionResults?: VitestAssertionResult[] }>;
+  testResults?: VitestFileResult[];
 }
 
 /**
  * Maps vitest's jest-style JSON reporter output to our shapes. Returns null
  * when the input is not parseable as a vitest JSON report. The summary's
  * durationMs is a per-case sum; callers that track wall time replace it.
+ *
+ * `compileError` is non-null exactly when the suite never collected — the
+ * report's top-level `success` is false AND zero tests were collected
+ * (`numTotalTests: 0`). That combination is how vitest reports a
+ * syntax/transform/import failure: no assertionResults anywhere, but a
+ * per-file `message` carrying the actual error. A `success: true` report
+ * with `numTotalTests: 0` (a suite that compiles fine but defines no tests)
+ * is NOT a compile error — callers should treat that as a neutral
+ * "no tests found" outcome, never a failure.
  */
 export function parseVitestJson(
   raw: string,
-): { summary: TestRunSummary; results: TestCaseResult[] } | null {
+): { summary: TestRunSummary; results: TestCaseResult[]; compileError: string | null } | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -93,5 +117,16 @@ export function parseVitestJson(
     skipped: Math.max(0, total - passed - failed),
     durationMs: Math.round(durationSum),
   };
-  return { summary, results };
+
+  const success = report.success !== false;
+  let compileError: string | null = null;
+  if (!success && total === 0) {
+    const messages = report.testResults
+      .map((f) => (typeof f?.message === 'string' ? stripAnsi(f.message).trim() : ''))
+      .filter(Boolean);
+    compileError =
+      messages.length > 0 ? messages.join('\n\n') : 'vitest reported a collection failure';
+  }
+
+  return { summary, results, compileError };
 }

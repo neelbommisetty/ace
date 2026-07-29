@@ -351,8 +351,13 @@ class SqliteAceDb implements AceDb {
   // -- questions ------------------------------------------------------------
 
   listQuestions(): QuestionWithStats[] {
+    // 'done' or 'compile-error' — the latest run whose outcome is knowable,
+    // so a compile failure surfaces in the library list distinctly instead
+    // of silently falling back to a stale prior run (NEE-332). A still
+    // 'running'/'error'/'cancelled' run never shadows what finished before it.
     const latestDone =
-      "SELECT t.%COL% FROM test_runs t WHERE t.question_id = q.id AND t.status = 'done' " +
+      "SELECT t.%COL% FROM test_runs t WHERE t.question_id = q.id " +
+      "AND t.status IN ('done', 'compile-error') " +
       'ORDER BY t.at DESC, t.id DESC LIMIT 1';
     const rows = this.stmt(
       `SELECT q.*,
@@ -362,6 +367,7 @@ class SqliteAceDb implements AceDb {
         (${latestDone.replace('%COL%', 'passed')}) AS last_done_passed,
         (${latestDone.replace('%COL%', 'total')}) AS last_done_total,
         (${latestDone.replace('%COL%', 'at')}) AS last_done_at,
+        (${latestDone.replace('%COL%', 'status')}) AS last_done_status,
         (SELECT MAX(t.at) FROM test_runs t WHERE t.question_id = q.id) AS last_run_at
       FROM questions q
       ORDER BY q.category, q.slug`,
@@ -375,10 +381,11 @@ class SqliteAceDb implements AceDb {
               passed: (r.last_done_passed as number | null) ?? 0,
               total: (r.last_done_total as number | null) ?? 0,
               at: r.last_done_at as string,
+              status: (r.last_done_status as 'done' | 'compile-error') ?? 'done',
             }
           : null;
       let status: QuestionStatus = 'not-attempted';
-      if (lastRun && lastRun.total > 0 && lastRun.passed === lastRun.total) {
+      if (lastRun && lastRun.status === 'done' && lastRun.total > 0 && lastRun.passed === lastRun.total) {
         status = 'solved';
       } else if (attemptCount > 0) {
         status = 'in-progress';
