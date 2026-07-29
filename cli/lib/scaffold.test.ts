@@ -134,6 +134,43 @@ describe('scaffoldQuestionAt', () => {
     expect(readme).not.toContain('**Competency:**');
   });
 
+  // Byte-exact, because the failure this guards is invisible to every
+  // substring assertion: a Handlebars {{#if}} block whose closing tag sits on
+  // its own line swallows that line entirely, so losing the blank line before
+  // `---` turns the thematic break into a Setext H2 and the whole metadata
+  // block renders as one giant heading in the Problem pane.
+  it('renders the README metadata block with a real thematic break, competency or not', () => {
+    const header = '# Two Sum\n\n**Category:** JS/TS Puzzles\n**Difficulty:** medium\n**Suggested Time:** ~30 minutes\n';
+
+    scaffoldQuestionAt(tempRoot, {
+      title: 'Two Sum',
+      slug: 'readme-shape-coding',
+      category: 'js-ts',
+      difficulty: 'medium',
+      description: 'Find indices adding to target.',
+    });
+    expect(
+      fs.readFileSync(path.join(tempRoot, 'questions', 'js-ts', 'readme-shape-coding', 'README.md'), 'utf-8'),
+    ).toBe(`${header}\n---\n\nFind indices adding to target.\n`);
+
+    scaffoldQuestionAt(tempRoot, {
+      title: 'A Disagreement',
+      slug: 'readme-shape-behavioral',
+      category: 'behavioral',
+      difficulty: 'easy',
+      description: 'Tell me about a time.',
+      competency: 'conflict',
+    });
+    expect(
+      fs.readFileSync(
+        path.join(tempRoot, 'questions', 'behavioral', 'readme-shape-behavioral', 'README.md'),
+        'utf-8',
+      ),
+    ).toBe(
+      '# A Disagreement\n\n**Category:** Behavioral\n**Difficulty:** easy\n**Suggested Time:** ~5 minutes\n**Competency:** conflict\n\n---\n\nTell me about a time.\n',
+    );
+  });
+
   it('writes no .probes.md when followUps is an empty array', () => {
     const result = scaffoldQuestionAt(tempRoot, {
       title: 'Empty Probes',
