@@ -1,17 +1,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {
-  CATEGORY_SLUGS,
-  getCategoryConfig,
-  isDesignCategory,
-  type CategorySlug,
-} from './categories.js';
+import { CATEGORY_SLUGS, getCategoryConfig, type CategorySlug, type QuestionType } from './categories.js';
 import { getImportMetaDirname } from './import-meta.js';
 
 const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
 
 /** Features whose system prompt is assembled per-category from a skeleton + capsule. */
 export type PromptFeature = 'generate' | 'edge-audit' | 'review';
+
+/**
+ * The capsule heading that fills the `{{example}}` slot, per question type —
+ * a Record so widening QuestionType forces a new entry here at compile time
+ * instead of silently falling through a design/coding ternary.
+ */
+const EXAMPLE_SECTION: Record<QuestionType, string> = {
+  coding: 'Example Test File',
+  design: 'Example Evaluation Criteria',
+  behavioral: 'Example Strong vs Weak Answer',
+};
 
 const SLOT_RE = /\{\{([a-z-]+)\}\}/g;
 
@@ -115,7 +121,6 @@ function substituteSlots(
  */
 export function buildSystemPrompt(feature: PromptFeature, category: CategorySlug): string {
   const config = getCategoryConfig(category);
-  const design = isDesignCategory(category);
   const capsuleRelPath = `categories/${category}.md`;
   const sections = parseCapsuleSections(readPromptFile(capsuleRelPath));
   const section = (name: string) => requireSection(sections, name, capsuleRelPath);
@@ -128,7 +133,7 @@ export function buildSystemPrompt(feature: PromptFeature, category: CategorySlug
     identity: () => section('Identity'),
     'difficulty-calibration': () => section('Difficulty Calibration'),
     environment: () => section('Environment & Test Contract'),
-    example: () => section(design ? 'Example Evaluation Criteria' : 'Example Test File'),
+    example: () => section(EXAMPLE_SECTION[config.type]),
     'edge-case-classes': () => section('Edge-Case Classes'),
     'review-dimensions': () => section('Review Dimensions'),
     signals: () => section('Signals'),

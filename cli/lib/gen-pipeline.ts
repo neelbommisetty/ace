@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { getCategoryConfig, hasTests, type CategorySlug, type Difficulty } from './categories.js';
+import {
+  getCategoryConfig,
+  hasTests,
+  type CategorySlug,
+  type Difficulty,
+  type QuestionType,
+} from './categories.js';
 import { verifyGeneratedQuestion, type VerifyFn } from './gen-verify.js';
 import {
   chatObjectStream,
@@ -181,6 +187,29 @@ export function verifyFailureDetail(failureReport: string): string {
   }
   return 'verification failed';
 }
+
+/**
+ * Edge-audit step label, per question type — a Record so widening
+ * QuestionType forces a new entry here instead of silently falling through
+ * a design/coding ternary.
+ */
+const AUDIT_LABEL: Record<QuestionType, string> = {
+  coding: 'Auditing edge cases',
+  design: 'Critiquing requirements',
+  behavioral: 'Critiquing the prompt',
+};
+
+/**
+ * Sandbox-verify skip reason, per question type, for categories with no test
+ * suite. `coding` is never read (coding always hasTests) but the entry is
+ * required so the map stays exhaustive over QuestionType. The `design`
+ * string is asserted verbatim in gen-pipeline.test.ts — never reword it.
+ */
+const VERIFY_SKIP_REASON: Record<QuestionType, string> = {
+  coding: 'not applicable — this category is sandbox-verified above',
+  design: 'not applicable to design questions',
+  behavioral: 'not applicable to behavioral questions',
+};
 
 export interface GenerateParams {
   provider: LLMProvider;
@@ -491,7 +520,7 @@ export async function generateVerifiedQuestion(
   const auditPrompt = buildAuditUserMessage(params, question, design);
   const auditStep = steps.step({
     slug: 'edge-audit',
-    label: design ? 'Critiquing requirements' : 'Auditing edge cases',
+    label: AUDIT_LABEL[config.type],
     kind: 'llm',
     prompt: auditPrompt.maskedPrompt,
   });
@@ -517,7 +546,7 @@ export async function generateVerifiedQuestion(
   if (design) {
     steps
       .step({ slug: 'verify', label: 'Sandbox verification', kind: 'sandbox' })
-      .skip('not applicable to design questions');
+      .skip(VERIFY_SKIP_REASON[config.type]);
     return { question, edgeCases: audit.edgeCases };
   }
 

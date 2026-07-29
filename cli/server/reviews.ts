@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import {
-  isDesignCategory,
   isProseAnswer,
   lookupCategoryConfig,
   type CategoryConfig,
+  type QuestionType,
 } from '../lib/categories.js';
 import { chatObject, chatStream, getModelId, type LLMMessage } from '../lib/llm.js';
 import { readFileOr } from '../lib/read-file-or.js';
@@ -175,49 +175,82 @@ export function getReviewGuardError(question: QuestionRow, db?: AceDb): string |
 // Prompt assembly — the single source of truth for the review prompt.
 // ---------------------------------------------------------------------------
 
+export type ReviewKind = 'code' | 'design' | 'behavioral';
+
+/**
+ * Review-prompt branch, per question type — a Record so widening
+ * QuestionType forces a decision here instead of a silent boolean
+ * fallthrough (kindOf used to be `isDesignCategory(...) ? 'design' :
+ * 'code'`, which would have silently taken the 'code' branch for a
+ * behavioral question). `coding`/`design` map onto the existing
+ * 'code'/'design' wire values verbatim.
+ */
+const REVIEW_KIND: Record<QuestionType, ReviewKind> = {
+  coding: 'code',
+  design: 'design',
+  behavioral: 'behavioral',
+};
+
 function buildReviewMessages(
   question: QuestionRow,
   config: CategoryConfig,
-  kind: 'code' | 'design',
+  kind: ReviewKind,
 ): { messages: LLMMessage[]; maskedPrompt: string } {
   const systemPrompt = buildSystemPrompt('review', config.slug);
   const readme = readFileOr(path.join(question.dirPath, 'README.md'));
 
   let userContent: string;
-  if (kind === 'design') {
-    const notes = readFileOr(path.join(question.dirPath, config.solutionFiles[0]));
-    const designSubType =
-      question.category === 'design-fe'
-        ? 'frontend'
-        : question.category === 'design-be'
-          ? 'backend'
-          : 'full-stack';
+  switch (kind) {
+    case 'design': {
+      const notes = readFileOr(path.join(question.dirPath, config.solutionFiles[0]));
+      const designSubType =
+        question.category === 'design-fe'
+          ? 'frontend'
+          : question.category === 'design-be'
+            ? 'backend'
+            : 'full-stack';
 
-    userContent = `## Design Sub-Type: ${designSubType}
+      userContent = `## Design Sub-Type: ${designSubType}
 
 ${buildQuestionSection(readme)}
 
 ## Candidate's Design Notes
 ${notes}`;
-  } else {
-    let solutionContent = '';
-    for (const name of config.solutionFiles) {
-      const content = readFileOr(path.join(question.dirPath, name));
-      if (content) solutionContent += `\n--- ${name} ---\n${content}\n`;
+      break;
     }
-    let testContent = '';
-    for (const name of config.testFiles) {
-      const content = readFileOr(path.join(question.dirPath, name));
-      if (content) testContent += `\n--- ${name} ---\n${content}\n`;
-    }
+    case 'behavioral': {
+      const story = readFileOr(path.join(question.dirPath, config.solutionFiles[0]));
+      userContent = `${buildQuestionSection(readme)}
 
-    userContent = `${buildQuestionSection(readme)}
+## Candidate's Story
+${story}`;
+      break;
+    }
+    case 'code': {
+      let solutionContent = '';
+      for (const name of config.solutionFiles) {
+        const content = readFileOr(path.join(question.dirPath, name));
+        if (content) solutionContent += `\n--- ${name} ---\n${content}\n`;
+      }
+      let testContent = '';
+      for (const name of config.testFiles) {
+        const content = readFileOr(path.join(question.dirPath, name));
+        if (content) testContent += `\n--- ${name} ---\n${content}\n`;
+      }
+
+      userContent = `${buildQuestionSection(readme)}
 
 ## Candidate's Solution Code
 ${solutionContent}
 
 ## Test Cases
 ${testContent}`;
+      break;
+    }
+    default: {
+      const exhaustive: never = kind;
+      throw new Error(`unhandled review kind: ${String(exhaustive)}`);
+    }
   }
 
   // Generated questions carry a hidden interviewer packet (grading key:
@@ -484,8 +517,8 @@ export function createReviewEngine(opts: {
     }
   }
 
-  function kindOf(config: CategoryConfig): 'code' | 'design' {
-    return isDesignCategory(config.slug) ? 'design' : 'code';
+  function kindOf(config: CategoryConfig): ReviewKind {
+    return REVIEW_KIND[config.type];
   }
 
   return {

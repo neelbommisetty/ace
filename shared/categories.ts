@@ -20,9 +20,9 @@ export type CategorySlug =
 
 export type Difficulty = 'easy' | 'medium' | 'hard';
 
-export type QuestionType = 'coding' | 'design';
+export type QuestionType = 'coding' | 'design' | 'behavioral';
 
-export type CategoryGroup = 'react' | 'js-ts' | 'leetcode' | 'design';
+export type CategoryGroup = 'react' | 'js-ts' | 'leetcode' | 'design' | 'behavioral';
 
 export interface CategoryConfig {
   slug: CategorySlug;

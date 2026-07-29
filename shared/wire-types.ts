@@ -407,7 +407,7 @@ export interface SseEventMap {
     results: TestCaseResult[] | null;
     errorMessage: string | null;
   };
-  'review-started': { jobId: string; questionId: string; kind: 'code' | 'design' };
+  'review-started': { jobId: string; questionId: string; kind: 'code' | 'design' | 'behavioral' };
   'review-chunk': { jobId: string; chunk: string };
   'review-done': { jobId: string; questionId: string; review: ReviewRow };
   'review-error': { jobId: string; questionId: string; message: string };
