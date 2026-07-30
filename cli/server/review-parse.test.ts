@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { zodSchema } from 'ai';
 import {
   isEffectivelyStub,
   parseReviewDimensions,
   parseReviewScore,
   parseReviewVerdict,
+  ReviewExtractionSchema,
 } from './reviews.js';
 
 const designReviewBody = `# Design Review
@@ -287,5 +289,52 @@ describe('isEffectivelyStub', () => {
     expect(isEffectivelyStub('export const add = (a: number, b: number) => a + b;\n', emptyStub)).toBe(
       false,
     );
+  });
+});
+
+// Regression for NEE-378 (same class as NEE-263): the codex backend enforces
+// OpenAI strict structured-output mode, whose schema subset rejects
+// `propertyNames` — which is exactly what a z.record emits. `zodSchema()` is
+// the conversion `generateObject` applies, so this pins the emitted wire
+// schema, not a re-implementation of it.
+describe('ReviewExtractionSchema is strict-structured-output compatible', () => {
+  const emitted = zodSchema(ReviewExtractionSchema).jsonSchema;
+
+  it('emits no propertyNames anywhere (no z.record shapes)', () => {
+    expect(JSON.stringify(emitted)).not.toContain('propertyNames');
+  });
+
+  it('lists every property in required, nested objects included', () => {
+    const walk = (node: unknown, path: string): void => {
+      if (node == null || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        node.forEach((child, i) => walk(child, `${path}[${i}]`));
+        return;
+      }
+      const { properties, required } = node as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+      if (properties != null) {
+        expect([...(required ?? [])].sort(), `object at ${path}`).toEqual(
+          Object.keys(properties).sort(),
+        );
+      }
+      for (const [key, value] of Object.entries(node)) walk(value, `${path}.${key}`);
+    };
+    walk(emitted, '$');
+  });
+
+  it('parses the pair-shaped dimensions and the all-null extraction', () => {
+    expect(
+      ReviewExtractionSchema.parse({
+        score: 4,
+        verdict: 'Hire',
+        dimensions: [{ name: 'Correctness', score: 4 }],
+      }).dimensions,
+    ).toEqual([{ name: 'Correctness', score: 4 }]);
+    expect(
+      ReviewExtractionSchema.parse({ score: null, verdict: null, dimensions: null }).dimensions,
+    ).toBeNull();
   });
 });

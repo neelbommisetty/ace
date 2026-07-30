@@ -37,10 +37,14 @@ const EXTRACT_TIMEOUT_MS = 60_000;
 // Post-stream structured extraction of the persisted score fields. The regex
 // parsers below remain the fallback contract — extraction failing (or
 // returning nulls) must never fail or degrade a paid review.
-const ReviewExtractionSchema = z.object({
+// Dimensions are {name, score} pairs, not a z.record: an open-ended map
+// serializes with `propertyNames`, which the strict structured-output subset
+// the codex backend enforces rejects outright (NEE-378, same class as
+// NEE-263) — so the map shape is rebuilt after validation instead.
+export const ReviewExtractionSchema = z.object({
   score: z.number().nullable(),
   verdict: z.enum(['Strong Hire', 'Hire', 'Lean Hire', 'No Hire']).nullable(),
-  dimensions: z.record(z.string(), z.number()).nullable(),
+  dimensions: z.array(z.object({ name: z.string(), score: z.number() })).nullable(),
 });
 
 const EXTRACTION_PROMPT = `You extract structured scores from a completed interview review.
@@ -48,7 +52,7 @@ const EXTRACTION_PROMPT = `You extract structured scores from a completed interv
 Given the review text, return:
 - "score": the overall score out of 5 (at most one decimal), or null if the review states none
 - "verdict": the hire recommendation, exactly one of "Strong Hire" | "Hire" | "Lean Hire" | "No Hire", or null if none is stated
-- "dimensions": a map from each scored dimension's name (as written) to its 1-5 integer score, or null if there are none
+- "dimensions": a list of {"name", "score"} entries — one per scored dimension, "name" exactly as written in the review, "score" its 1-5 integer — or null if there are none
 
 Extract only what the review actually states — never invent or infer values.`;
 
@@ -578,6 +582,9 @@ export function createReviewEngine(opts: {
         prompt: fullText,
       });
       let extracted: z.infer<typeof ReviewExtractionSchema> | null = null;
+      // The wire shape is {name, score} pairs (see ReviewExtractionSchema);
+      // this is the map the db/UI contract expects, rebuilt after sanitizing.
+      let extractedDimensions: Record<string, number> | null = null;
       try {
         extracted = await chatObject(
           provider,
@@ -592,18 +599,21 @@ export function createReviewEngine(opts: {
           extracted.score = null;
         }
         // Hold dimensions to the same contract the regex parser guarantees
-        // structurally (lone 1–5 integers); drop anything else so a
-        // hallucinated {Correctness: 47} can never reach the db/UI.
+        // structurally (lone 1–5 integers, trimmed names, first mention of a
+        // name wins); drop anything else so a hallucinated {Correctness: 47}
+        // can never reach the db/UI.
         if (extracted.dimensions !== null) {
-          const sane = Object.fromEntries(
-            Object.entries(extracted.dimensions).filter(
-              ([, v]) => Number.isInteger(v) && v >= 1 && v <= 5,
-            ),
-          );
-          extracted.dimensions = Object.keys(sane).length > 0 ? sane : null;
+          const sane: Record<string, number> = {};
+          for (const { name, score } of extracted.dimensions) {
+            const key = name.trim();
+            if (key.length === 0 || sane[key] !== undefined) continue;
+            if (!Number.isInteger(score) || score < 1 || score > 5) continue;
+            sane[key] = score;
+          }
+          extractedDimensions = Object.keys(sane).length > 0 ? sane : null;
         }
         // Non-streaming call, so the (sanitized) result lands as one partial.
-        extractStep.partial(extracted as Record<string, unknown>);
+        extractStep.partial({ ...extracted, dimensions: extractedDimensions });
         const parts: string[] = [];
         if (extracted.score !== null) parts.push(`score ${extracted.score}/5`);
         if (extracted.verdict !== null) parts.push(extracted.verdict);
@@ -635,7 +645,7 @@ export function createReviewEngine(opts: {
           bodyMd: fullText,
           verdict: extracted?.verdict ?? parseReviewVerdict(fullText),
           score: extracted?.score ?? parseReviewScore(fullText),
-          dimensions: extracted?.dimensions ?? parseReviewDimensions(fullText),
+          dimensions: extractedDimensions ?? parseReviewDimensions(fullText),
           snapshotHash,
           model: getModelId(provider, 'review'),
           source: 'user',

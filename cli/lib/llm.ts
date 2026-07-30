@@ -106,7 +106,13 @@ function getReviewExtractionMockPayload() {
   return {
     score: 4,
     verdict: 'Hire',
-    dimensions: { Correctness: 4, 'Code Quality': 4, 'Edge Case Handling': 3 },
+    // {name, score} pairs, not a map — mirrors ReviewExtractionSchema's
+    // strict-compatible wire shape (NEE-378).
+    dimensions: [
+      { name: 'Correctness', score: 4 },
+      { name: 'Code Quality', score: 4 },
+      { name: 'Edge Case Handling', score: 3 },
+    ],
   };
 }
 
