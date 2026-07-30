@@ -46,7 +46,7 @@ describe('generateVerifiedQuestion in mock mode', () => {
     expect(verify).not.toHaveBeenCalled();
   });
 
-  it('records edge-audit and verify as skipped ("mock LLM mode") so keyless e2e renders a complete feed', async () => {
+  it('records edge-audit, calibrate, and verify as skipped ("mock LLM mode") so keyless e2e renders a complete feed', async () => {
     const events: Array<{ slug: string; status: string; reason?: string }> = [];
     const sink = {
       step(spec: { slug: string }) {
@@ -76,6 +76,7 @@ describe('generateVerifiedQuestion in mock mode', () => {
     expect(events).toEqual([
       { slug: 'generate', status: 'done' },
       { slug: 'edge-audit', status: 'skipped', reason: 'mock LLM mode' },
+      { slug: 'calibrate', status: 'skipped', reason: 'mock LLM mode' },
       { slug: 'verify', status: 'skipped', reason: 'mock LLM mode' },
     ]);
   });

@@ -287,6 +287,76 @@ describe('scaffoldQuestionAt', () => {
     expect(fs.existsSync(path.join(result.dir, 'preview.tsx'))).toBe(false);
   });
 
+  it('overrides the static suggestedTimes table when suggestedMinutes is given', () => {
+    const result = scaffoldQuestionAt(tempRoot, {
+      title: 'Two Sum',
+      slug: 'two-sum-override',
+      category: 'js-ts',
+      difficulty: 'medium', // static default would be 30
+      description: 'Find indices adding to target.',
+      suggestedMinutes: 38,
+    });
+
+    const readme = fs.readFileSync(path.join(result.dir, 'README.md'), 'utf-8');
+    expect(readme).toContain('**Suggested Time:** ~38 minutes');
+  });
+
+  it('falls back to the static suggestedTimes table when suggestedMinutes is absent', () => {
+    const result = scaffoldQuestionAt(tempRoot, {
+      title: 'Two Sum',
+      slug: 'two-sum-no-override',
+      category: 'js-ts',
+      difficulty: 'medium',
+      description: 'Find indices adding to target.',
+    });
+
+    const readme = fs.readFileSync(path.join(result.dir, 'README.md'), 'utf-8');
+    expect(readme).toContain('**Suggested Time:** ~30 minutes');
+  });
+
+  it('writes a react-apps supportFiles entry (api.ts) verbatim when supportCode is given', () => {
+    const supportCode = "export async function fetchTasks() {\n  return [];\n}\n";
+    const result = scaffoldQuestionAt(tempRoot, {
+      title: 'Sprint Board',
+      slug: 'sprint-board-support',
+      category: 'react-apps',
+      difficulty: 'medium',
+      description: 'Build a task board.',
+      signature: 'export default function App()',
+      supportCode,
+    });
+
+    expect(result.files).toContain('api.ts');
+    expect(fs.readFileSync(path.join(result.dir, 'api.ts'), 'utf-8')).toBe(supportCode);
+  });
+
+  it('writes no supportFiles entry when supportCode is absent, even for react-apps', () => {
+    const result = scaffoldQuestionAt(tempRoot, {
+      title: 'Sprint Board',
+      slug: 'sprint-board-no-support',
+      category: 'react-apps',
+      difficulty: 'medium',
+      description: 'Build a task board.',
+      signature: 'export default function App()',
+    });
+
+    expect(result.files).not.toContain('api.ts');
+    expect(fs.existsSync(path.join(result.dir, 'api.ts'))).toBe(false);
+  });
+
+  it('never writes a support file for a category with an empty config.supportFiles (js-ts), even if supportCode is passed', () => {
+    const result = scaffoldQuestionAt(tempRoot, {
+      title: 'Debounce',
+      slug: 'debounce-support-noop',
+      category: 'js-ts',
+      difficulty: 'easy',
+      description: 'Implement debounce.',
+      supportCode: 'export const x = 1;\n',
+    });
+
+    expect(result.files).toEqual(['README.md', 'solution.ts', 'solution.test.ts']);
+  });
+
   it('throws when the question dir already exists', () => {
     scaffoldQuestionAt(tempRoot, {
       title: 'Dup',

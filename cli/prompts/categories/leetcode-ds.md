@@ -23,26 +23,31 @@ algorithm-technique drills (DP, greedy, two pointers — that is
 
 ## Difficulty Calibration
 
-Suggested times: easy 15 min, medium 30 min, hard 45 min.
-
-- **easy (15 min)**: one structure, one primary guarantee, 2–3 edge-case
+- **easy**: one structure, one primary guarantee, 2–3 edge-case
   classes. Example scope: a bounded dedupe ring for notification IDs with
   O(1) `has`/`add` and FIFO overflow. A strong Senior finishes early; the
   Staff signal is deriving the structure from the operation mix and
   defining capacity-0/1 behavior unprompted.
-- **medium (30 min)**: two interacting guarantees — recency + expiry,
+- **medium**: two interacting guarantees — recency + expiry,
   ordering + keyed lookup. Example scope: an LRU cache with per-entry TTL,
   or a booking-overlap checker with explicit boundary-touch semantics.
   Staff signal: a single mutation path per invariant (one eviction
   routine, not scattered deletes) and tie/boundary behavior defined in the
   contract before coding, not discovered by failing tests.
-- **hard (45 min)**: three or more interacting operations where edge-case
+- **hard**: three or more interacting operations where edge-case
   classes collide and force prioritization and trade-offs — e.g. a
   priority scheduler with collapse-key dedupe, cancellation, and stable
   tie order. The trade-off must be real (lazy vs eager expiry: memory vs
   hot-path latency) and the tests must include interleaved sequences so a
   solution handling each feature only in isolation does NOT pass. "Hard"
   means interacting constraints under time pressure, never obscurity.
+
+Size the question honestly for its difficulty. Short questions (10, 25
+minutes) are valid — not every easy needs padding to fill a slot. A
+full-size question is expected to take a strong Senior about 45 minutes;
+up to 60 is allowed when the material genuinely warrants it. 60 minutes is
+a hard cap — if the design needs more, shrink scope rather than exceed it.
+Never pad a naturally short question to look bigger than it is.
 
 ## Environment & Test Contract
 

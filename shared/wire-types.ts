@@ -35,7 +35,7 @@ export type TestRunTrigger = 'manual' | 'save';
  * 'compile-error'.
  */
 export type TestRunStatus = 'running' | 'done' | 'error' | 'cancelled' | 'compile-error';
-export type FileKind = 'readme' | 'solution' | 'test' | 'notes';
+export type FileKind = 'readme' | 'solution' | 'test' | 'notes' | 'support';
 
 export interface QuestionRow {
   id: string;
@@ -290,7 +290,8 @@ export type LLMPurpose =
   | 'review-extract'
   | 'brainstorm'
   | 'dispute'
-  | 'probe';
+  | 'probe'
+  | 'calibrate';
 
 /** The exact provider + model id a purpose resolves to right now (NEE-303). */
 export interface ResolvedModel {
@@ -586,7 +587,7 @@ export interface SseEventMap {
    */
   'generation-progress': {
     jobId: string;
-    phase: 'generating' | 'auditing' | 'verifying' | 'repairing';
+    phase: 'generating' | 'auditing' | 'calibrating' | 'verifying' | 'repairing';
     attempt: number;
   };
   'generation-done': { jobId: string; question: QuestionRow };

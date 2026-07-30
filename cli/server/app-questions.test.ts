@@ -41,6 +41,28 @@ function makeQuestion(): QuestionRow {
   });
 }
 
+function makeReactAppsQuestion(opts: { supportCode?: string } = {}): QuestionRow {
+  const scaffolded = scaffoldQuestionAt(ws.root, {
+    title: 'Sprint Board',
+    slug: 'sprint-board',
+    category: 'react-apps',
+    difficulty: 'medium',
+    description: 'Build a task board.',
+    signature: 'export default function App()',
+    testCode: "it('works', () => {});\n",
+    supportCode: opts.supportCode,
+  });
+  return ws.session.db.upsertQuestion({
+    category: 'react-apps',
+    slug: 'sprint-board',
+    title: 'Sprint Board',
+    difficulty: 'medium',
+    suggestedMinutes: 45,
+    dirPath: scaffolded.dir,
+    source: 'manual',
+  });
+}
+
 function makeBehavioralQuestion(): QuestionRow {
   const scaffolded = scaffoldQuestionAt(ws.root, {
     title: 'A Time You Disagreed With a Decision',
@@ -72,6 +94,29 @@ describe('GET /api/questions/:category/:slug', () => {
     expect(body.files).toHaveLength(1);
     expect(body.files[0]).toMatchObject({ name: 'story.md', kind: 'notes', readonly: false });
     expect(body.files.some((f) => f.kind === 'test')).toBe(false);
+  });
+
+  it('a react-apps question with api.ts on disk lists it as kind "support", readonly', async () => {
+    const question = makeReactAppsQuestion({ supportCode: 'export const x = 1;\n' });
+    const fetch = buildApp();
+
+    const res = await fetch(`/api/questions/${question.category}/${question.slug}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as QuestionDetail;
+
+    const support = body.files.find((f) => f.name === 'api.ts');
+    expect(support).toMatchObject({ kind: 'support', readonly: true });
+  });
+
+  it('a react-apps question with no api.ts on disk (pre-support-module) omits it — no phantom tab', async () => {
+    const question = makeReactAppsQuestion();
+    const fetch = buildApp();
+
+    const res = await fetch(`/api/questions/${question.category}/${question.slug}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as QuestionDetail;
+
+    expect(body.files.some((f) => f.name === 'api.ts')).toBe(false);
   });
 });
 

@@ -54,6 +54,7 @@ const CONFIGURED_SETTINGS: SettingsInfo = {
   models: {
     generate: { provider: 'openai', model: 'gpt-5.6-sol' },
     'edge-audit': { provider: 'openai', model: 'gpt-5.6-terra' },
+    calibrate: { provider: 'openai', model: 'gpt-5.6-sol' },
     review: { provider: 'openai', model: 'gpt-5.6-sol' },
     'review-extract': { provider: 'openai', model: 'gpt-5.6-luna' },
     brainstorm: { provider: 'openai', model: 'gpt-5.6-terra' },

@@ -120,6 +120,22 @@ describe('reconcile', () => {
     expect(db.getQuestion('js-ts', 'debounce')?.title).toBe('Debounce Deluxe');
   });
 
+  it('counts a hand-edited README suggested-time as an update even when title/dirPath/difficulty are unchanged', () => {
+    writeQuestion('js-ts', 'timed', {
+      readme: '# Timed\n\n**Difficulty:** medium\n**Suggested Time:** ~30 minutes\n\n---\n',
+    });
+    reconcile(db, tempRoot);
+    expect(db.getQuestion('js-ts', 'timed')?.suggestedMinutes).toBe(30);
+
+    writeQuestion('js-ts', 'timed', {
+      readme: '# Timed\n\n**Difficulty:** medium\n**Suggested Time:** ~38 minutes\n\n---\n',
+    });
+    const result = reconcile(db, tempRoot);
+    expect(result.added).toBe(0);
+    expect(result.updated).toBe(1);
+    expect(db.getQuestion('js-ts', 'timed')?.suggestedMinutes).toBe(38);
+  });
+
   it('falls back to defaults when scorecard.json is invalid', () => {
     const dir = writeQuestion('js-ts', 'broken', { readme: '# Broken\n' });
     fs.writeFileSync(path.join(dir, 'scorecard.json'), 'not json{', 'utf-8');

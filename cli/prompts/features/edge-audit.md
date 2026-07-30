@@ -40,7 +40,12 @@ reference solution, test file, and interviewer packet. Work through it:
    derivation), tighten the problem statement's Constraints so the candidate
    knows the behavior is required, and update the reference solution if it
    does not itself handle the class. Update the interviewer packet's rubric
-   if the bar changed.
+   if the bar changed. If a new test queries a string, role, or label not
+   already listed in the description's `## UI Contract` (component
+   categories), add it there — the contract must stay exhaustive. If a new
+   test needs an input or error path the support module doesn't yet expose,
+   add it to the support module and return the full updated `supportCode`
+   — never add a test the support module can't actually drive.
 4. **Drop nothing silently**: if a class is genuinely out of scope for the
    question, mark it covered=false with action "none" — do not pretend it
    is covered.
@@ -99,6 +104,8 @@ Respond with a single JSON object:
 - `description` — full updated Markdown, only if you changed it.
 - `testCode` — full updated test file, only if you changed it.
 - `referenceSolution` — full updated solution, only if you changed it.
+- `supportCode` — full updated support module, only if you changed it
+  (e.g. to add a fixture or error path a new test needs); `null` otherwise.
 - `interviewerPacket` — full updated packet, only if you changed it.
 
 Changed artifacts must be returned complete (full file contents, not a

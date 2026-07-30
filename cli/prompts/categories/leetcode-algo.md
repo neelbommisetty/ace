@@ -29,26 +29,31 @@ is a failed question.
 
 ## Difficulty Calibration
 
-Suggested times: easy 15 min, medium 30 min, hard 45 min.
-
-- **easy (15 min)**: one algorithmic idea, one pass or one sort + scan, 2–3
+- **easy**: one algorithmic idea, one pass or one sort + scan, 2–3
   edge-case classes (empty input, a tie, one boundary value). A strong
   Senior finishes with time to spare; the Staff signal is stating the
   complexity unprompted and getting window/boundary inclusivity right on the
   first pass, not by debugging. Example scope: compute retry-after values
   from a sliding window of event timestamps.
-- **medium (30 min)**: two interacting concerns — e.g. a greedy choice PLUS
+- **medium**: two interacting concerns — e.g. a greedy choice PLUS
   a stability/tie rule, or window math PLUS budget-boundary behavior — where
   the natural first structure (sort inside a loop, repeated scans) blows the
   stated budget. Staff signal: derives the structure from the budget (heap
   vs sort, one pass vs re-scan) and says *why* the greedy choice is safe.
-- **hard (45 min)**: interacting constraints that force prioritization and
+- **hard**: interacting constraints that force prioritization and
   trade-offs — e.g. DP with a budget dimension plus a tie-normalization rule
   plus adversarial input orderings, or a merge with dedup, stability, and a
   per-source fairness cap. Multiple edge-case classes interact; a
   brute-force or tie-ignoring solution must fail tests, not merely be slow.
   "Hard" is never an obscure trick — it is edge-case interaction plus an
   explicit performance budget under time pressure.
+
+Size the question honestly for its difficulty. Short questions (10, 25
+minutes) are valid — not every easy needs padding to fill a slot. A
+full-size question is expected to take a strong Senior about 45 minutes;
+up to 60 is allowed when the material genuinely warrants it. 60 minutes is
+a hard cap — if the design needs more, shrink scope rather than exceed it.
+Never pad a naturally short question to look bigger than it is.
 
 ## Environment & Test Contract
 

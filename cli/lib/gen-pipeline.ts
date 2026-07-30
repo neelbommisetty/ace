@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   getCategoryConfig,
+  getSuggestedTime,
   hasTests,
   type CategorySlug,
   type Difficulty,
@@ -33,9 +34,19 @@ export const GeneratedQuestionSchema = z.object({
   description: z.string().nullable(),
   signature: z.string().nullable(),
   testCode: z.string().nullable(),
+  // LLM-authored read-only support module (react-apps' `api.ts`) — the fake
+  // backend shared by the solution, the tests, and the live preview. Null
+  // for every category whose CategoryConfig.supportFiles is empty.
+  supportCode: z.string().nullable(),
   solutionCode: z.string().nullable(),
   referenceSolution: z.string().nullable(),
   interviewerPacket: z.string().nullable(),
+  // Coding categories only: the model's own honest whole-minute estimate
+  // (10-60) for a strong candidate to read, implement, and pass the tests.
+  // The calibrate stage (2.5, below) independently re-derives and owns the
+  // final value — this is only the model's first guess. Null for
+  // design/behavioral (they keep the static suggestedTimes table).
+  estimatedMinutes: z.number().nullable(),
   // Behavioral-only (NEE-343): the single competency this question probes,
   // freeform text normalized downstream via shared/competencies.js's
   // normalizeCompetency (never a z.enum here — a near-miss casing/spacing
@@ -64,13 +75,33 @@ export const EdgeAuditSchema = z.object({
   ),
   description: z.string().nullable(),
   testCode: z.string().nullable(),
+  // New tests may need new fixtures or error triggers — the audit may
+  // revise supportCode, same as testCode/description. It must NEVER revise
+  // estimatedMinutes (there is no such field here): the calibrate stage
+  // owns time, so audit-driven scope creep has to surface as a calibration
+  // failure, not a silently bigger number.
+  supportCode: z.string().nullable(),
   referenceSolution: z.string().nullable(),
   interviewerPacket: z.string().nullable(),
 });
 
 export type EdgeAuditResult = z.infer<typeof EdgeAuditSchema>;
 
-export type GenerationPhase = 'generating' | 'auditing' | 'verifying' | 'repairing';
+/**
+ * Stage-2.5 output: an independent, skeptical read on whether the
+ * question's claimed time and complexity are honest — run for coding AND
+ * design categories (never behavioral; see generateVerifiedQuestion's
+ * gate). Same `.nullable()`-not-`.nullish()` rule as the schemas above.
+ */
+export const CalibrationSchema = z.object({
+  verdict: z.enum(['fits', 'too-big', 'too-small']),
+  estimatedMinutes: z.number().nullable(),
+  issues: z.string().nullable(),
+});
+
+export type CalibrationResult = z.infer<typeof CalibrationSchema>;
+
+export type GenerationPhase = 'generating' | 'auditing' | 'calibrating' | 'verifying' | 'repairing';
 
 // Per-call timeout budget (NEE-264): the old 300s wall clock was smaller
 // than a full MAX_OUTPUT_TOKENS answer at the ~60 tok/s measured through the
@@ -91,6 +122,13 @@ const GENERATE_MAX_TIMEOUT_MS = 900_000;
 const MAX_OUTPUT_TOKENS = 32_000;
 /** 1 initial verify + 2 repair-and-reverify rounds. Exported for the activity log's terminal phrasing. */
 export const MAX_VERIFY_ATTEMPTS = 3;
+/**
+ * 1 initial calibration + at most 1 rework-and-recalibrate round. Kept
+ * small: calibration is a size CHECK, not the verify/repair loop's
+ * pass/fail gate — a budget-exhausted question proceeds with a warning
+ * rather than dying, so there is no need for a long rework tail.
+ */
+export const MAX_CALIBRATE_ATTEMPTS = 2;
 
 /** Thrown when the verify/repair loop exhausts its attempts. */
 export class GenerationVerifyError extends Error {
@@ -317,6 +355,20 @@ function renderSections(sections: TaggedSection[]): BuiltPrompt {
   };
 }
 
+/**
+ * The support module (react-apps' `api.ts`) is WIRE-SAFE — candidate-
+ * visible, not answer-key material — so it is appended unmasked in both the
+ * model-bound prompt and the recorder's masked twin. Shared by
+ * buildAuditUserMessage and buildCalibrationUserMessage so the heading text
+ * (which reviews.ts's README section and the audit prompt must agree on)
+ * never drifts between the two call sites.
+ */
+function supportModuleSection(supportCode: string): TaggedSection {
+  return {
+    text: `## Support Module (read-only, shared by App and tests)\n\n\`\`\`\n${supportCode}\n\`\`\``,
+  };
+}
+
 /** Exported for tests (masked-variant assertions), not for callers. */
 export function buildAuditUserMessage(
   params: GenerateParams,
@@ -339,12 +391,84 @@ export function buildAuditUserMessage(
       },
       { text: `## Test File\n\n\`\`\`\n${question.testCode ?? ''}\n\`\`\`` },
     );
+    if (question.supportCode) sections.push(supportModuleSection(question.supportCode));
   }
   sections.push({
     text: `## Interviewer Packet\n\n${question.interviewerPacket ?? '(none provided)'}`,
     masked: `## Interviewer Packet\n\n${WITHHELD_MARKER}`,
   });
   return renderSections(sections);
+}
+
+/**
+ * Exported for tests (masked-variant assertions), not for callers. Coding:
+ * description + reference solution + tests (+ support module when present).
+ * Design: description + the static per-category/difficulty time budget in
+ * place of code sections — the calibrator judges design scope against that
+ * number, never the coding 45/60 figures. Both variants carry the
+ * interviewer packet, masked, same as buildAuditUserMessage.
+ */
+export function buildCalibrationUserMessage(
+  params: GenerateParams,
+  question: GeneratedQuestion,
+  design: boolean,
+): BuiltPrompt {
+  const sections: TaggedSection[] = [
+    {
+      text: `Calibrate the time and complexity of this freshly generated ${params.difficulty} ${params.category} interview question.`,
+    },
+    { text: buildQuestionSection(question.description ?? '') },
+  ];
+  if (!design) {
+    sections.push(
+      {
+        text: `## Reference Solution\n\n\`\`\`\n${question.referenceSolution ?? ''}\n\`\`\``,
+        masked: `## Reference Solution\n\n${WITHHELD_MARKER}`,
+      },
+      { text: `## Test File\n\n\`\`\`\n${question.testCode ?? ''}\n\`\`\`` },
+    );
+    if (question.supportCode) sections.push(supportModuleSection(question.supportCode));
+  } else {
+    sections.push({
+      text: `## Time Budget\n\nThe stated time budget for a ${params.difficulty} ${params.category} question is ${getSuggestedTime(params.category, params.difficulty)} minutes — judge this question's scope against that budget, not the coding 45/60 numbers.`,
+    });
+  }
+  sections.push({
+    text: `## Interviewer Packet\n\n${question.interviewerPacket ?? '(none provided)'}`,
+    masked: `## Interviewer Packet\n\n${WITHHELD_MARKER}`,
+  });
+  return renderSections(sections);
+}
+
+/**
+ * Exported for tests (masked-variant assertions), not for callers. Built the
+ * same way buildRepairUserMessage is: the calibrator's `issues` prose can
+ * quote spoiler-derived reasoning (it was written having seen the reference
+ * solution/tests), so it is withheld wholesale in the masked twin — only the
+ * closed-vocabulary `verdict` survives masking.
+ */
+export function buildCalibrationReworkUserMessage(
+  params: GenerateParams,
+  question: GeneratedQuestion,
+  calibration: CalibrationResult,
+): BuiltPrompt {
+  const verb = calibration.verdict === 'too-big' ? 'Shrink' : 'Grow';
+  return renderSections([
+    { text: params.userMessage },
+    {
+      text: `## Current Output\n\n\`\`\`json\n${JSON.stringify(question, null, 2)}\n\`\`\``,
+      masked: `## Current Output\n\n\`\`\`json\n${JSON.stringify(maskSpoilerValues(question), null, 2)}\n\`\`\``,
+    },
+    {
+      text: `## Calibration Feedback\n\nVerdict: ${calibration.verdict}\n\n${calibration.issues ?? '(no issues provided)'}`,
+      masked: `## Calibration Feedback\n\nVerdict: ${calibration.verdict}\n\n${WITHHELD_MARKER}`,
+    },
+    {
+      text: `${verb} the question's scope to address the calibration feedback above. Keep
+"title" and "slug" exactly as they were. Return the complete JSON object
+with ALL fields (not only the ones you changed).`,
+    },
+  ]);
 }
 
 /** Exported for tests (masked-variant assertions), not for callers. */
@@ -379,6 +503,7 @@ function mergeAudit(question: GeneratedQuestion, audit: EdgeAuditResult): Genera
     ...question,
     description: audit.description ?? question.description,
     testCode: audit.testCode ?? question.testCode,
+    supportCode: audit.supportCode ?? question.supportCode,
     referenceSolution: audit.referenceSolution ?? question.referenceSolution,
     interviewerPacket: audit.interviewerPacket ?? question.interviewerPacket,
   };
@@ -526,6 +651,9 @@ export async function generateVerifiedQuestion(
       .step({ slug: 'edge-audit', label: 'Auditing edge cases', kind: 'llm' })
       .skip('mock LLM mode');
     steps
+      .step({ slug: 'calibrate', label: 'Checking time & complexity', kind: 'llm' })
+      .skip('mock LLM mode');
+    steps
       .step({ slug: 'verify', label: 'Sandbox verification', kind: 'sandbox' })
       .skip('mock LLM mode');
     return { question, edgeCases: null };
@@ -561,6 +689,96 @@ export async function generateVerifiedQuestion(
   registerSpoilers(question);
   onStageResult(question);
 
+  // Stage 2.5 — time & complexity calibration. Runs for coding AND design
+  // (design has scope to misjudge just like coding does); skipped only for
+  // behavioral, where a single prompt+story swap has no size to get wrong.
+  // Mock mode never reaches here (isMockLlm() already returned above).
+  if (config.type === 'behavioral') {
+    steps
+      .step({ slug: 'calibrate', label: 'Checking time & complexity', kind: 'llm' })
+      .skip(VERIFY_SKIP_REASON.behavioral);
+  } else {
+    const calibrateSystemPrompt = buildSystemPrompt('calibrate', params.category);
+    const callCalibrate = (
+      userContent: string,
+      step?: GenerationStepHandle,
+    ): Promise<CalibrationResult> =>
+      callStream(
+        [
+          { role: 'system', content: calibrateSystemPrompt },
+          { role: 'user', content: userContent },
+        ],
+        CalibrationSchema,
+        'calibrate',
+        step,
+      );
+
+    for (let attempt = 1; attempt <= MAX_CALIBRATE_ATTEMPTS; attempt++) {
+      onProgress('calibrating', attempt);
+      const calibPrompt = buildCalibrationUserMessage(params, question, design);
+      const calibStep = steps.step({
+        slug: 'calibrate',
+        label: 'Checking time & complexity',
+        kind: 'llm',
+        attempt,
+        prompt: calibPrompt.maskedPrompt,
+      });
+      const calibration = await callCalibrate(calibPrompt.prompt, calibStep).catch(
+        (err: unknown) => {
+          calibStep.fail(errorText(err));
+          throw err;
+        },
+      );
+      const estimateDetail =
+        calibration.estimatedMinutes != null ? ` · ~${calibration.estimatedMinutes}m` : '';
+
+      if (calibration.verdict === 'fits') {
+        calibStep.done(`fits${estimateDetail}`);
+        question = {
+          ...question,
+          estimatedMinutes: calibration.estimatedMinutes ?? question.estimatedMinutes,
+        };
+        break;
+      }
+
+      if (attempt === MAX_CALIBRATE_ATTEMPTS) {
+        // Budget exhausted on a non-fits verdict: proceed anyway — a
+        // slightly-oversized question beats a dead generation. The final
+        // clamp to a sane on-disk range happens downstream, once, in
+        // resolveSuggestedMinutes (cli/server/generation.ts).
+        calibStep.done(`${calibration.verdict}${estimateDetail} — budget exhausted, proceeding anyway`);
+        question = {
+          ...question,
+          estimatedMinutes: calibration.estimatedMinutes ?? question.estimatedMinutes,
+        };
+        break;
+      }
+
+      calibStep.done(`${calibration.verdict}${estimateDetail}`);
+
+      // Rework: reuse the generate purpose/schema and the repair loop's own
+      // step slug so the response inherits WIRE_SAFE_KEYS.repair's
+      // redaction — a fresh slug here would fail-closed to an empty allowlist.
+      const reworkPrompt = buildCalibrationReworkUserMessage(params, question, calibration);
+      const reworkStep = steps.step({
+        slug: 'repair',
+        label: `Adjusting scope (round ${attempt})`,
+        kind: 'llm',
+        attempt,
+        prompt: reworkPrompt.maskedPrompt,
+      });
+      const reworked = await callGenerate(reworkPrompt.prompt, reworkStep).catch((err: unknown) => {
+        reworkStep.fail(errorText(err));
+        throw err;
+      });
+      reworkStep.done();
+      // A rework must never drift the question's identity.
+      question = { ...reworked, title: question.title, slug: question.slug };
+      registerSpoilers(question);
+      onStageResult(question);
+    }
+  }
+
   if (design) {
     steps
       .step({ slug: 'verify', label: 'Sandbox verification', kind: 'sandbox' })
@@ -588,6 +806,7 @@ export async function generateVerifiedQuestion(
     if (!question.testCode?.trim()) missing.push('testCode');
     if (!question.referenceSolution?.trim()) missing.push('referenceSolution');
     if (!question.signature?.trim()) missing.push('signature');
+    if (config.supportFiles.length > 0 && !question.supportCode?.trim()) missing.push('supportCode');
 
     // Report every static problem at once — the repair budget is tight, so
     // never spend a round surfacing an issue that was already knowable.
@@ -627,6 +846,7 @@ export async function generateVerifiedQuestion(
           signature: question.signature ?? undefined,
           title: question.title,
         }),
+        supportCode: question.supportCode,
       }).catch((err: unknown) => {
         // Environment problem (e.g. missing vitest binary) — not a red suite.
         verifyStep.fail(errorText(err));

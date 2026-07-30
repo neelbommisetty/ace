@@ -6,7 +6,7 @@ import { getImportMetaDirname } from './import-meta.js';
 const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
 
 /** Features whose system prompt is assembled per-category from a skeleton + capsule. */
-export type PromptFeature = 'generate' | 'edge-audit' | 'review';
+export type PromptFeature = 'generate' | 'edge-audit' | 'review' | 'calibrate';
 
 /**
  * The capsule heading that fills the `{{example}}` slot, per question type —

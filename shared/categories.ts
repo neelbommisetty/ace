@@ -35,6 +35,8 @@ export interface CategoryConfig {
   suggestedTimes: Record<Difficulty, number>;
   solutionFiles: string[];
   testFiles: string[];
+  /** LLM-authored read-only support code (e.g. a fake API module) shared by the solution, tests, and the live preview. */
+  supportFiles: string[];
   templateDir: string;
 }
 
@@ -49,6 +51,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     suggestedTimes: { easy: 15, medium: 30, hard: 45 },
     solutionFiles: ['solution.ts'],
     testFiles: ['solution.test.ts'],
+    supportFiles: [],
     templateDir: 'js-ts',
   },
   'web-components': {
@@ -61,6 +64,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     suggestedTimes: { easy: 20, medium: 35, hard: 50 },
     solutionFiles: ['Component.tsx'],
     testFiles: ['Component.test.tsx'],
+    supportFiles: [],
     templateDir: 'web-components',
   },
   'react-apps': {
@@ -73,6 +77,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     suggestedTimes: { easy: 25, medium: 45, hard: 60 },
     solutionFiles: ['App.tsx'],
     testFiles: ['App.test.tsx'],
+    supportFiles: ['api.ts'],
     templateDir: 'react-apps',
   },
   'leetcode-ds': {
@@ -85,6 +90,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     suggestedTimes: { easy: 15, medium: 30, hard: 45 },
     solutionFiles: ['solution.ts'],
     testFiles: ['solution.test.ts'],
+    supportFiles: [],
     templateDir: 'leetcode-ds',
   },
   'leetcode-algo': {
@@ -97,6 +103,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     suggestedTimes: { easy: 15, medium: 30, hard: 45 },
     solutionFiles: ['solution.ts'],
     testFiles: ['solution.test.ts'],
+    supportFiles: [],
     templateDir: 'leetcode-algo',
   },
   'design-fe': {
@@ -109,6 +116,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     suggestedTimes: { easy: 25, medium: 40, hard: 55 },
     solutionFiles: ['notes.md'],
     testFiles: [],
+    supportFiles: [],
     templateDir: 'design',
   },
   'design-be': {
@@ -121,6 +129,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     suggestedTimes: { easy: 25, medium: 40, hard: 55 },
     solutionFiles: ['notes.md'],
     testFiles: [],
+    supportFiles: [],
     templateDir: 'design',
   },
   'design-full': {
@@ -133,6 +142,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     suggestedTimes: { easy: 30, medium: 45, hard: 60 },
     solutionFiles: ['notes.md'],
     testFiles: [],
+    supportFiles: [],
     templateDir: 'design',
   },
   behavioral: {
@@ -145,6 +155,7 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     suggestedTimes: { easy: 5, medium: 8, hard: 10 },
     solutionFiles: ['story.md'],
     testFiles: [],
+    supportFiles: [],
     templateDir: 'behavioral',
   },
 };

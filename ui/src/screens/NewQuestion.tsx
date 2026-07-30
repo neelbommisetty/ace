@@ -11,12 +11,7 @@ import {
 import { GenerationJobStrip } from '../components/GenerationJobStrip';
 import { IdeaCard } from '../components/IdeaCard';
 import { useCancellableEffect } from '../hooks/useCancellableEffect';
-import {
-  CATEGORY_SLUGS,
-  categoryHint,
-  categoryShortName,
-  suggestedMinutes,
-} from '../lib/categories';
+import { CATEGORY_SLUGS, categoryHint, categoryShortName } from '../lib/categories';
 import { isKeyless, modelLabel, resolvedModelFor } from '../lib/models';
 import { useSseEvent } from '../sse';
 import type { BrainstormSessionRow, Difficulty, GenerationJobRow, SettingsInfo } from '../types';
@@ -209,7 +204,7 @@ function DescribeForm({
         >
           {DIFFICULTIES.map((d) => (
             <option key={d} value={d}>
-              {d} — ~{suggestedMinutes(category, d)} min
+              {d}
             </option>
           ))}
         </select>

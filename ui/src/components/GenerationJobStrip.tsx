@@ -13,7 +13,7 @@ function isActive(job: GenerationJobRow): boolean {
 }
 
 interface JobPhase {
-  phase: 'generating' | 'auditing' | 'verifying' | 'repairing';
+  phase: 'generating' | 'auditing' | 'calibrating' | 'verifying' | 'repairing';
   attempt: number;
 }
 
@@ -24,6 +24,8 @@ function phaseLabel(p: JobPhase | undefined): string {
       return 'writing question…';
     case 'auditing':
       return 'auditing edge cases…';
+    case 'calibrating':
+      return 'checking time & complexity…';
     case 'verifying':
       return 'running tests…';
     case 'repairing':

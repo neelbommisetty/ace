@@ -2,11 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { VerifyResult } from './gen-verify.js';
 import {
   buildAuditUserMessage,
+  buildCalibrationReworkUserMessage,
+  buildCalibrationUserMessage,
   buildRepairUserMessage,
   findDisallowedImports,
   generateVerifiedQuestion,
   GenerationVerifyError,
   verifyFailureDetail,
+  type CalibrationResult,
   type EdgeAuditResult,
   type GeneratedQuestion,
   type GenerationPhase,
@@ -21,9 +24,11 @@ const STAGE1: GeneratedQuestion = {
   signature: 'export function createAutosaver(save: (draft: string) => Promise<void>): Autosaver',
   testCode:
     "import { describe, expect, it } from 'vitest';\nimport { createAutosaver } from './solution';\n\ndescribe('autosaver', () => {\n  it('saves', () => { expect(1).toBe(1); });\n});\n",
+  supportCode: null,
   solutionCode: null,
   referenceSolution: 'export function createAutosaver() {\n  return {} as never;\n}\n',
   interviewerPacket: '## Capability Tested\n\nConcurrency realities.',
+  estimatedMinutes: null,
   competency: null,
   followUps: null,
 };
@@ -32,6 +37,7 @@ const AUDIT_NOOP: EdgeAuditResult = {
   edgeCases: [{ name: 'boundary timing', covered: true, action: 'none' }],
   description: null,
   testCode: null,
+  supportCode: null,
   referenceSolution: null,
   interviewerPacket: null,
 };
@@ -54,16 +60,27 @@ interface CapturedCall {
   user: string;
 }
 
+/** The stage 2.5 default when a test doesn't care about calibration: an immediate 'fits', no rework. */
+const DEFAULT_CALIBRATION: CalibrationResult = { verdict: 'fits', estimatedMinutes: null, issues: null };
+
 /**
  * chatObjectStream fake dispatching on opts.purpose: 'generate' calls pop
- * from `generates` (initial call first, then repairs); 'edge-audit' pops
- * from `audits`. Captures every call for message assertions. The pipeline is
+ * from `generates` (initial call first, then repairs AND calibrate reworks
+ * — both reuse the 'generate' purpose); 'edge-audit' pops from `audits`;
+ * 'calibrate' pops from `calibrations`, defaulting to an immediate 'fits' so
+ * tests that don't care about calibration never need to thread it through.
+ * Captures every call for message assertions. The pipeline is
  * streaming-only now (NEE-264), so the fake exposes only chatObjectStream.
  */
-function makeLlm(generates: GeneratedQuestion[], audits: EdgeAuditResult[]) {
+function makeLlm(
+  generates: GeneratedQuestion[],
+  audits: EdgeAuditResult[],
+  calibrations: CalibrationResult[] = [],
+) {
   const calls: CapturedCall[] = [];
   const genQueue = [...generates];
   const auditQueue = [...audits];
+  const calibQueue = [...calibrations];
   const chatObjectStream = vi.fn(async (_provider, messages, _schema, opts) => {
     calls.push({
       purpose: opts?.purpose,
@@ -71,6 +88,7 @@ function makeLlm(generates: GeneratedQuestion[], audits: EdgeAuditResult[]) {
       user: messages[1]?.content ?? '',
     });
     if (opts?.purpose === 'edge-audit') return auditQueue.shift();
+    if (opts?.purpose === 'calibrate') return calibQueue.shift() ?? DEFAULT_CALIBRATION;
     return genQueue.shift();
   });
   return { llm: { chatObjectStream: chatObjectStream as never }, calls };
@@ -145,12 +163,13 @@ describe('generateVerifiedQuestion', () => {
     expect(phases).toEqual([
       ['generating', 1],
       ['auditing', 1],
+      ['calibrating', 1],
       ['verifying', 1],
       ['repairing', 2],
       ['verifying', 2],
     ]);
-    // The repair call reuses the generate purpose and carries the report.
-    const repairCall = calls[2];
+    // calls[2] is the (default-fits) calibrate call; the repair call comes after it.
+    const repairCall = calls[3];
     expect(repairCall.purpose).toBe('generate');
     expect(repairCall.user).toContain('Verification Failure Report');
     expect(repairCall.user).toContain('expected 2 to be 1');
@@ -193,7 +212,8 @@ describe('generateVerifiedQuestion', () => {
     expect(result.question.testCode).toBe(STAGE1.testCode);
     // Attempt 1 never reached the sandbox; only the repaired suite did.
     expect(verify).toHaveBeenCalledTimes(1);
-    const repairCall = calls[2];
+    // calls[2] is the (default-fits) calibrate call; the repair call comes after it.
+    const repairCall = calls[3];
     expect(repairCall.user).toContain('@testing-library/user-event');
     expect(repairCall.user).toContain('allowlist');
   });
@@ -207,7 +227,8 @@ describe('generateVerifiedQuestion', () => {
 
     expect(result.question.testCode).toBe(STAGE1.testCode);
     expect(verify).toHaveBeenCalledTimes(1);
-    expect(calls[2].user).toContain('missing required field');
+    // calls[2] is the (default-fits) calibrate call; the repair call comes after it.
+    expect(calls[3].user).toContain('missing required field');
   });
 
   it('reports missing fields AND disallowed imports in one repair round', async () => {
@@ -221,7 +242,8 @@ describe('generateVerifiedQuestion', () => {
 
     await generateVerifiedQuestion(PARAMS, { llm, verify });
 
-    const repairMessage = calls[2].user;
+    // calls[2] is the (default-fits) calibrate call; the repair call comes after it.
+    const repairMessage = calls[3].user;
     expect(repairMessage).toContain('missing required field');
     expect(repairMessage).toContain('@testing-library/user-event');
   });
@@ -233,9 +255,11 @@ describe('generateVerifiedQuestion', () => {
       description: 'Initial design brief.',
       signature: null,
       testCode: null,
+      supportCode: null,
       solutionCode: null,
       referenceSolution: null,
       interviewerPacket: '## Capability Tested\n\nAmbiguity → invariants.',
+      estimatedMinutes: null,
       competency: null,
       followUps: null,
     };
@@ -243,6 +267,7 @@ describe('generateVerifiedQuestion', () => {
       edgeCases: [{ name: 'requirements ambiguity', covered: false, action: 'update-question' }],
       description: 'Sharpened design brief with concrete numbers.',
       testCode: null,
+      supportCode: null,
       referenceSolution: null,
       interviewerPacket: null,
     };
@@ -257,9 +282,76 @@ describe('generateVerifiedQuestion', () => {
     expect(result.question.description).toBe('Sharpened design brief with concrete numbers.');
     expect(result.edgeCases).toEqual(critique.edgeCases);
     expect(verify).not.toHaveBeenCalled();
-    expect(calls).toHaveLength(2);
+    // generate + edge-audit + calibrate (design categories run calibrate too).
+    expect(calls).toHaveLength(3);
     // Design audits get the critique framing, not code artifacts.
     expect(calls[1].user).not.toContain('## Test File');
+    // Calibrate (design path) states the static time budget, not code sections.
+    expect(calls[2].purpose).toBe('calibrate');
+    expect(calls[2].user).toContain('40 minutes');
+    expect(calls[2].user).not.toContain('## Test File');
+  });
+});
+
+describe('calibration stage (2.5: time & complexity)', () => {
+  it('reworks a too-big verdict once, then accepts fits, carrying the calibrator estimate', async () => {
+    const reworked: GeneratedQuestion = {
+      ...STAGE1,
+      title: 'Drifted Title',
+      slug: 'drifted-slug',
+      testCode: 'SHRUNK TESTS',
+    };
+    const { llm, calls } = makeLlm(
+      [STAGE1, reworked],
+      [AUDIT_NOOP],
+      [
+        { verdict: 'too-big', estimatedMinutes: 75, issues: 'drop the retry-with-backoff branch' },
+        { verdict: 'fits', estimatedMinutes: 42, issues: null },
+      ],
+    );
+    const verify = makeVerify([GREEN]);
+
+    const result = await generateVerifiedQuestion(PARAMS, { llm, verify });
+
+    // Identity pinned across the rework, same as the stage-3 repair loop.
+    expect(result.question.title).toBe(STAGE1.title);
+    expect(result.question.slug).toBe(STAGE1.slug);
+    expect(result.question.testCode).toBe('SHRUNK TESTS');
+    // The calibrator's own re-derived estimate wins, not the model's first guess.
+    expect(result.question.estimatedMinutes).toBe(42);
+
+    expect(calls[0].purpose).toBe('generate');
+    expect(calls[1].purpose).toBe('edge-audit');
+    expect(calls[2].purpose).toBe('calibrate');
+    // The rework call reuses the generate purpose and carries the calibrator's issues.
+    expect(calls[3].purpose).toBe('generate');
+    expect(calls[3].user).toContain('drop the retry-with-backoff branch');
+    expect(calls[3].user).toContain(PARAMS.userMessage);
+    expect(calls[4].purpose).toBe('calibrate');
+    expect(calls).toHaveLength(5);
+  });
+
+  it('proceeds after exhausting the rework budget on a non-fits verdict — never throws', async () => {
+    const { llm } = makeLlm(
+      [STAGE1, STAGE1],
+      [AUDIT_NOOP],
+      [
+        { verdict: 'too-big', estimatedMinutes: 90, issues: 'still too large' },
+        { verdict: 'too-big', estimatedMinutes: 80, issues: 'still too large' },
+      ],
+    );
+    const verify = makeVerify([GREEN]);
+    const { sink, recorded } = makeStepsSink();
+
+    const result = await generateVerifiedQuestion(PARAMS, { llm, verify, steps: sink });
+
+    // The last calibration round's estimate is carried through despite the non-fits verdict.
+    expect(result.question.estimatedMinutes).toBe(80);
+    const calibrateSteps = recorded.filter((r) => r.slug === 'calibrate');
+    expect(calibrateSteps).toHaveLength(2);
+    expect(calibrateSteps[1].status).toBe('done');
+    expect(calibrateSteps[1].outcome).toContain('too-big');
+    expect(calibrateSteps[1].outcome).toContain('budget exhausted');
   });
 });
 
@@ -323,6 +415,7 @@ describe('step recording (NEE-268)', () => {
     expect(recorded.map((r) => [r.slug, r.status, r.outcome])).toEqual([
       ['generate', 'done', undefined],
       ['edge-audit', 'done', '1 edge case · 0 changes applied'],
+      ['calibrate', 'done', 'fits'],
       ['static-check', 'done', 'ok'],
       // Red verify: closed vocabulary — the failing test NAMES, never report text.
       ['verify', 'error', 'autosaver › saves'],
@@ -341,14 +434,20 @@ describe('step recording (NEE-268)', () => {
     expect(audit.prompt).toContain(WITHHELD_MARKER);
     expect(audit.prompt).not.toContain('return {} as never');
 
+    // The calibrate prompt is likewise the constructed masked twin.
+    const calibrate = recorded[2];
+    expect(calibrate.label).toBe('Checking time & complexity');
+    expect(calibrate.prompt).toContain(WITHHELD_MARKER);
+    expect(calibrate.prompt).not.toContain('return {} as never');
+
     // Attempt labels carry the human-facing N/3.
-    expect(recorded[3].label).toBe('Running tests (attempt 1/3)');
-    expect(recorded[4].label).toBe('Fixing tests (attempt 2/3)');
-    expect(recorded[4].attempt).toBe(2);
-    expect(recorded[6].label).toBe('Running tests (attempt 2/3)');
+    expect(recorded[4].label).toBe('Running tests (attempt 1/3)');
+    expect(recorded[5].label).toBe('Fixing tests (attempt 2/3)');
+    expect(recorded[5].attempt).toBe(2);
+    expect(recorded[7].label).toBe('Running tests (attempt 2/3)');
 
     // The repair prompt is masked: no reference body, no assertion diffs.
-    const repair = recorded[4];
+    const repair = recorded[5];
     expect(repair.prompt).toContain(WITHHELD_MARKER);
     expect(repair.prompt).not.toContain('return {} as never');
     expect(repair.prompt).not.toContain('expected 2 to be 1');
@@ -412,6 +511,8 @@ describe('step recording (NEE-268)', () => {
     expect(recorded.map((r) => [r.slug, r.status, r.outcome])).toEqual([
       ['generate', 'done', undefined],
       ['edge-audit', 'done', '1 edge case · 0 changes applied'],
+      // Design categories run calibrate too — never skipped.
+      ['calibrate', 'done', 'fits'],
       ['verify', 'skipped', 'not applicable to design questions'],
     ]);
     expect(recorded[1].label).toBe('Critiquing requirements');
@@ -437,6 +538,8 @@ describe('step recording (NEE-268)', () => {
     expect(recorded.map((r) => [r.slug, r.status, r.outcome])).toEqual([
       ['generate', 'done', undefined],
       ['edge-audit', 'done', '1 edge case · 0 changes applied'],
+      // Behavioral is the one type that skips calibrate entirely.
+      ['calibrate', 'skipped', 'not applicable to behavioral questions'],
       ['verify', 'skipped', 'not applicable to behavioral questions'],
     ]);
     expect(recorded[1].label).toBe('Critiquing the prompt');
@@ -631,9 +734,11 @@ Concurrency realities.`);
       ].join('\n'),
       signature: null,
       testCode: null,
+      supportCode: null,
       solutionCode: null,
       referenceSolution: null,
       interviewerPacket: '## Capability Tested\n\nAmbiguity resolved into invariants.',
+      estimatedMinutes: null,
       competency: null,
       followUps: null,
     };
@@ -724,6 +829,45 @@ describe('masked prompt construction (NEE-265)', () => {
     expect(repair).not.toContain('Concurrency realities');
     expect(repair).not.toContain('expected 2 to be 1');
   });
+
+  it('buildCalibrationUserMessage (coding) masks the reference solution but keeps tests and support code visible', () => {
+    const withSupport: GeneratedQuestion = { ...STAGE1, supportCode: 'export const fixtures = {};' };
+    const built = buildCalibrationUserMessage(PARAMS, withSupport, false);
+    expect(built.prompt).toContain('return {} as never');
+    expect(built.prompt).toContain('export const fixtures = {};');
+    expect(built.maskedPrompt).not.toContain('return {} as never');
+    expect(built.maskedPrompt).toContain(`## Reference Solution\n\n${WITHHELD_MARKER}`);
+    expect(built.maskedPrompt).toContain('export const fixtures = {};');
+    expect(built.maskedPrompt).toContain(STAGE1.testCode!);
+    expect(built.maskedPrompt).toContain(`## Interviewer Packet\n\n${WITHHELD_MARKER}`);
+  });
+
+  it('buildCalibrationUserMessage (design) states the static time budget instead of code sections', () => {
+    const built = buildCalibrationUserMessage(
+      { ...PARAMS, category: 'design-fe', difficulty: 'medium' },
+      { ...STAGE1, signature: null, testCode: null, referenceSolution: null },
+      true,
+    );
+    expect(built.prompt).not.toContain('## Reference Solution');
+    expect(built.prompt).not.toContain('## Test File');
+    expect(built.prompt).toContain('40 minutes');
+    expect(built.maskedPrompt).toContain('40 minutes');
+  });
+
+  it('buildCalibrationReworkUserMessage masks the current-output json fence and the calibration issues', () => {
+    const calibration: CalibrationResult = {
+      verdict: 'too-big',
+      estimatedMinutes: 75,
+      issues: 'drop the retry-with-backoff branch — it duplicates the base case',
+    };
+    const built = buildCalibrationReworkUserMessage(PARAMS, STAGE1, calibration);
+    expect(built.prompt).toContain('return {} as never');
+    expect(built.prompt).toContain('drop the retry-with-backoff branch');
+    expect(built.maskedPrompt).not.toContain('return {} as never');
+    expect(built.maskedPrompt).not.toContain('drop the retry-with-backoff branch');
+    expect(built.maskedPrompt).toContain('too-big');
+    expect(built.maskedPrompt).toContain(`"referenceSolution": "${WITHHELD_MARKER}"`);
+  });
 });
 
 describe('generateVerifiedQuestion no-output-progress timeout', () => {
@@ -777,9 +921,10 @@ describe('generateVerifiedQuestion no-output-progress timeout', () => {
     vi.useFakeTimers();
     const partialReturns: unknown[] = [];
     const chatObjectStream = vi.fn((_p: unknown, _m: unknown, _s: unknown, opts?: StreamOpts) => {
-      // Audit resolves instantly so the fake-timer choreography only drives
-      // the stage-1 generate call.
+      // Audit and calibrate both resolve instantly so the fake-timer
+      // choreography only drives the stage-1 generate call.
       if (opts?.purpose === 'edge-audit') return Promise.resolve(AUDIT_NOOP);
+      if (opts?.purpose === 'calibrate') return Promise.resolve(DEFAULT_CALIBRATION);
       return new Promise((resolve, reject) => {
         opts?.abortSignal?.addEventListener('abort', () => reject(opts.abortSignal!.reason));
         let fired = 0;
@@ -830,6 +975,7 @@ describe('generateVerifiedQuestion no-output-progress timeout', () => {
     };
     const chatObjectStream = vi.fn((_p: unknown, _m: unknown, _s: unknown, opts?: StreamOpts) => {
       if (opts?.purpose === 'edge-audit') return Promise.resolve(AUDIT_NOOP);
+      if (opts?.purpose === 'calibrate') return Promise.resolve(DEFAULT_CALIBRATION);
       return new Promise((resolve, reject) => {
         opts?.abortSignal?.addEventListener('abort', () => reject(opts.abortSignal!.reason));
         let fired = 0;

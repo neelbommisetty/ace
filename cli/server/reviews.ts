@@ -314,6 +314,19 @@ ${story}`;
         const content = readFileOr(path.join(question.dirPath, name));
         if (content) solutionContent += `\n--- ${name} ---\n${content}\n`;
       }
+      // Read-only fixture/fake-API module (react-apps' api.ts) the solution
+      // and tests both import — the reviewer needs to see it to judge
+      // whether the candidate's code correctly uses the provided contract.
+      // Skips files that don't exist on disk (pre-support-module questions,
+      // or a category with an empty config.supportFiles), same existsSync
+      // gate the file-list route uses.
+      let supportContent = '';
+      for (const name of config.supportFiles) {
+        const filePath = path.join(question.dirPath, name);
+        if (!fs.existsSync(filePath)) continue;
+        const content = readFileOr(filePath);
+        if (content) supportContent += `\n--- ${name} ---\n${content}\n`;
+      }
       let testContent = '';
       for (const name of config.testFiles) {
         const content = readFileOr(path.join(question.dirPath, name));
@@ -324,7 +337,7 @@ ${story}`;
 
 ## Candidate's Solution Code
 ${solutionContent}
-
+${supportContent ? `\n## Provided Support Module (read-only)\n${supportContent}\n` : ''}
 ## Test Cases
 ${testContent}`;
       break;

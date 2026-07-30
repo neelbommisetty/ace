@@ -13,7 +13,11 @@
  * after session teardown) — the log must never turn a paid LLM call into a
  * crash. Mirrors the onStageResult convention in generation.ts.
  */
-import { EdgeAuditSchema, GeneratedQuestionSchema } from '../lib/gen-pipeline.js';
+import {
+  CalibrationSchema,
+  EdgeAuditSchema,
+  GeneratedQuestionSchema,
+} from '../lib/gen-pipeline.js';
 import { maskPromptText, SecretScrubber, WIRE_SAFE_KEYS } from '../lib/spoilers.js';
 import { nowIso } from './ids.js';
 import type { Bus } from './sse.js';
@@ -134,6 +138,7 @@ const STEP_SCHEMA_KEYS: Record<string, readonly string[]> = {
   generate: Object.keys(GeneratedQuestionSchema.shape),
   repair: Object.keys(GeneratedQuestionSchema.shape),
   'edge-audit': Object.keys(EdgeAuditSchema.shape),
+  calibrate: Object.keys(CalibrationSchema.shape),
   // Hardcoded rather than `Object.keys(ProbeResultSchema.shape)` — probes.ts
   // imports AiLog/NULL_AI_LOG from this file, so importing its schema back
   // here would be circular. The literal is the schema's one top-level key

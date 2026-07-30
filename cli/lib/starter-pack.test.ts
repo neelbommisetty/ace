@@ -78,8 +78,13 @@ describe('starter pack contents', () => {
       expect(difficulty).toBeDefined();
 
       const minutes = readme.match(/^\*\*Suggested Time:\*\*\s*~?(\d+)\s*minutes?\s*$/im)?.[1];
-      // The stated time must be the category/difficulty default, so the
-      // Library's estimate matches what a generated question would show.
+      // The starter pack's own questions are static, hand-authored fixtures —
+      // copied into the workspace verbatim (copyStarterPack), never run
+      // through scaffoldQuestionAt or the generation pipeline — so this
+      // equality is a starter-pack-only invariant. A GENERATED coding
+      // question's README time is the calibrate stage's honest per-question
+      // estimate (see cli/server/generation.ts's resolveSuggestedMinutes)
+      // and need not match the category/difficulty default at all.
       expect(Number(minutes)).toBe(
         getSuggestedTime(question.category, difficulty as 'easy' | 'medium' | 'hard'),
       );

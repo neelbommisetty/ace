@@ -160,3 +160,124 @@ describe('verifyGeneratedQuestion (integration, real vitest)', () => {
     120_000,
   );
 });
+
+// react-apps' supportCode contract: a real fake-backend module (`api.ts`)
+// shared by the app and the tests. App.tsx imports data ONLY from './api' —
+// never fetch — so a real run here also proves the support-file write path
+// in verifyGeneratedQuestion actually wires the module in, not just that the
+// react/happy-dom toolchain works (js-ts's tests above already cover that).
+const REACT_APPS_SUPPORT_CODE = `export interface Item {
+  id: number;
+  name: string;
+}
+
+const FIXTURES: Item[] = [
+  { id: 1, name: 'Alpha' },
+  { id: 2, name: 'Beta' },
+];
+
+// Latency via setTimeout (not an already-resolved promise) so
+// vi.advanceTimersByTimeAsync controls exactly when this settles.
+export function fetchItems(): Promise<Item[]> {
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(FIXTURES), 10);
+  });
+}
+`;
+
+const REACT_APPS_SIGNATURE = `import React from 'react';
+import { fetchItems, type Item } from './api';
+
+export default function App() {
+  // TODO: implement
+  return <div>TODO</div>;
+}
+`;
+
+const REACT_APPS_REFERENCE = `import React, { useEffect, useState } from 'react';
+import { fetchItems, type Item } from './api';
+
+export default function App() {
+  const [items, setItems] = useState<Item[] | null>(null);
+
+  useEffect(() => {
+    fetchItems().then(setItems);
+  }, []);
+
+  if (items === null) {
+    return <p>Loading…</p>;
+  }
+
+  return (
+    <ul aria-label="items">
+      {items.map((item) => (
+        <li key={item.id}>{item.name}</li>
+      ))}
+    </ul>
+  );
+}
+`;
+
+const REACT_APPS_TESTS = `import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, render, screen } from '@testing-library/react';
+import App from './App';
+
+async function advance(ms: number) {
+  await act(async () => vi.advanceTimersByTimeAsync(ms));
+}
+
+describe('App', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows a loading state, then the fetched items', async () => {
+    render(<App />);
+    expect(screen.getByText('Loading…')).toBeInTheDocument();
+    await advance(10); // api.ts's fetchItems latency
+    expect(screen.getByText('Alpha')).toBeInTheDocument();
+    expect(screen.getByText('Beta')).toBeInTheDocument();
+  });
+});
+`;
+
+describe('verifyGeneratedQuestion (react-apps support module, integration)', () => {
+  it(
+    'writes the support module once and passes vs the reference App+api pair, fails vs the starter stub',
+    async () => {
+      const result = await verifyGeneratedQuestion(REPO_ROOT, 'react-apps', {
+        referenceSolution: REACT_APPS_REFERENCE,
+        testCode: REACT_APPS_TESTS,
+        stubSolution: renderSolutionStub('react-apps', 'App.tsx', {
+          signature: REACT_APPS_SIGNATURE,
+        }),
+        supportCode: REACT_APPS_SUPPORT_CODE,
+      });
+      expect(result.failureReport).toBeNull();
+      expect(result.green).toBe(true);
+      expect(result.summary?.total).toBe(1);
+      expect(result.summary?.passed).toBe(1);
+    },
+    120_000,
+  );
+
+  it(
+    'without supportCode, ./api has nothing to resolve to — the write path is exercised, not assumed',
+    async () => {
+      const result = await verifyGeneratedQuestion(REPO_ROOT, 'react-apps', {
+        referenceSolution: REACT_APPS_REFERENCE,
+        testCode: REACT_APPS_TESTS,
+        stubSolution: renderSolutionStub('react-apps', 'App.tsx', {
+          signature: REACT_APPS_SIGNATURE,
+        }),
+        // supportCode omitted on purpose.
+      });
+      expect(result.green).toBe(false);
+      expect(result.failureReport).toBeTruthy();
+    },
+    120_000,
+  );
+});

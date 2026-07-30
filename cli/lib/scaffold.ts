@@ -19,6 +19,22 @@ export interface ScaffoldOptions {
   signature?: string;
   testCode?: string;
   solutionCode?: string;
+  /**
+   * LLM-authored read-only support module content (e.g. react-apps' fake
+   * `api.ts`), written verbatim to `config.supportFiles[0]` — no `.hbs`
+   * template, same convention as `testCode`. Absent writes nothing; a
+   * category with an empty `config.supportFiles` never has a target to
+   * write it to regardless.
+   */
+  supportCode?: string;
+  /**
+   * README-only override for the static suggestedTimes table — the LLM's
+   * confirmed time estimate for coding categories, resolved by the caller
+   * (generation.ts's resolveSuggestedMinutes). Falls back to
+   * getSuggestedTime(category, difficulty) when absent, so every other
+   * caller (starter pack, CLI scaffold) is unaffected.
+   */
+  suggestedMinutes?: number;
   notesTemplate?: string;
   /** Written as `.interviewer.md` — invisible to the watcher/reconciler/UI. */
   interviewerPacket?: string;
@@ -70,7 +86,7 @@ export function scaffoldQuestionAt(
   const config = getCategoryConfig(opts.category);
   const questionsDir = getQuestionsDirPath(workspaceRoot);
   const questionDir = path.join(questionsDir, opts.category, opts.slug);
-  const suggestedTime = getSuggestedTime(opts.category, opts.difficulty);
+  const suggestedTime = opts.suggestedMinutes ?? getSuggestedTime(opts.category, opts.difficulty);
   const shouldWriteScorecard = extras.writeScorecard ?? false;
   const files: string[] = [];
 
@@ -130,6 +146,20 @@ export function scaffoldQuestionAt(
     } else if (opts.testCode) {
       fs.writeFileSync(path.join(questionDir, testFile), opts.testCode);
       files.push(testFile);
+    }
+  }
+
+  // Support module (e.g. react-apps' `api.ts`): LLM-authored, written
+  // verbatim like testCode above — no `.hbs` template exists for it, since
+  // its whole content is generated per-question. `config.supportFiles` is
+  // `[]` for every category without one, so this is a silent no-op there
+  // even if `opts.supportCode` were somehow set; conversely a category WITH
+  // a supportFiles entry but no `opts.supportCode` (e.g. a legacy resumed
+  // job) writes nothing rather than an empty file.
+  if (opts.supportCode) {
+    for (const supportFile of config.supportFiles) {
+      fs.writeFileSync(path.join(questionDir, supportFile), opts.supportCode);
+      files.push(supportFile);
     }
   }
 

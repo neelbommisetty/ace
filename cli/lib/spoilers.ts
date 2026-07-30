@@ -58,11 +58,41 @@ export const WIRE_SAFE_KEYS: Record<string, ReadonlySet<string>> = {
   // treatment coding/design questions give their whole problem statement)
   // — knowing "this probes conflict-handling" doesn't hand the candidate an
   // answer. followUps is deliberately NOT here — see SPOILER_KEYS below.
-  generate: new Set(['title', 'slug', 'description', 'signature', 'testCode', 'competency']),
-  repair: new Set(['title', 'slug', 'description', 'signature', 'testCode', 'competency']),
-  'edge-audit': new Set(['description', 'testCode']), // edgeCases withheld — the names are hints
+  // estimatedMinutes/supportCode are likewise candidate-visible: the README
+  // shows the estimate, and the support module is the fake backend the live
+  // preview serves — neither is answer-key material.
+  generate: new Set([
+    'title',
+    'slug',
+    'description',
+    'signature',
+    'testCode',
+    'competency',
+    'estimatedMinutes',
+    'supportCode',
+  ]),
+  repair: new Set([
+    'title',
+    'slug',
+    'description',
+    'signature',
+    'testCode',
+    'competency',
+    'estimatedMinutes',
+    'supportCode',
+  ]),
+  // edgeCases withheld — the names are hints.
+  'edge-audit': new Set(['description', 'testCode', 'supportCode']),
   dispute: new Set(['verdict', 'summary', 'details', 'failingTests', 'fixedTestCode', 'hint']),
   brainstorm: new Set(['reply', 'ideas']),
+  // verdict/estimatedMinutes are candidate-safe: a closed-vocabulary size
+  // judgment plus a number. `issues` is NOT here — the calibrator writes it
+  // having seen the unmasked reference solution and interviewer packet
+  // (buildCalibrationUserMessage), and calibrate.md tells it to cite the
+  // specific edge cases/requirements driving the verdict, so it can carry
+  // the same spoiler-derived hints buildCalibrationReworkUserMessage
+  // withholds from the recorded rework prompt.
+  calibrate: new Set(['verdict', 'estimatedMinutes']),
   // Entirely wire-safe, same reasoning as dispute: the probe questions
   // themselves are the whole point of the feature — there is no per-probe
   // `rationale` field to withhold (deliberately not asked for; that would be

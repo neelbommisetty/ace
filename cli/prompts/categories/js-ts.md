@@ -18,22 +18,27 @@ careless implementations break.
 
 ## Difficulty Calibration
 
-Suggested times: easy 15 min, medium 30 min, hard 45 min.
-
-- **easy (15 min)**: one core behavior plus 2–3 edge-case classes. A strong
+- **easy**: one core behavior plus 2–3 edge-case classes. A strong
   Senior finishes with minutes to spare; the signal is in clean semantics
   (no stale closures, correct `this`/reference handling). Example scope:
   `once(fn)` with error rethrow semantics.
-- **medium (30 min)**: two interacting behaviors — e.g. debounce with both
+- **medium**: two interacting behaviors — e.g. debounce with both
   leading/trailing options and a `flush()`/`cancel()` API, or a keyed
   concurrency limiter. Correct ordering plus at least one lifecycle concern
   (cleanup, cancellation) must be handled. Staff signal: invariants named in
   code structure, not discovered by debugging.
-- **hard (45 min)**: a small stateful engine with concurrency semantics —
+- **hard**: a small stateful engine with concurrency semantics —
   e.g. an async queue with priorities, cancellation, and partial-failure
   reporting; or an operation batcher with flush windows and error isolation.
   Multiple edge-case classes interact; a merely-working solution that
   ignores ordering/cancellation contracts should NOT pass all tests.
+
+Size the question honestly for its difficulty. Short questions (10, 25
+minutes) are valid — not every easy needs padding to fill a slot. A
+full-size question is expected to take a strong Senior about 45 minutes;
+up to 60 is allowed when the material genuinely warrants it. 60 minutes is
+a hard cap — if the design needs more, shrink scope rather than exceed it.
+Never pad a naturally short question to look bigger than it is.
 
 ## Environment & Test Contract
 

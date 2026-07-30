@@ -16,6 +16,13 @@ export interface VerifyArtifacts {
   testCode: string;
   /** The signature-rendered starter stub — at least one test must FAIL against it. */
   stubSolution: string;
+  /**
+   * LLM-authored read-only support module (e.g. react-apps' `api.ts`) —
+   * absent/null for categories with an empty `CategoryConfig.supportFiles`.
+   * Written once, shared by both the reference and stub runs: only the
+   * primary solution file changes between them.
+   */
+  supportCode?: string | null;
 }
 
 export interface VerifyResult {
@@ -240,6 +247,13 @@ ${setupLine}  },
     );
     fs.writeFileSync(path.join(sandbox, solutionFile), artifacts.referenceSolution);
     fs.writeFileSync(path.join(sandbox, testFile), artifacts.testCode);
+    // Written once, ahead of both runs — never rewritten before the stub
+    // run below, so it stays identical for the reference and stub suites
+    // (the vitest `include` pattern above only matches `*.test.{ts,tsx}`,
+    // so this file is never mistaken for a suite of its own).
+    if (artifacts.supportCode != null && config.supportFiles.length > 0) {
+      fs.writeFileSync(path.join(sandbox, config.supportFiles[0]), artifacts.supportCode);
+    }
 
     const reportPath = path.join(sandbox, 'report.json');
     const runOpts = { vitestBin, sandboxReal, configPath, reportPath };

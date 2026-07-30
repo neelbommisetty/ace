@@ -37,6 +37,20 @@ const PAYLOAD = {
   // way. competency is wire-safe, so no canary needed on it.
   competency: null,
   followUps: [`${CANARY} probe leak attempt`],
+  // Required-and-nullable (strict structured outputs): both are wire-safe
+  // candidate-visible keys, so no canary needed. js-ts has no support module.
+  supportCode: null,
+  estimatedMinutes: null,
+};
+
+// issues is non-null (the ordinary case on a too-big/too-small verdict) and
+// canary-laden: it is spoiler-derived prose (the calibrator sees the
+// unmasked reference solution/interviewer packet) and must NOT be wire-safe
+// — WIRE_SAFE_KEYS.calibrate is verdict/estimatedMinutes only.
+const CALIBRATION = {
+  verdict: 'fits',
+  estimatedMinutes: 30,
+  issues: `${CANARY} calibration issues leak attempt`,
 };
 
 const AUDIT = {
@@ -48,6 +62,7 @@ const AUDIT = {
   testCode: null,
   referenceSolution: `export function countCanaries(): number { return 0; } // audited ${CANARY}`,
   interviewerPacket: null,
+  supportCode: null,
 };
 
 // First line is a plain `✕ name` (that is what may surface, names only);
@@ -79,6 +94,15 @@ function makeCanaryLlm() {
       opts.onPartial?.({ edgeCases: AUDIT.edgeCases });
       opts.onPartial?.(AUDIT);
       return schema.parse(AUDIT);
+    }
+    if (opts?.purpose === 'calibrate') {
+      // A partial smuggling a spoiler under a non-wire-safe key: the differ
+      // must drop it (WIRE_SAFE_KEYS.calibrate is verdict/estimatedMinutes).
+      // CALIBRATION itself carries a canary-laden `issues` — also not
+      // wire-safe — so both leak vectors are exercised by the same partial.
+      opts.onPartial?.({ verdict: 'fits', referenceSolution: `${CANARY} calibrate leak attempt` });
+      opts.onPartial?.(CALIBRATION);
+      return schema.parse(CALIBRATION);
     }
     opts?.onPartial?.({ title: 'Canary', referenceSolution: `${CANARY} partial leak attempt` });
     opts?.onPartial?.(PAYLOAD);
@@ -179,6 +203,7 @@ describe('ai-log spoiler canary', () => {
     expect(steps.map((s) => [s.slug, s.status])).toEqual([
       ['generate', 'done'],
       ['edge-audit', 'done'],
+      ['calibrate', 'done'],
       ['static-check', 'done'],
       ['verify', 'error'],
       ['repair', 'done'],
@@ -223,6 +248,7 @@ describe('ai-log spoiler canary', () => {
     expect(steps.map((s) => [s.slug, s.status])).toEqual([
       ['generate', 'done'],
       ['edge-audit', 'done'],
+      ['calibrate', 'done'],
       ['static-check', 'done'],
       ['verify', 'done'],
       ['scaffold', 'done'],

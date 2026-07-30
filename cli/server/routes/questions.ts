@@ -45,6 +45,19 @@ export function registerQuestionRoutes(app: Hono, ctx: RouteContext): void {
           readonly: true,
         });
       }
+      // Gated on existence (unlike solutionFiles/testFiles above, which the
+      // scaffold guarantees): pre-existing react-apps questions generated
+      // before the support-module feature landed have no api.ts on disk, and
+      // listing it anyway would show a phantom, permanently-404ing tab.
+      for (const name of config.supportFiles) {
+        if (!fs.existsSync(path.join(question.dirPath, name))) continue;
+        files.push({
+          name,
+          relPath: toWorkspaceRelPath(workspaceRoot, path.join(question.dirPath, name)),
+          kind: 'support',
+          readonly: true,
+        });
+      }
     }
 
     const detail: QuestionDetail = {

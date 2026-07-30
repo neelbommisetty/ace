@@ -134,7 +134,8 @@ export function reconcile(db: AceDb, workspaceRoot: string): ReconcileResult {
       } else if (
         existing.title !== title ||
         existing.dirPath !== questionDir ||
-        existing.difficulty !== legacy.difficulty
+        existing.difficulty !== legacy.difficulty ||
+        existing.suggestedMinutes !== legacy.suggestedMinutes
       ) {
         updated += 1;
       }

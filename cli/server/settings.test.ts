@@ -149,6 +149,7 @@ describe('getSettingsInfo models (NEE-303)', () => {
     mockGetModelMap.mockReturnValue({
       generate: 'claude-opus-5',
       'edge-audit': 'claude-sonnet-5',
+      calibrate: 'claude-opus-5',
       review: 'claude-opus-5',
       'review-extract': 'claude-haiku-4-5',
       brainstorm: 'claude-sonnet-5',
@@ -162,6 +163,7 @@ describe('getSettingsInfo models (NEE-303)', () => {
     expect(models).toEqual({
       generate: { provider: 'anthropic', model: 'claude-opus-5' },
       'edge-audit': { provider: 'anthropic', model: 'claude-sonnet-5' },
+      calibrate: { provider: 'anthropic', model: 'claude-opus-5' },
       review: { provider: 'anthropic', model: 'claude-opus-5' },
       'review-extract': { provider: 'anthropic', model: 'claude-haiku-4-5' },
       brainstorm: { provider: 'anthropic', model: 'claude-sonnet-5' },
@@ -176,6 +178,7 @@ describe('getSettingsInfo models (NEE-303)', () => {
     mockGetModelMap.mockReturnValue({
       generate: 'mock-top',
       'edge-audit': 'mock-mid',
+      calibrate: 'mock-top',
       review: 'mock-top',
       'review-extract': 'mock-basic',
       brainstorm: 'mock-mid',

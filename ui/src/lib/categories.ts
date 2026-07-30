@@ -8,7 +8,7 @@
  * old lookup-table fallbacks.
  */
 
-import { CATEGORY_SLUGS, lookupCategoryConfig, type Difficulty } from '@shared/categories';
+import { CATEGORY_SLUGS, lookupCategoryConfig } from '@shared/categories';
 
 export { CATEGORY_SLUGS };
 
@@ -22,8 +22,4 @@ export function categoryShortName(slug: string): string {
 
 export function categoryHint(slug: string): string {
   return configFor(slug)?.hint ?? '';
-}
-
-export function suggestedMinutes(slug: string, difficulty: Difficulty): number | null {
-  return configFor(slug)?.suggestedTimes[difficulty] ?? null;
 }

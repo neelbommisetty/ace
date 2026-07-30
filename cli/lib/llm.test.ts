@@ -51,9 +51,11 @@ const GeneratedQuestionSchema = z.object({
   description: z.string().nullable(),
   signature: z.string().nullable(),
   testCode: z.string().nullable(),
+  supportCode: z.string().nullable(),
   solutionCode: z.string().nullable(),
   referenceSolution: z.string().nullable(),
   interviewerPacket: z.string().nullable(),
+  estimatedMinutes: z.number().nullable(),
   competency: z.string().nullable(),
   followUps: z.array(z.string()).nullable(),
 });
@@ -122,6 +124,8 @@ describe('per-purpose model map (NEE-274)', () => {
     // object through the proxy, breaking structured parse; the top tier is
     // the one that reliably returns a single valid object here.
     expect(getModelId('anthropic', 'probe')).toBe('claude-opus-5');
+    // calibrate is a structured-output call too — same NEE-364 precedent.
+    expect(getModelId('anthropic', 'calibrate')).toBe('claude-opus-5');
     expect(getModelId('anthropic', 'review-extract')).toBe('claude-haiku-4-5');
 
     expect(getModelId('openai', 'generate')).toBe('gpt-5.6-sol');
@@ -130,6 +134,7 @@ describe('per-purpose model map (NEE-274)', () => {
     expect(getModelId('openai', 'edge-audit')).toBe('gpt-5.6-terra');
     expect(getModelId('openai', 'brainstorm')).toBe('gpt-5.6-terra');
     expect(getModelId('openai', 'probe')).toBe('gpt-5.6-sol');
+    expect(getModelId('openai', 'calibrate')).toBe('gpt-5.6-sol');
     expect(getModelId('openai', 'review-extract')).toBe('gpt-5.6-luna');
   });
 });
@@ -139,6 +144,9 @@ describe('chatObject mock schema-dispatch', () => {
     const result = await chatObject('openai', [], GeneratedQuestionSchema);
     expect(result.title).toBe('Two Sum');
     expect(result.slug).toBe('two-sum');
+    // Required-and-nullable (NEE-263) — present as explicit nulls, never omitted.
+    expect(result.estimatedMinutes).toBeNull();
+    expect(result.supportCode).toBeNull();
   });
 
   it('returns the brainstorm payload for an IdeaListSchema-shaped call, no mode var set', async () => {

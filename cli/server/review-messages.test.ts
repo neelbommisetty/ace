@@ -95,6 +95,53 @@ it('works', () => {});
   });
 });
 
+describe('buildReviewMessages — code arm includes the read-only support module (api.ts)', () => {
+  it('adds "## Provided Support Module (read-only)" between the solution and the tests for react-apps when api.ts is on disk', () => {
+    const config = getCategoryConfig('react-apps');
+    const question = makeQuestion({ category: 'react-apps', slug: 'sprint-board' });
+    writeFile(question.dirPath, 'README.md', '# Sprint Board\n\nBuild a task board.\n');
+    writeFile(question.dirPath, 'App.tsx', 'export default function App() { return null; }\n');
+    writeFile(question.dirPath, 'App.test.tsx', "it('works', () => {});\n");
+    writeFile(question.dirPath, 'api.ts', 'export async function fetchTasks() { return []; }\n');
+
+    const { messages, maskedPrompt } = buildReviewMessages(question, config, 'code');
+
+    expect(messages[1].content).toContain('## Provided Support Module (read-only)');
+    expect(messages[1].content).toContain('--- api.ts ---');
+    expect(messages[1].content).toContain('fetchTasks');
+    // Ordering: support module sits between the solution and the tests.
+    const solutionIdx = messages[1].content.indexOf("Candidate's Solution Code");
+    const supportIdx = messages[1].content.indexOf('Provided Support Module');
+    const testsIdx = messages[1].content.indexOf('Test Cases');
+    expect(solutionIdx).toBeLessThan(supportIdx);
+    expect(supportIdx).toBeLessThan(testsIdx);
+    expect(maskedPrompt).toContain('## Provided Support Module (read-only)');
+    expect(maskedPrompt).toContain('fetchTasks');
+  });
+
+  it('omits the support-module section entirely when api.ts is absent (pre-existing react-apps questions)', () => {
+    const config = getCategoryConfig('react-apps');
+    const question = makeQuestion({ category: 'react-apps', slug: 'legacy-app' });
+    writeFile(question.dirPath, 'README.md', '# Legacy App\n');
+    writeFile(question.dirPath, 'App.tsx', 'export default function App() { return null; }\n');
+    writeFile(question.dirPath, 'App.test.tsx', "vi.stubGlobal('fetch', () => {});\n");
+
+    const { messages } = buildReviewMessages(question, config, 'code');
+    expect(messages[1].content).not.toContain('Provided Support Module');
+  });
+
+  it('never adds a support-module section for a category with an empty config.supportFiles (js-ts)', () => {
+    const config = getCategoryConfig('js-ts');
+    const question = makeQuestion({ category: 'js-ts', slug: 'debounce-support-noop' });
+    writeFile(question.dirPath, 'README.md', '# Debounce\n');
+    writeFile(question.dirPath, 'solution.ts', 'export function debounce() {}\n');
+    writeFile(question.dirPath, 'solution.test.ts', '');
+
+    const { messages } = buildReviewMessages(question, config, 'code');
+    expect(messages[1].content).not.toContain('Provided Support Module');
+  });
+});
+
 describe('buildReviewMessages — code arm excludes preview.tsx (NEE-352)', () => {
   it('never includes a question-folder preview.tsx fixture in the solution content sent to the reviewer', () => {
     const config = getCategoryConfig('web-components');

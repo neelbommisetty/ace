@@ -32,12 +32,16 @@ function getGenerateMockPayload() {
     // schema dispatch, so the unused artifacts are explicit nulls. This
     // payload is shared across every category in mock mode (there is only
     // one 'generate'-shaped candidate), so competency/followUps (NEE-343,
-    // behavioral-only) stay null here too — a keyless behavioral e2e run
-    // exercises the schema/scaffold plumbing, not real competency content.
+    // behavioral-only) and estimatedMinutes/supportCode stay null here too —
+    // a keyless e2e run exercises the schema/scaffold plumbing, not real
+    // content (mock mode also never reaches the calibrate stage, which is
+    // what would otherwise fill estimatedMinutes in).
     testCode: null,
+    supportCode: null,
     solutionCode: null,
     referenceSolution: null,
     interviewerPacket: null,
+    estimatedMinutes: null,
     competency: null,
     followUps: null,
   };
@@ -237,6 +241,10 @@ const PURPOSE_TIERS: Record<LLMPurpose, ModelTier> = {
   'edge-audit': 'mid',
   brainstorm: 'mid',
   probe: 'top',
+  // calibrate is a structured-output call like probe — the same NEE-364
+  // reliability problem (the mid tier's proxy double-emitted a JSON object,
+  // breaking structured parse) applies here, so it takes the same top-tier fix.
+  calibrate: 'top',
   'review-extract': 'basic',
 };
 

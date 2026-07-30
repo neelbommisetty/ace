@@ -36,6 +36,7 @@ const CONFIGURED_SETTINGS: SettingsInfo = {
   models: {
     generate: { provider: 'openai', model: 'gpt-5.6-sol' },
     'edge-audit': { provider: 'openai', model: 'gpt-5.6-terra' },
+    calibrate: { provider: 'openai', model: 'gpt-5.6-sol' },
     review: { provider: 'openai', model: 'gpt-5.6-sol' },
     'review-extract': { provider: 'openai', model: 'gpt-5.6-luna' },
     brainstorm: { provider: 'openai', model: 'gpt-5.6-terra' },
@@ -88,10 +89,10 @@ describe('NewQuestion — describe mode', () => {
 
     const difficultySelect = screen.getByLabelText('Difficulty') as HTMLSelectElement;
     expect(difficultySelect).toBeEnabled();
-    // default category is js-ts (first slug): easy=15, medium=30, hard=45
-    expect(screen.getByRole('option', { name: 'easy — ~15 min' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'medium — ~30 min' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'hard — ~45 min' })).toBeInTheDocument();
+    // No time labels — the LLM authors the estimate, not a static per-difficulty table.
+    expect(screen.getByRole('option', { name: 'easy' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'medium' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'hard' })).toBeInTheDocument();
   });
 
   it('disables submit when the topic is empty and enables it once text is entered', async () => {

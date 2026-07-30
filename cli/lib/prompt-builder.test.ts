@@ -9,7 +9,7 @@ import {
   type PromptFeature,
 } from './prompt-builder.js';
 
-const FEATURES: PromptFeature[] = ['generate', 'edge-audit', 'review'];
+const FEATURES: PromptFeature[] = ['generate', 'edge-audit', 'review', 'calibrate'];
 
 afterEach(() => {
   vi.restoreAllMocks();

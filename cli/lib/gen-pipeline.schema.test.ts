@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { zodSchema } from 'ai';
-import { EdgeAuditSchema, GeneratedQuestionSchema } from './gen-pipeline.js';
+import { CalibrationSchema, EdgeAuditSchema, GeneratedQuestionSchema } from './gen-pipeline.js';
 
 // Regression tests for NEE-263: the codex backend enforces OpenAI strict
 // structured-output mode regardless of `strictJsonSchema: false`, and strict
@@ -50,12 +50,14 @@ describe('generation schemas are strict-structured-output compatible', () => {
     expect(Object.keys(emitted.properties ?? {}).sort()).toEqual([
       'competency',
       'description',
+      'estimatedMinutes',
       'followUps',
       'interviewerPacket',
       'referenceSolution',
       'signature',
       'slug',
       'solutionCode',
+      'supportCode',
       'testCode',
       'title',
     ]);
@@ -69,6 +71,7 @@ describe('generation schemas are strict-structured-output compatible', () => {
       'edgeCases',
       'interviewerPacket',
       'referenceSolution',
+      'supportCode',
       'testCode',
     ]);
     assertEveryPropertyRequired(emitted);
@@ -81,7 +84,13 @@ describe('generation schemas are strict-structured-output compatible', () => {
       expect(acceptsNull(question.properties?.[key]), `GeneratedQuestionSchema.${key}`).toBe(true);
     }
     const audit = zodSchema(EdgeAuditSchema).jsonSchema as JsonSchemaObjectNode;
-    for (const key of ['description', 'testCode', 'referenceSolution', 'interviewerPacket']) {
+    for (const key of [
+      'description',
+      'testCode',
+      'supportCode',
+      'referenceSolution',
+      'interviewerPacket',
+    ]) {
       expect(acceptsNull(audit.properties?.[key]), `EdgeAuditSchema.${key}`).toBe(true);
     }
   });
@@ -93,9 +102,11 @@ describe('generation schemas are strict-structured-output compatible', () => {
       description: null,
       signature: null,
       testCode: null,
+      supportCode: null,
       solutionCode: null,
       referenceSolution: null,
       interviewerPacket: null,
+      estimatedMinutes: null,
       competency: null,
       followUps: null,
     });
@@ -105,9 +116,43 @@ describe('generation schemas are strict-structured-output compatible', () => {
       edgeCases: [{ name: 'empty input', covered: true, action: 'none' }],
       description: null,
       testCode: null,
+      supportCode: null,
       referenceSolution: null,
       interviewerPacket: null,
     });
     expect(audit.testCode ?? undefined).toBeUndefined();
+  });
+});
+
+describe('CalibrationSchema (stage 2.5) is strict-structured-output compatible', () => {
+  it('lists every property in required', () => {
+    const emitted = zodSchema(CalibrationSchema).jsonSchema as JsonSchemaObjectNode;
+    expect(Object.keys(emitted.properties ?? {}).sort()).toEqual([
+      'estimatedMinutes',
+      'issues',
+      'verdict',
+    ]);
+    assertEveryPropertyRequired(emitted);
+  });
+
+  it('keeps optionality as nullability for estimatedMinutes/issues — verdict is the one mandatory field', () => {
+    const emitted = zodSchema(CalibrationSchema).jsonSchema as JsonSchemaObjectNode;
+    for (const key of ['estimatedMinutes', 'issues']) {
+      expect(acceptsNull(emitted.properties?.[key]), `CalibrationSchema.${key}`).toBe(true);
+    }
+  });
+
+  it('parses every verdict with explicit nulls, and rejects an unknown verdict', () => {
+    const fits = CalibrationSchema.parse({ verdict: 'fits', estimatedMinutes: 42, issues: null });
+    expect(fits.issues).toBeNull();
+    const tooBig = CalibrationSchema.parse({
+      verdict: 'too-big',
+      estimatedMinutes: 75,
+      issues: 'drop the retry branch',
+    });
+    expect(tooBig.verdict).toBe('too-big');
+    expect(() =>
+      CalibrationSchema.parse({ verdict: 'about-right', estimatedMinutes: null, issues: null }),
+    ).toThrow();
   });
 });

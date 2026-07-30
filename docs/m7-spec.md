@@ -395,7 +395,10 @@ someone else's workspace).
   engineer".
 - Each README's `**Suggested Time:** ~N minutes` line must **equal**
   `getSuggestedTime(category, difficulty)` exactly — `starter-pack.test.ts`
-  asserts it.
+  asserts it. This equality now applies to the **static starter pack only**:
+  a generated coding question's README time is the calibrate stage's own
+  per-question LLM estimate (clamped 10–60 by `resolveSuggestedMinutes`), not
+  necessarily the category/difficulty default.
 - Ship a `.probes.md` with each seed so the probe feature works keyless on a
   fresh install.
 - `package.json` "files" already publishes `questions/` raw — no packaging

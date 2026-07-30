@@ -49,6 +49,7 @@ const KEYED_SETTINGS: SettingsInfo = {
   models: {
     generate: { provider: 'anthropic', model: 'claude-opus-5' },
     'edge-audit': { provider: 'anthropic', model: 'claude-sonnet-5' },
+    calibrate: { provider: 'anthropic', model: 'claude-opus-5' },
     review: { provider: 'anthropic', model: 'claude-opus-5' },
     'review-extract': { provider: 'anthropic', model: 'claude-haiku-4-5' },
     brainstorm: { provider: 'anthropic', model: 'claude-sonnet-5' },

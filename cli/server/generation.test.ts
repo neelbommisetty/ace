@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VerifyFn, VerifyResult } from '../lib/gen-verify.js';
 import type { LLMMessage, LLMProvider } from '../lib/llm.js';
+import { getSuggestedTime } from '../lib/categories.js';
 import { createGenerationEngine } from './generation.js';
 import { openDb } from './db.js';
 import { createBus, type Bus } from './sse.js';
@@ -60,6 +61,11 @@ const VALID_GENERATED_PAYLOAD = {
   // Required-and-nullable in GeneratedQuestionSchema (strict structured
   // outputs, NEE-263) — the key must be present even when unused.
   interviewerPacket: null,
+  // Coding-only LLM time estimate (null here — the estimate-resolution tests
+  // below override it per-case) and the react-apps-only support module (null
+  // — leetcode-ds has no supportFiles). Same required-and-nullable rule.
+  estimatedMinutes: null,
+  supportCode: null,
   // competency/followUps (NEE-343, behavioral-only) — same required-and-
   // nullable rule; this fixture drives coding-category tests, so both stay
   // null.
@@ -89,6 +95,15 @@ function makeFakeLlm(
       opts?: FakeLlmOpts,
     ) => unknown | Promise<unknown>
   >,
+  /**
+   * The stage-2.5 calibrate call (coding AND design, never behavioral) also
+   * needs a generic default response, same rationale as edge-audit below: it
+   * must not consume the `handlers` queue, or every pre-existing coding/
+   * design test would need to grow an extra handler entry just to survive
+   * this new stage. `estimatedMinutes` is the one knob the estimate-
+   * resolution tests below actually need to vary.
+   */
+  calibration: { estimatedMinutes?: number | null } = {},
 ) {
   const calls: Array<{
     provider: LLMProvider;
@@ -110,8 +125,16 @@ function makeFakeLlm(
         edgeCases: [],
         description: null,
         testCode: null,
+        supportCode: null,
         referenceSolution: null,
         interviewerPacket: null,
+      });
+    }
+    if (opts?.purpose === 'calibrate') {
+      return schema.parse({
+        verdict: 'fits',
+        estimatedMinutes: calibration.estimatedMinutes ?? null,
+        issues: null,
       });
     }
     calls.push({ provider, messages, opts });
@@ -966,6 +989,7 @@ describe('verified pipeline wiring', () => {
     expect(phases).toEqual([
       { phase: 'generating', attempt: 1 },
       { phase: 'auditing', attempt: 1 },
+      { phase: 'calibrating', attempt: 1 },
       { phase: 'verifying', attempt: 1 },
     ]);
   });
@@ -1064,9 +1088,13 @@ describe('verified pipeline wiring', () => {
             edgeCases: [],
             description: null,
             testCode: null,
+            supportCode: null,
             referenceSolution: null,
             interviewerPacket: null,
           });
+        }
+        if (opts?.purpose === 'calibrate') {
+          return schema.parse({ verdict: 'fits', estimatedMinutes: null, issues: null });
         }
         generateCalls++;
         return schema.parse(VALID_GENERATED_PAYLOAD);
@@ -1131,6 +1159,143 @@ describe('verified pipeline wiring', () => {
     const solution = fs.readFileSync(path.join(question.dirPath, 'solution.ts'), 'utf8');
     expect(solution).toContain('// TODO: implement');
     expect(solution).not.toContain('return [0, 1];');
+  });
+});
+
+describe('estimatedMinutes → suggestedMinutes resolution (resolveSuggestedMinutes)', () => {
+  it('feeds the calibrator\'s coding estimate straight into the DB row and the README ("~N minutes")', async () => {
+    const { llm } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD], { estimatedMinutes: 38 });
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engine.start({ category: 'leetcode-ds', difficulty: 'medium', topic: 'two sum variant' });
+    const { question } = await waitFor('generation-done');
+
+    expect(question.suggestedMinutes).toBe(38);
+    const readme = fs.readFileSync(path.join(question.dirPath, 'README.md'), 'utf8');
+    expect(readme).toContain('**Suggested Time:** ~38 minutes');
+  });
+
+  it('clamps a too-large coding estimate to the 60-minute hard cap', async () => {
+    const { llm } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD], { estimatedMinutes: 90 });
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engine.start({ category: 'leetcode-ds', difficulty: 'medium', topic: 'two sum variant' });
+    const { question } = await waitFor('generation-done');
+
+    expect(question.suggestedMinutes).toBe(60);
+  });
+
+  it('falls back to the static suggestedTimes table when no estimate is ever produced', async () => {
+    // Neither the generate payload nor the calibrator supplies an estimate
+    // (both default to null) — resolveSuggestedMinutes must fall back rather
+    // than write a null/NaN suggestedMinutes.
+    const { llm } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engine.start({ category: 'leetcode-ds', difficulty: 'medium', topic: 'two sum variant' });
+    const { question } = await waitFor('generation-done');
+
+    expect(question.suggestedMinutes).toBe(getSuggestedTime('leetcode-ds', 'medium'));
+  });
+
+  it('ignores the estimate entirely for design and behavioral categories, keeping the static suggestedTimes table', async () => {
+    const { llm: designLlm } = makeFakeLlm(
+      [
+        () => ({
+          title: 'Design a Feed',
+          slug: 'design-a-feed',
+          description: 'Design a social feed system.',
+          signature: null,
+          testCode: null,
+          supportCode: null,
+          solutionCode: null,
+          referenceSolution: null,
+          interviewerPacket: null,
+          estimatedMinutes: 5,
+          competency: null,
+          followUps: null,
+        }),
+      ],
+      { estimatedMinutes: 5 },
+    );
+    const designEngine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm: designLlm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    designEngine.start({ category: 'design-fe', difficulty: 'medium', topic: 'design a feed' });
+    const { question: designQuestion } = await waitFor('generation-done');
+    expect(designQuestion.suggestedMinutes).toBe(getSuggestedTime('design-fe', 'medium'));
+
+    const { llm: behavioralLlm } = makeFakeLlm([
+      () => ({
+        ...VALID_GENERATED_PAYLOAD,
+        title: 'A Story',
+        slug: 'a-story',
+        estimatedMinutes: 5, // behavioral skips calibrate entirely — ignored regardless
+        competency: 'conflict',
+        followUps: null,
+      }),
+    ]);
+    const behavioralEngine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm: behavioralLlm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    behavioralEngine.start({ category: 'behavioral', difficulty: 'medium', topic: 'conflict' });
+    const { question: behavioralQuestion } = await waitFor('generation-done');
+    expect(behavioralQuestion.suggestedMinutes).toBe(getSuggestedTime('behavioral', 'medium'));
+  });
+
+  it('passes the LLM-authored supportCode through scaffoldQuestionAt onto disk (react-apps api.ts)', async () => {
+    const supportCode = "export async function fetchTasks() {\n  return [];\n}\n";
+    const { llm } = makeFakeLlm([
+      () => ({
+        ...VALID_GENERATED_PAYLOAD,
+        title: 'Sprint Board',
+        slug: 'sprint-board',
+        signature: "export default function App() {\n  return null;\n}\n",
+        testCode:
+          "import { describe, it, expect } from 'vitest';\nimport { render } from '@testing-library/react';\nimport App from './App';\n\ndescribe('App', () => {\n  it('renders', () => {\n    render(<App />);\n  });\n});\n",
+        supportCode,
+      }),
+    ]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engine.start({ category: 'react-apps', difficulty: 'medium', topic: 'sprint board' });
+    const { question } = await waitFor('generation-done');
+
+    expect(fs.readFileSync(path.join(question.dirPath, 'api.ts'), 'utf8')).toBe(supportCode);
   });
 });
 

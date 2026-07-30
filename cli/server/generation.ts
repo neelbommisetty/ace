@@ -5,6 +5,7 @@ import {
   getCategoryConfig,
   getSuggestedTime,
   slugify,
+  type CategoryConfig,
   type CategorySlug,
 } from '../lib/categories.js';
 import {
@@ -65,6 +66,26 @@ function resolveSlug(
     if (!fs.existsSync(dir) && !db.getQuestion(category, candidate)) return candidate;
   }
   throw new Error(`could not find an available slug for "${base}" — too many collisions`);
+}
+
+/**
+ * Coding questions ship the calibrate stage's confirmed per-question
+ * estimate (clamped to its own 10-60 hard-cap band, matching the prompt
+ * contract — see gen-pipeline.ts's CalibrationSchema); design/behavioral
+ * keep the static suggestedTimes table unconditionally, ignoring `estimate`
+ * even if one is somehow present. `estimate` is `number | null` per
+ * GeneratedQuestionSchema, but a resumed job predating this field can carry
+ * `undefined` too (no runtime validation re-parses persisted job rows), so
+ * the guard is a `typeof` check rather than a bare `Number.isFinite` call.
+ */
+function resolveSuggestedMinutes(
+  config: CategoryConfig,
+  difficulty: Difficulty,
+  estimate: number | null | undefined,
+): number {
+  return config.type === 'coding' && typeof estimate === 'number' && Number.isFinite(estimate)
+    ? Math.min(60, Math.max(10, Math.round(estimate)))
+    : getSuggestedTime(config.slug, difficulty);
 }
 
 /**
@@ -195,6 +216,7 @@ export function createGenerationEngine(opts: {
   ): Promise<void> {
     const jobId = job.id;
     const category = job.category as CategorySlug;
+    const config = getCategoryConfig(category);
     const difficulty = job.difficulty;
     // One activity-log run per runJob invocation — a retry mints a NEW run
     // with the same refId (the run id is never the jobId). Created before
@@ -227,7 +249,6 @@ export function createGenerationEngine(opts: {
         const provider = resolveProvider();
         if (!provider) throw new Error('no LLM API key configured — add one in Settings');
 
-        const config = getCategoryConfig(category);
         const corpusNote = category === 'behavioral' ? buildBehavioralCorpusNote(db) : '';
         const userMessage = `Generate a ${difficulty} difficulty ${config.name} interview question about: ${job.topic}
 
@@ -291,6 +312,11 @@ Question type: ${config.type}${corpusNote}`;
           );
         }
       }
+
+      // Resolved once and reused for BOTH the scaffolded README and the db
+      // row below, so the two can never desync (a stale-inflated DB value
+      // with a truthful README, or vice versa).
+      const suggestedMinutes = resolveSuggestedMinutes(config, difficulty, parsed.estimatedMinutes);
 
       // Everything from slug resolution through the question upsert is the
       // 'scaffold' activity step — it lives outside the pipeline, so runJob
@@ -366,9 +392,11 @@ Question type: ${config.type}${corpusNote}`;
                 slug,
                 category,
                 difficulty,
+                suggestedMinutes,
                 description: parsed.description || '',
                 signature: parsed.signature ?? undefined,
                 testCode: parsed.testCode ?? undefined,
+                supportCode: parsed.supportCode ?? undefined,
                 interviewerPacket: parsed.interviewerPacket ?? undefined,
                 referenceSolutionMd: parsed.referenceSolution
                   ? formatReferenceSolutionMd(parsed.referenceSolution)
@@ -396,7 +424,7 @@ Question type: ${config.type}${corpusNote}`;
           slug,
           title,
           difficulty,
-          suggestedMinutes: getSuggestedTime(category, difficulty),
+          suggestedMinutes,
           dirPath: dir,
           source: 'generated',
         });

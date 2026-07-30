@@ -15,7 +15,7 @@ of the question, not what they probably meant.
 
 ## Difficulty Calibration
 
-Use this to anchor what "good for the suggested time" means:
+Use this to anchor what "good at this difficulty" means:
 
 {{difficulty-calibration}}
 

@@ -24,25 +24,30 @@ counters/todo lists with no interaction contract.
 
 ## Difficulty Calibration
 
-Suggested times: easy 20 min, medium 35 min, hard 50 min.
-
-- **easy (20 min)**: one interaction surface plus 2–3 edge-case classes —
+- **easy**: one interaction surface plus 2–3 edge-case classes —
   e.g. a controlled `TagInput` with Enter-to-add, dedupe, and
   Backspace-to-remove. A strong Senior finishes comfortably; Staff signal
   is a clean controlled contract (no shadow state duplicating the `value`
   prop) and correct roles without prompting.
-- **medium (35 min)**: two interacting concerns — e.g. a combobox with
+- **medium**: two interacting concerns — e.g. a combobox with
   keyboard navigation PLUS debounced filtering, or both controlled and
   uncontrolled modes with a defined transition policy. At least one
   lifecycle concern (cleanup, focus restoration) must be handled. Staff
   signal: the state-ownership split is decided up front and visible in the
   prop types, not discovered by debugging re-renders.
-- **hard (50 min)**: edge-case classes interact and force prioritization —
+- **hard**: edge-case classes interact and force prioritization —
   e.g. an async mention autocomplete where rapid typing, debounce windows,
   out-of-order responses, keyboard selection, and unmount mid-request all
   collide. A merely-working solution that ignores race ordering, focus
   management, or cleanup should NOT pass all tests. Hard means interacting
   contracts under time pressure, never obscure React trivia.
+
+Size the question honestly for its difficulty. Short questions (10, 25
+minutes) are valid — not every easy needs padding to fill a slot. A
+full-size question is expected to take a strong Senior about 45 minutes;
+up to 60 is allowed when the material genuinely warrants it. 60 minutes is
+a hard cap — if the design needs more, shrink scope rather than exceed it.
+Never pad a naturally short question to look bigger than it is.
 
 ## Environment & Test Contract
 
@@ -91,6 +96,11 @@ Suggested times: easy 20 min, medium 35 min, hard 50 min.
   something rendered, never query the placeholder heading.
 - Every non-obvious expected value carries a derivation comment showing
   how it was computed from the inputs.
+- **UI Contract rule**: the description MUST contain a `## UI Contract`
+  section enumerating every role+accessible-name, label, placeholder, and
+  exact visible string (loading/empty/error states included) that any test
+  queries. Tests may only assert roles, labels, placeholders, and strings
+  listed there — nothing invented ad hoc in the test file.
 
 ## Example Test File
 
@@ -103,10 +113,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { TagInput } from './Component';
 
-// Contract under test: <TagInput value={string[]} onChange={fn}> renders one
-// chip (listitem) per tag, appends a trimmed tag on Enter, rejects
-// case-insensitive duplicates, and removes the last tag on Backspace when
-// the text input is empty. Fully controlled: the chip list follows `value`.
+// Contract under test: every role, label, and string queried below is
+// enumerated in the description's ## UI Contract section. Behavior:
+// <TagInput value={string[]} onChange={fn}> renders one chip (listitem)
+// per tag, appends a trimmed tag on Enter, rejects case-insensitive
+// duplicates, and removes the last tag on Backspace when the text input is
+// empty. Fully controlled: the chip list follows `value`.
 
 describe('TagInput', () => {
   it('renders one chip per tag, in prop order', () => {
