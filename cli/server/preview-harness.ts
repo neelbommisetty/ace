@@ -350,6 +350,11 @@ const FIXTURE_HINT = ${JSON.stringify(target.fixtureHint)};
 ${ACE_PREVIEW_FORWARDING_SOURCE}
 
 // Injected verbatim from cli/server/preview-harness.ts (single source of truth).
+// Under an esbuild keepNames runtime (tsx — \`npm run ace\`) the serialized
+// body carries \`__name(...)\` helper calls whose module-scoped helper
+// .toString() cannot capture, so the embedded copy needs its own shim
+// (NEE-370). The tsup dist build injects nothing and ignores it.
+var __name = (target) => target;
 const resolvePreviewExport = ${RESOLVE_PREVIEW_EXPORT_SOURCE};
 
 // A render-time throw shows the error + component stack instead of a white

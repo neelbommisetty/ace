@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { transformSync } from 'esbuild';
 import React from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -249,6 +250,36 @@ describe('harness generation', () => {
     expect(entry).not.toContain('</');
     // No fixture hint for this target (react-apps, App is self-sufficient).
     expect(entry).toContain('const FIXTURE_HINT = null');
+  });
+
+  // NEE-370: under tsx (`npm run ace`) ace's modules are esbuild-compiled
+  // with keepNames, which injects `__name(...)` helper calls into function
+  // bodies. resolvePreviewExport.toString() serializes those calls but NOT
+  // the module-scoped helper, so the browser copy threw ReferenceError and
+  // white-screened every preview. The entry ships a no-op shim; simulate
+  // that runtime with real esbuild and execute the serialized copy the way
+  // the browser does.
+  it('embedded resolver survives a keepNames runtime (NEE-370 __name shim)', () => {
+    const compiledModule = transformSync(
+      `${resolvePreviewExport.toString()}\nreturn resolvePreviewExport;`,
+      { loader: 'js', keepNames: true },
+    ).code;
+    const compiled = new Function(compiledModule)() as typeof resolvePreviewExport;
+    const serialized = compiled.toString();
+    // The hazard must be present in the simulation, or this test proves nothing.
+    expect(serialized).toContain('__name(');
+
+    const entry = buildHarnessEntry(target);
+    const shim = entry.split('\n').find((line) => line.startsWith('var __name'));
+    expect(shim).toBeDefined();
+    const shimIdx = entry.indexOf(shim as string);
+    expect(shimIdx).toBeGreaterThan(-1);
+    expect(shimIdx).toBeLessThan(entry.indexOf('const resolvePreviewExport ='));
+
+    const run = new Function(
+      `${shim}\nconst f = ${serialized};\nreturn f({ default: () => null }, null);`,
+    );
+    expect(run()).toEqual({ ok: true, exportName: 'default' });
   });
 
   it('embeds and renders a non-null fixture hint (NEE-352)', () => {
