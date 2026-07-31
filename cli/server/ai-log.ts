@@ -96,6 +96,14 @@ export interface AiRunHandle {
   }): AiStepHandle;
   /** Literal-scrub backstop (spoilers.ts SecretScrubber): register each spoiler value as it materialises. */
   registerSecret(text: string): void;
+  /**
+   * Applies the run's registered-secret literal scrub to arbitrary text —
+   * for engine-side emissions that bypass the recorder (the job row's
+   * errorMessage, the *-error SSE events), where a provider error can echo
+   * prompt content verbatim. Callers should maskPromptText() first, exactly
+   * as the recorder's own fail() does; the null run's scrub is the identity.
+   */
+  scrub(text: string): string;
   done(): void;
   fail(message: string): void;
 }
@@ -121,6 +129,9 @@ const NULL_RUN: AiRunHandle = {
   runId: '',
   step: () => NULL_STEP,
   registerSecret() {},
+  // Identity by necessity: registerSecret is a no-op here, so there are
+  // never any literals to scrub.
+  scrub: (text) => text,
   done() {},
   fail() {},
 };
@@ -376,6 +387,9 @@ export function createAiLog(opts: { db: AceDb; bus: Bus }): AiLog {
         },
         registerSecret(text) {
           scrubber.register(text);
+        },
+        scrub(text) {
+          return scrubber.scrub(text);
         },
         done() {
           finishRun('done', null);

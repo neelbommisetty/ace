@@ -6,6 +6,7 @@ import { getImportMetaDirname } from '../lib/import-meta.js';
 import { chatObjectStream, type LLMMessage } from '../lib/llm.js';
 import { readFileOr } from '../lib/read-file-or.js';
 import { buildQuestionSection } from '../lib/prompt-builder.js';
+import { maskPromptText } from '../lib/spoilers.js';
 import { NULL_AI_LOG, type AiLog } from './ai-log.js';
 import { saveBlob } from './blobs.js';
 import { readWorkspaceFile, toWorkspaceRelPath, writeWorkspaceFile } from './files.js';
@@ -258,9 +259,17 @@ ${buildFailureOutput(run)}
       bus.emit('dispute-done', { disputeJobId, questionId: question.id, dispute });
     } catch (err) {
       if (!inFlight.isDisposed()) {
-        const message = toEngineErrorMessage(
-          err,
-          'the model did not return a parseable dispute analysis — try again',
+        // Masked + secret-scrubbed BEFORE the wire emit (same rationale as
+        // generation.ts's generic catch): a provider error can echo prompt
+        // content verbatim, and this message bypasses the recorder on its
+        // way to the browser. Lossless on plain heading-free messages.
+        const message = aiRun.scrub(
+          maskPromptText(
+            toEngineErrorMessage(
+              err,
+              'the model did not return a parseable dispute analysis — try again',
+            ),
+          ),
         );
         aiRun.fail(message);
         bus.emit('dispute-error', { disputeJobId, questionId: question.id, message });

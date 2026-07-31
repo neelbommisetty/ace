@@ -11,6 +11,7 @@ import { getImportMetaDirname } from '../lib/import-meta.js';
 import { chatObjectStream, getModelId, type LLMMessage, type LLMProvider } from '../lib/llm.js';
 import { readFileOr } from '../lib/read-file-or.js';
 import { buildQuestionSection } from '../lib/prompt-builder.js';
+import { maskPromptText } from '../lib/spoilers.js';
 import { hasMeaningfulNotes } from './reviews.js';
 import { NULL_AI_LOG, type AiLog } from './ai-log.js';
 import { saveBlob } from './blobs.js';
@@ -318,9 +319,17 @@ ${bankSection}`;
       bus.emit('probes-done', { probeJobId, questionId: question.id, probeSet });
     } catch (err) {
       if (!inFlight.isDisposed()) {
-        const message = toEngineErrorMessage(
-          err,
-          'the model did not return parseable follow-up probes — try again',
+        // Masked + secret-scrubbed BEFORE the wire emit (same rationale as
+        // generation.ts's generic catch): a provider error can echo prompt
+        // content verbatim, and this message bypasses the recorder on its
+        // way to the browser. Lossless on plain heading-free messages.
+        const message = aiRun.scrub(
+          maskPromptText(
+            toEngineErrorMessage(
+              err,
+              'the model did not return parseable follow-up probes — try again',
+            ),
+          ),
         );
         aiRun.fail(message);
         bus.emit('probes-error', { probeJobId, questionId: question.id, message });

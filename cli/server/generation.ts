@@ -18,7 +18,7 @@ import {
 import type { VerifyFn } from '../lib/gen-verify.js';
 import { chatObjectStream, type LLMProvider } from '../lib/llm.js';
 import { formatReferenceSolutionMd, scaffoldQuestionAt } from '../lib/scaffold.js';
-import { splitSpoilers } from '../lib/spoilers.js';
+import { maskPromptText, splitSpoilers } from '../lib/spoilers.js';
 import { extractCompetencyFromReadme, normalizeCompetency } from '../../shared/competencies.js';
 import { NULL_AI_LOG, type AiLog } from './ai-log.js';
 import { nowIso } from './ids.js';
@@ -171,7 +171,9 @@ export interface GenerationEngine {
      * (NEE-386): `sourceQuestionId` is the question this job revises,
      * `feedback` is the user's free-text critique. runJob resolves the prior
      * result server-side from `sourceQuestionId`'s latest done job; redaction
-     * never touches the in-db row.
+     * never touches the in-db row. `start` throws (before any job row is
+     * created) when exactly one of the two is set — a one-field job would
+     * generate from scratch yet still auto-archive the source.
      */
     feedback?: string | null;
     sourceQuestionId?: string | null;
@@ -529,9 +531,19 @@ Question type: ${config.type}${corpusNote}`;
           bus.emit('generation-error', { jobId, message });
           return;
         }
-        const message = toEngineErrorMessage(
-          err,
-          'the model did not return a parseable question — try again',
+        // Masked + secret-scrubbed BEFORE it leaves the engine: this message
+        // reaches the browser via the job row's errorMessage (which
+        // redactGenerationJob passes through) and the 'generation-error'
+        // event — neither goes through the recorder — and a provider error
+        // can echo prompt content verbatim. Since NEE-386 the stage-1
+        // regenerate prompt embeds the PRIOR question's answer key, which
+        // registerSpoilers hands to this run's scrubber before the call.
+        // maskPromptText is lossless on plain heading-free messages, so
+        // ordinary errors pass through byte-identical.
+        const message = run.scrub(
+          maskPromptText(
+            toEngineErrorMessage(err, 'the model did not return a parseable question — try again'),
+          ),
         );
         const rawText = NoObjectGeneratedError.isInstance(err) ? (err.text ?? null) : null;
         try {
@@ -561,6 +573,19 @@ Question type: ${config.type}${corpusNote}`;
   return {
     start(params) {
       inFlight.assertNotDisposed();
+
+      // "Set together (or neither)" is load-bearing, not just documentation:
+      // runJob's regenerate branch requires BOTH fields, while the
+      // auto-archive guard on the done path keys off sourceQuestionId alone
+      // — a one-field job would run a plain from-scratch generation and then
+      // still archive the source question. No live caller can produce that
+      // shape (the route validates both), so fail fast before a row exists
+      // rather than let a future caller hit it silently.
+      if ((params.feedback == null) !== (params.sourceQuestionId == null)) {
+        throw new Error(
+          'feedback and sourceQuestionId must be set together (or neither) — got exactly one',
+        );
+      }
 
       const job = db.createGenerationJob({
         category: params.category,

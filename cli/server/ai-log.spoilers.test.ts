@@ -280,6 +280,58 @@ describe('ai-log spoiler canary', () => {
     expect(steps).toHaveLength(0);
   });
 
+  it('a provider error echoing the regenerate prompt is scrubbed before it reaches the job row or the generation-error event (NEE-386)', async () => {
+    // Seed: a green run whose persisted result carries the canary-laden
+    // audited reference solution — the PRIOR answer key of the regenerate.
+    const seedEngine = makeEngine(async () => GREEN);
+    const done = waitFor('generation-done');
+    seedEngine.start({ category: 'js-ts', difficulty: 'easy', topic: 'counting canaries' });
+    const { question } = await done;
+
+    // The regenerate's provider echoes a line of the prompt back in its own
+    // error message — and since NEE-386 the stage-1 prompt embeds the PRIOR
+    // question's answer key. The line is ≥40 chars, so the run's
+    // SecretScrubber (fed by registerSpoilers BEFORE the model call) knows
+    // it; neither the job row's errorMessage nor the 'generation-error'
+    // event goes through the recorder, so the engine must scrub them itself.
+    const echoedLine = AUDIT.referenceSolution; // merged over the stage-1 value by the seed's audit
+    const throwingLlm = {
+      chatObjectStream: async () => {
+        throw new Error(`API error 400: invalid request\n${echoedLine}\n(request rejected)`);
+      },
+    } as unknown as Parameters<typeof createGenerationEngine>[0]['llm'];
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm: throwingLlm,
+      resolveProvider: () => 'openai',
+      verify: async () => GREEN,
+      aiLog: createAiLog({ db, bus }),
+    });
+
+    const errored = waitFor('generation-error');
+    const { jobId } = engine.start({
+      category: 'js-ts',
+      difficulty: 'medium',
+      topic: 'counting canaries',
+      feedback: 'too easy — needs a twist',
+      sourceQuestionId: question.id,
+    });
+    const { message } = await errored;
+
+    // Wire message and persisted job row both carry the scrubbed text — the
+    // echoed answer-key line replaced, the benign frame intact.
+    expect(message).toContain('API error 400: invalid request');
+    expect(message).toContain('█ withheld █');
+    expect(message).not.toContain(CANARY);
+    const job = db.getGenerationJob(jobId)!;
+    expect(job.status).toBe('error');
+    expect(job.errorMessage).toBe(message);
+
+    expectNoCanaryAnywhere();
+  });
+
   it('retry with a persisted result records a second run with a single scaffold step', async () => {
     const engine = makeEngine(async () => GREEN);
 

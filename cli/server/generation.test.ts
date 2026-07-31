@@ -1393,6 +1393,76 @@ describe('behavioral generation (NEE-343)', () => {
     );
   });
 
+  it('excludes the source question from the corpus note on a behavioral regenerate, keeping every other question listed (NEE-386)', async () => {
+    // The source must be an engine-generated question so it has a done job
+    // result for the regenerate branch to resolve.
+    const { llm: seedLlm } = makeFakeLlm([
+      () => ({
+        ...VALID_GENERATED_PAYLOAD,
+        title: 'A Conflict You Navigated',
+        slug: 'a-conflict-story',
+        competency: 'conflict',
+        followUps: ['probe'],
+      }),
+    ]);
+    const seedEngine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm: seedLlm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    const seeded = waitFor('generation-done');
+    seedEngine.start({ category: 'behavioral', difficulty: 'medium', topic: 'conflict' });
+    const { question: source } = await seeded;
+
+    // A second behavioral question that must STAY in the note.
+    seedBehavioralQuestion({
+      slug: 'ambiguous-scope',
+      title: 'Ambiguous Scope Mid-Project',
+      competency: 'ambiguity',
+    });
+
+    const { llm, calls } = makeFakeLlm([
+      () => ({
+        ...VALID_GENERATED_PAYLOAD,
+        title: 'A Sharper Conflict Story',
+        slug: 'a-sharper-conflict-story',
+        competency: 'conflict',
+        followUps: ['probe'],
+      }),
+    ]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    const done = waitFor('generation-done');
+    engine.start({
+      category: 'behavioral',
+      difficulty: 'medium',
+      topic: 'conflict',
+      feedback: 'make the stakes concrete',
+      sourceQuestionId: source.id,
+    });
+    await done;
+
+    expect(calls).toHaveLength(1);
+    const userMessage = calls[0].messages[1]?.content ?? '';
+    // The note lists the OTHER behavioral question…
+    expect(userMessage).toContain('Existing Behavioral Questions');
+    expect(userMessage).toContain('- "Ambiguous Scope Mid-Project" — competency: ambiguity');
+    // …but NOT the source question under revision — the model must never be
+    // told to avoid the very competency the feedback may want kept. Matched
+    // in the corpus-note line format: the bare title also (legitimately)
+    // appears in the prompt's '## Current Output' JSON fence.
+    expect(userMessage).not.toContain('- "A Conflict You Navigated" — competency:');
+  });
+
   it('writes the competency into the README and the followUps into a hidden .probes.md', async () => {
     const { llm } = makeFakeLlm([
       () => ({
@@ -1526,6 +1596,40 @@ describe('regenerate with feedback (NEE-386)', () => {
     const { question } = await done;
     return question;
   }
+
+  it('start() rejects a job carrying exactly one of feedback/sourceQuestionId — a one-field job would generate from scratch yet still archive the source', async () => {
+    const { llm, calls } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+
+    expect(() =>
+      engine.start({
+        category: 'leetcode-ds',
+        difficulty: 'medium',
+        topic: 'orphaned source id',
+        sourceQuestionId: 'q-someone',
+      }),
+    ).toThrow(/set together/);
+    expect(() =>
+      engine.start({
+        category: 'leetcode-ds',
+        difficulty: 'medium',
+        topic: 'orphaned feedback',
+        feedback: 'too easy',
+      }),
+    ).toThrow(/set together/);
+
+    // Fail-fast means fail-clean: no job row created, nothing running, no llm call.
+    expect(db.listGenerationJobs()).toHaveLength(0);
+    expect(engine.runningCount()).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
 
   it('builds the regenerate prompt from the source, suffixes a slug collision, and auto-archives the source on done', async () => {
     const source = await seedSourceQuestion();
