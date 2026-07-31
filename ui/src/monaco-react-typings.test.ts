@@ -12,22 +12,24 @@ import { MODULE_RESOLUTION_NOISE, REACT_TYPE_LIBS } from './monaco-react-typings
 // monaco's bundled TS 5.x uses ModuleResolutionKind.NodeJs, which typescript
 // 7 removed (error 5108) — `bundler` resolves this package-json-less layout
 // identically (directory → index.d.ts, extensionless subpath → .d.ts).
+const COMPILER_OPTIONS = {
+  jsx: 'react-jsx',
+  target: 'esnext',
+  moduleResolution: 'bundler',
+  allowSyntheticDefaultImports: true,
+  // monaco's worker defaults are non-strict; strictness would invent
+  // diagnostics (implicit any, strict null checks) the room never shows.
+  strict: false,
+  noEmit: true,
+  lib: ['esnext', 'dom'],
+  // monaco's worker does no automatic @types discovery — every lib it
+  // sees is an explicitly registered extraLib, mirrored here as roots.
+  types: [],
+};
+
 function semanticDiagnostics(fileName: string, source: string): readonly Diagnostic[] {
   const tsconfig = JSON.stringify({
-    compilerOptions: {
-      jsx: 'react-jsx',
-      target: 'esnext',
-      moduleResolution: 'bundler',
-      allowSyntheticDefaultImports: true,
-      // monaco's worker defaults are non-strict; strictness would invent
-      // diagnostics (implicit any, strict null checks) the room never shows.
-      strict: false,
-      noEmit: true,
-      lib: ['esnext', 'dom'],
-      // monaco's worker does no automatic @types discovery — every lib it
-      // sees is an explicitly registered extraLib, mirrored here as roots.
-      types: [],
-    },
+    compilerOptions: COMPILER_OPTIONS,
     files: [fileName, ...REACT_TYPE_LIBS.map((lib) => lib.path)],
   });
   const files: Record<string, string> = { '/tsconfig.json': tsconfig, [fileName]: source };
@@ -49,6 +51,36 @@ function semanticDiagnostics(fileName: string, source: string): readonly Diagnos
       throw new Error(`program diagnostics: ${programDiags.map((d) => `TS${d.code} ${d.text}`).join('; ')}`);
     }
     return project.program.getSemanticDiagnostics(fileName);
+  } finally {
+    api.close();
+  }
+}
+
+// The per-file cases above are blind to breakage INSIDE the lib set: drop the
+// csstype entry and all of them still pass, because the unresolved
+// `import 'csstype'` diagnostic lands in @types/react/index.d.ts, which none
+// of them inspects — in monaco that failure silently degrades style-prop
+// typing to `any` with no visible error. Checking every shipped lib file
+// directly (zero diagnostics, noise codes included) closes that hole.
+function libSelfDiagnostics(): string[] {
+  const tsconfig = JSON.stringify({
+    compilerOptions: COMPILER_OPTIONS,
+    files: REACT_TYPE_LIBS.map((lib) => lib.path),
+  });
+  const files: Record<string, string> = { '/tsconfig.json': tsconfig };
+  for (const lib of REACT_TYPE_LIBS) {
+    files[lib.path] = lib.content;
+  }
+  const api = new API({ fs: createVirtualFileSystem(files) });
+  try {
+    const snapshot = api.updateSnapshot({ openProjects: ['/tsconfig.json'] });
+    const project = snapshot.getProject('/tsconfig.json');
+    if (project == null) throw new Error('virtual tsconfig project failed to load');
+    return REACT_TYPE_LIBS.flatMap((lib) =>
+      describeDiags(project.program.getSemanticDiagnostics(lib.path)).map(
+        (text) => `${lib.path}: ${text}`,
+      ),
+    );
   } finally {
     api.close();
   }
@@ -126,6 +158,10 @@ describe('App', () => {
     );
     expect(diags.length).toBeGreaterThan(0);
     expect(describeDiags(outsideNoise(diags))).toEqual([]);
+  });
+
+  it('every shipped lib file itself checks clean — a dropped entry cannot hide', () => {
+    expect(libSelfDiagnostics()).toEqual([]);
   });
 
   it('leaves a plain .ts file untouched — js-ts questions are unaffected', () => {
