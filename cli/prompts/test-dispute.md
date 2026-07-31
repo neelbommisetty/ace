@@ -22,6 +22,7 @@ You will receive:
    - `test_incorrect` — the test's expected value or assertion is wrong
    - `solution_incorrect` — the solution has a bug
    - `ambiguous` — the problem statement is unclear and both interpretations are valid
+5. If the verdict is `test_incorrect` or `ambiguous`, audit the **entire test file**, not just the failing tests: a wrong interpretation usually leaks into other test cases that happen to pass against this solution. Every test that encodes the wrong expectation must be corrected in `fixedTestCode`.
 
 ## Output Format
 
@@ -37,11 +38,11 @@ You will receive:
       "testName": "name of the failing test",
       "verdict": "test_incorrect | solution_incorrect | ambiguous",
       "explanation": "Why this specific test is wrong or why the solution fails it",
-      "fixedAssertion": "The corrected expect(...) line, if test_incorrect. Omit if solution_incorrect."
+      "fixedAssertion": "The corrected expect(...) line, if test_incorrect. null if solution_incorrect."
     }
   ],
-  "fixedTestCode": "The complete corrected test file content (only if verdict is test_incorrect or ambiguous). Omit entirely if verdict is solution_incorrect.",
-  "hint": "A nudge toward the bug in the solution (only if verdict is solution_incorrect, without revealing the answer). Omit if test_incorrect."
+  "fixedTestCode": "The complete corrected test file content, with EVERY test case that encodes the wrong expectation rewritten — currently-passing ones included, not just the failing assertions (only if verdict is test_incorrect or ambiguous). null if verdict is solution_incorrect.",
+  "hint": "A nudge toward the bug in the solution (only if verdict is solution_incorrect, without revealing the answer). null if test_incorrect."
 }
 ```
 
@@ -49,6 +50,6 @@ You will receive:
 
 - Be precise: trace actual values, not hand-wavy reasoning
 - When the problem statement is the source of truth, favor it over both the test and the solution
-- If the test is wrong, provide the complete corrected test file — do not leave placeholders
+- If the test is wrong, provide the complete corrected test file — do not leave placeholders, and correct every affected test case across the file (passing ones included), not only the disputed assertions
 - If the solution is wrong, give a helpful hint without giving away the full fix
 - If ambiguous, explain both valid interpretations and provide a corrected test file that matches the more common/standard interpretation
