@@ -457,6 +457,35 @@ describe('Room live preview pane — react-group gating (NEE-349)', () => {
     expect(screen.queryByTitle('Show AI review panel')).toBeNull();
   });
 
+  it('Alt+I in a playground room is inert — it must not flip the persisted AI-panel preference other rooms read (NEE-387)', async () => {
+    // Seed the preference a user set in a normal room; the playground room
+    // renders no AI panel, so the binding must not invisibly toggle it.
+    memoryStorage.setItem('ace-ai-open', 'true');
+    getQuestionDetail.mockResolvedValue(
+      questionDetail({
+        question: questionRow({
+          category: 'playground',
+          slug: 'scratch-1',
+          source: 'manual',
+          dirPath: 'questions/playground/scratch-1',
+        }),
+        files: [{ name: 'App.tsx', relPath: 'App.tsx', kind: 'solution', readonly: false }],
+      }),
+    );
+
+    renderRoom('/q/playground/scratch-1');
+    await screen.findByTestId('editor-file:///App.tsx');
+    // Let the mount write-back effect settle before pressing the key.
+    await waitFor(() => expect(memoryStorage.getItem('ace-ai-open')).toBe('true'));
+
+    fireEvent.keyDown(document.body, { key: 'i', code: 'KeyI', altKey: true });
+
+    // Still no AI panel or expander — and, crucially, the stored preference
+    // is untouched, so the next normal room opens with its panel as before.
+    expect(screen.queryByTitle('Show AI review panel')).toBeNull();
+    await waitFor(() => expect(memoryStorage.getItem('ace-ai-open')).toBe('true'));
+  });
+
   it('renders a console-mode preview pane for a playground-ts question, forwards a console-log entry, and clears it (NEE-387)', async () => {
     getQuestionDetail.mockResolvedValue(
       questionDetail({

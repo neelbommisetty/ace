@@ -431,6 +431,10 @@ function RoomInner({
           setProblemOpen((v) => !v);
           break;
         case 'KeyI':
+          // Playground rooms never render the AI panel (nor its expander) —
+          // toggling here would only invisibly flip the persisted
+          // 'ace-ai-open' preference every OTHER room reads (NEE-387).
+          if (playground) break;
           e.preventDefault();
           setAiOpen((v) => !v);
           break;
@@ -446,7 +450,7 @@ function RoomInner({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [setAiOpen]);
+  }, [setAiOpen, playground]);
 
   return (
     <div className="room">
@@ -717,6 +721,7 @@ function RoomInner({
       {shortcutsOpen && (
         <ShortcutsOverlay
           closeBtnRef={shortcutsCloseBtnRef}
+          hideAiPanelRow={playground}
           onClose={() => setShortcutsOpen(false)}
         />
       )}
@@ -750,11 +755,15 @@ const SHORTCUT_ROWS: Array<{ keys: string; desc: string }> = [
 function ShortcutsOverlay({
   onClose,
   closeBtnRef,
+  hideAiPanelRow = false,
 }: {
   onClose: () => void;
   closeBtnRef: RefObject<HTMLButtonElement | null>;
+  /** Playground rooms have no AI panel, so Alt+I is inert there (NEE-387). */
+  hideAiPanelRow?: boolean;
 }) {
   const headingId = useId();
+  const rows = hideAiPanelRow ? SHORTCUT_ROWS.filter((row) => row.keys !== 'Alt + I') : SHORTCUT_ROWS;
   return (
     <Modal labelledBy={headingId} onClose={onClose} canClose initialFocusRef={closeBtnRef}>
       <div className="modal-header">
@@ -766,7 +775,7 @@ function ShortcutsOverlay({
       <div className="modal-body">
         <table className="shortcuts-table">
           <tbody>
-            {SHORTCUT_ROWS.map((row) => (
+            {rows.map((row) => (
               <tr key={row.desc}>
                 <td className="mono shortcuts-keys">{row.keys}</td>
                 <td>{row.desc}</td>
