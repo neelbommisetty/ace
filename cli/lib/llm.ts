@@ -47,7 +47,7 @@ function getGenerateMockPayload() {
   };
 }
 
-function getDisputeMockPayload() {
+export function getDisputeMockPayload() {
   return {
     verdict: 'test_incorrect',
     summary: 'The expected output for one case does not match the problem statement.',
@@ -62,6 +62,10 @@ function getDisputeMockPayload() {
     ],
     fixedTestCode:
       "import { describe, it, expect } from 'vitest';\n\ndescribe('two sum', () => {\n  it('handles duplicate values', () => {\n    const result = [1, 0];\n    expect(result.sort()).toEqual([0, 1]);\n  });\n});\n",
+    // Required-and-nullable (strict structured outputs, NEE-263/NEE-378
+    // class) — the key must be present, so the unused field is an explicit
+    // null, mirroring getGenerateMockPayload above.
+    hint: null,
   };
 }
 

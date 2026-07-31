@@ -20,7 +20,12 @@ const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts'
 // Mirrors the contract in cli/prompts/test-dispute.md.
 const TestVerdictSchema = z.enum(['test_incorrect', 'solution_incorrect', 'ambiguous']);
 
-const DisputeResultSchema = z.object({
+// Optional fields are `.nullable()`, NOT `.nullish()`: OpenAI strict
+// structured outputs require every property to appear in `required`, and a
+// `.nullish()` field is emitted as optional — the codex backend 400s the
+// whole call with invalid_json_schema (NEE-263/NEE-378 class; see
+// gen-pipeline.ts for the same rule).
+export const DisputeResultSchema = z.object({
   verdict: TestVerdictSchema,
   summary: z.string(),
   details: z.string(),
@@ -29,11 +34,11 @@ const DisputeResultSchema = z.object({
       testName: z.string(),
       verdict: TestVerdictSchema,
       explanation: z.string(),
-      fixedAssertion: z.string().nullish(),
+      fixedAssertion: z.string().nullable(),
     }),
   ),
-  fixedTestCode: z.string().nullish(),
-  hint: z.string().nullish(),
+  fixedTestCode: z.string().nullable(),
+  hint: z.string().nullable(),
 });
 
 type DisputeResult = z.infer<typeof DisputeResultSchema>;
