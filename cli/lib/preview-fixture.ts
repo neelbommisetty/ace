@@ -160,7 +160,9 @@ function valueForField(name: string, rawType: string): string {
     // 1 made otherwise-correct solutions auto-dismiss instantly, so the preview
     // looked broken — 5000ms is a humanly-visible default. Checked before the
     // max/min/count checks below: maxDurationMs must hit this rule, not 'max'.
-    if (/ms$/.test(lower) || /duration|delay|timeout|interval/.test(lower)) return '5000';
+    // The suffix check is the capital-M unit suffix on the RAW name — a
+    // case-insensitive ends-with-ms would swallow plurals (maxItems, numForms).
+    if (/[a-z0-9]Ms$/.test(name) || /duration|delay|timeout|interval/.test(lower)) return '5000';
     if (lower.includes('max')) return '10';
     if (lower.includes('min')) return '0';
     if (lower.includes('count') || lower.includes('total')) return '3';

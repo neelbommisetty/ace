@@ -100,9 +100,12 @@ describe('derivePreviewFixture', () => {
       '  minLength?: number;',
       '  itemCount: number;',
       '  score: number;',
+      '  maxItems: number;',
+      '  totalItems: number;',
+      '  numItems: number;',
       '}',
       '',
-      'export function Counters({ maxTags, minLength, itemCount, score }: CountersProps)',
+      'export function Counters({ maxTags, minLength, itemCount, score, maxItems, totalItems, numItems }: CountersProps)',
     ].join('\n');
 
     const result = derivePreviewFixture(signature);
@@ -110,6 +113,11 @@ describe('derivePreviewFixture', () => {
     expect(result.propsCode).toContain('minLength: 0');
     expect(result.propsCode).toContain('itemCount: 3');
     expect(result.propsCode).toContain('score: 1');
+    // Plural names ending in lowercase "ms" are NOT timers — the timer suffix
+    // rule requires the capital-M "Ms" unit, so these stay on the old rules.
+    expect(result.propsCode).toContain('maxItems: 10');
+    expect(result.propsCode).toContain('totalItems: 3');
+    expect(result.propsCode).toContain('numItems: 1');
   });
 
   it('falls back to empty props when the signature has no parseable param type', () => {
