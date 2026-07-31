@@ -574,18 +574,39 @@ describe('step recording (NEE-268)', () => {
   });
 
   it('regenerate context (NEE-386): sends the revision prompt to the model, records the masked twin on the generate slug, and registers the prior spoilers', async () => {
+    // Prior spoiler values DISTINCT from the fresh output's: the pipeline
+    // unconditionally registers the FRESH question's spoilers right after
+    // stage 1, so only strings absent from the fresh output can prove the
+    // regenerate-specific prior-question registration exists at all.
     const priorQuestion: GeneratedQuestion = {
       ...STAGE1,
       title: 'Autosave Queue (prior)',
       slug: 'autosave-queue-prior',
+      referenceSolution: 'PRIOR-ONLY reference solution body — absent from the fresh output\n',
+      interviewerPacket: 'PRIOR-ONLY interviewer packet — absent from the fresh output',
     };
     const freshQuestion: GeneratedQuestion = {
       ...STAGE1,
       title: 'Autosave Queue v2',
       slug: 'autosave-queue-v2',
     };
-    const { llm, calls } = makeLlm([freshQuestion], [AUDIT_NOOP]);
     const { sink, recorded, secrets } = makeStepsSink();
+    const { llm: baseLlm, calls } = makeLlm([freshQuestion], [AUDIT_NOOP]);
+    // Snapshot the registered secrets AT generate-call time: registration
+    // must happen BEFORE the model call — the scrubber exists for a provider
+    // error that echoes the prompt, so it must already know the prior key
+    // when the call fires.
+    let secretsAtGenerateCall: string[] | null = null;
+    const inner = baseLlm.chatObjectStream as unknown as (...args: unknown[]) => Promise<unknown>;
+    const llm = {
+      chatObjectStream: (async (...args: unknown[]) => {
+        const opts = args[3] as { purpose?: string } | undefined;
+        if (opts?.purpose === 'generate' && secretsAtGenerateCall === null) {
+          secretsAtGenerateCall = [...secrets];
+        }
+        return inner(...args);
+      }) as never,
+    };
 
     const result = await generateVerifiedQuestion(
       {
@@ -599,7 +620,8 @@ describe('step recording (NEE-268)', () => {
     const generateCall = calls[0];
     expect(generateCall.purpose).toBe('generate');
     expect(generateCall.user).toContain('## Current Output');
-    expect(generateCall.user).toContain('return {} as never');
+    expect(generateCall.user).toContain('PRIOR-ONLY reference solution body');
+    expect(generateCall.user).toContain('PRIOR-ONLY interviewer packet');
     expect(generateCall.user).toContain('## User Feedback');
     expect(generateCall.user).toContain('Too easy — add an O(n) constraint.');
 
@@ -607,11 +629,14 @@ describe('step recording (NEE-268)', () => {
     const generateStep = recorded[0];
     expect(generateStep.slug).toBe('generate');
     expect(generateStep.prompt).toContain(WITHHELD_MARKER);
-    expect(generateStep.prompt).not.toContain('return {} as never');
+    expect(generateStep.prompt).not.toContain('PRIOR-ONLY');
 
-    // The prior question's spoilers are registered as scrub secrets before the call.
+    // The PRIOR question's exact spoiler strings are registered as scrub
+    // secrets — and were already registered when the model call fired.
     expect(secrets).toContain(priorQuestion.referenceSolution);
     expect(secrets).toContain(priorQuestion.interviewerPacket);
+    expect(secretsAtGenerateCall).toContain(priorQuestion.referenceSolution);
+    expect(secretsAtGenerateCall).toContain(priorQuestion.interviewerPacket);
 
     // No identity pin at stage 1 — the fresh title/slug from the model wins.
     expect(result.question.title).toBe(freshQuestion.title);
