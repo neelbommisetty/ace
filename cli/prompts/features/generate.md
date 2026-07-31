@@ -174,8 +174,12 @@ repairing your previous output, included in that message:
    left above the 60 cap — and `null` only for design/behavioral?
 7. (`react-apps`, `web-components`) Does every string/role/label the tests
    query appear verbatim in the description's `## UI Contract`?
-8. Does the interviewer packet contain all five required sections?
-9. (Behavioral categories) Is `description` a single interviewer-voiced
+8. (`react-apps`, `web-components`) For every scoped query in the tests
+   (`within(...)`, `getAllByRole(...)[i]`): is the scope derivable from
+   the declared `## UI Contract` and description alone — never from your
+   reference solution's DOM shape? If not, loosen the query.
+9. Does the interviewer packet contain all five required sections?
+10. (Behavioral categories) Is `description` a single interviewer-voiced
    prompt with no section headings — never a multi-part scenario? Does
    `competency` match exactly one value from the closed vocabulary, and does
    the difficulty reflect discomfort (a success story vs an owned failure),

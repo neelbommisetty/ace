@@ -89,8 +89,30 @@ Never pad a naturally short question to look bigger than it is.
   fake timers: `vi.useFakeTimers()` in `beforeEach`, `vi.useRealTimers()`
   in `afterEach`, advance with `await vi.advanceTimersByTimeAsync(ms)`
   (the async variant — it flushes microtasks between timer callbacks).
-- Prefer role-based queries (`getByRole('textbox')`,
-  `getAllByRole('option')`) — they double as accessibility assertions.
+- **Query discipline — every query is the LOOSEST query that still
+  verifies the behavior**, one a candidate who read only the description
+  could satisfy:
+  - Prefer role-based queries (`getByRole('textbox')`,
+    `getAllByRole('option')`) — they double as accessibility assertions —
+    and query screen-level by default.
+  - AUTHOR strings to be globally unique. Error/status copy names its
+    subject, so no scoping is ever needed. GOOD: the copy is
+    `Could not remove tag "beta".` and one `screen.getByRole('alert')`
+    finds it. BAD: generic `Removal failed.` copy that forces the test to
+    assert inside one chip's container.
+  - Repeated controls get unique accessible names instead of scoped
+    queries. GOOD: a per-chip `Remove beta` button queried by name. BAD:
+    `within(chip).getByRole('button', { name: 'Remove' })` when naming
+    would do.
+  - `within()` (or indexing `getAllByRole(...)`) only when repetition is
+    inherent (e.g. per-option selected state in a listbox, chip order) AND
+    the scope is a role the `## UI Contract` declares, found via a role
+    query — never by walking tags.
+  - BANNED in tests: `closest()`, `querySelector`/CSS/tag selectors, and
+    container-level `toHaveTextContent` for a string that is globally
+    unique when a screen-level query would already verify the behavior
+    (order checks via `getAllByRole(...)[i]` are role-scoped and fine).
+    Each of these asserts DOM shape the contract never promised.
 - The unimplemented stub renders a `<div>` with an `<h1>` of the question
   title. Every test must fail against that stub: never assert merely that
   something rendered, never query the placeholder heading.
@@ -100,7 +122,11 @@ Never pad a naturally short question to look bigger than it is.
   section enumerating every role+accessible-name, label, placeholder, and
   exact visible string (loading/empty/error states included) that any test
   queries. Tests may only assert roles, labels, placeholders, and strings
-  listed there — nothing invented ad hoc in the test file.
+  listed there — nothing invented ad hoc in the test file. The section
+  stays a FLAT vocabulary — roles, names, and exact strings, plus purely
+  behavioral structure ("one listitem per tag") — and must never grow a
+  containment matrix or prescribe which element wraps which: the DOM shape
+  is the candidate's to choose.
 
 ## Example Test File
 

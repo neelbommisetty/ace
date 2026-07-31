@@ -104,7 +104,27 @@ Never pad a naturally short question to look bigger than it is.
   `await vi.advanceTimersByTimeAsync(ms)` (the async variant flushes
   microtasks). With fake timers, avoid `waitFor`/`findBy*` (they can hang);
   wrap timer advances and promise resolutions in `await act(async () => ...)`.
-- Prefer accessible queries (`getByRole`, `getByLabelText`, `getByText`).
+- **Query discipline — every query is the LOOSEST query that still
+  verifies the behavior**, one a candidate who read only the description
+  could satisfy:
+  - Prefer accessible queries (`getByRole`, `getByLabelText`,
+    `getByText`), screen-level by default.
+  - AUTHOR the question's strings to be globally unique. Error/status copy
+    names its subject, so no scoping is ever needed. GOOD: the copy is
+    `Could not mark Billing alert as read.` and one `screen.getByRole('alert')`
+    finds it. BAD: generic `Save failed.` copy that forces the test to
+    assert inside one row's container.
+  - Repeated actions get unique accessible names instead of scoped
+    queries. GOOD: a `Mark Product launch as read` button queried by name.
+    BAD: `within(row).getByRole('button', { name: 'Mark as read' })` when
+    naming would do.
+  - `within()` only when repetition is inherent (e.g. a per-row
+    Read/Unread status) AND the scope is a role the `## UI Contract`
+    declares, found via a role query — never by walking tags.
+  - BANNED in tests: `closest()`, `querySelector`/CSS/tag selectors, and
+    container-level `toHaveTextContent` for a string that is globally
+    unique — query the string directly with `screen.getByText` instead.
+    Each of these asserts DOM shape the contract never promised.
 - Every expected value carries a derivation comment; every test must fail
   against the starter stub — a test that passes on placeholder JSX (e.g.
   "renders without crashing") is vacuous; never write one.
@@ -113,13 +133,19 @@ Never pad a naturally short question to look bigger than it is.
   visible string — loading, error, and empty states included — that the
   tests query. Tests may assert only strings/roles/labels listed there; a
   test that needs an unlisted one means the description is incomplete, not
-  that the test may reach for something untracked.
+  that the test may reach for something untracked. The section stays a
+  FLAT vocabulary — roles, names, and exact strings, plus purely
+  behavioral structure ("one listitem per notification") — and must never
+  grow a containment matrix or prescribe which element wraps which: the
+  DOM shape is the candidate's to choose.
 
 ## Example Test File
 
 This excerpt is the quality bar (a full file has 6–12 tests) — note the
 per-call latency in `api.ts` controlling response order, the act/fake-timer
-discipline, and the derivation comments. Every test fails against the stub.
+discipline, the derivation comments, and that every query is screen-level:
+the strings are authored globally unique, so no `within()`, `closest()`,
+or container assertion is ever needed. Every test fails against the stub.
 
 `api.ts` sketch (`supportCode` is the complete file — this is the shape,
 not the whole thing):
@@ -199,12 +225,16 @@ describe('App — portal user search', () => {
     fireEvent.change(input, { target: { value: 'bo' } });
     await advance(300); // debounce elapsed — searchUsers('bo') in flight
     await advance(200); // 'bo' latency — first call is the designated failing one
-    expect(screen.getByText('Something went wrong')).toBeInTheDocument();
+    // Error copy names its subject, so both queries stay screen-level:
+    // one alert on screen, one globally unique string — no scoping needed
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(screen.getByText('Could not load results for "bo".')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     // Retry refetches immediately (no debounce on retry); boFailedOnce is
     // now true, so this second call resolves instead of rejecting
     await advance(200);
-    expect(screen.getByText('Bo')).toBeInTheDocument(); // error state cleared
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument(); // error state cleared
+    expect(screen.getByText('Bo')).toBeInTheDocument();
   });
 });
 ```
