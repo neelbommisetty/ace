@@ -18,6 +18,7 @@ import { FreshAttemptDialog } from '../components/FreshAttemptDialog';
 import { Modal } from '../components/Modal';
 import { PreviewPane } from '../components/PreviewPane';
 import { ProblemPane } from '../components/ProblemPane';
+import { RegenerateModal } from '../components/RegenerateModal';
 import { Splitter } from '../components/Splitter';
 import { TestConsole } from '../components/TestConsole';
 import { TopBar } from '../components/TopBar';
@@ -304,6 +305,12 @@ function RoomInner({
     [refAttempt, onReload, flushSaves],
   );
 
+  // "Regenerate with feedback" (NEE-386) — shown only for generated
+  // questions (readonly rooms included, the action is about the question,
+  // not the attempt). The modal itself starts an ordinary generation job;
+  // completion rides the existing GenerationJobStrip + Toast.
+  const [regenOpen, setRegenOpen] = useState(false);
+
   // ---- timer + layout -----------------------------------------------------
   const timer = useActiveTimer(attempt?.id ?? null, attempt?.activeSeconds ?? 0);
   // Below ~900px / ~1150px there isn't room for every pane at once (NEE-290):
@@ -513,6 +520,7 @@ function RoomInner({
                 history={runs.history}
                 disputes={review.disputes}
                 onCollapse={() => setProblemOpen(false)}
+                onRegenerate={question.source === 'generated' ? () => setRegenOpen(true) : undefined}
               />
             </div>
             <Splitter
@@ -695,6 +703,7 @@ function RoomInner({
           onApplied={review.handleDisputeApplied}
         />
       )}
+      {regenOpen && <RegenerateModal question={question} onClose={() => setRegenOpen(false)} />}
       {shortcutsOpen && (
         <ShortcutsOverlay
           closeBtnRef={shortcutsCloseBtnRef}

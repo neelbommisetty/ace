@@ -32,6 +32,7 @@ export function ProblemPane({
   history,
   disputes,
   onCollapse,
+  onRegenerate,
 }: {
   readme: string;
   category: string;
@@ -41,6 +42,8 @@ export function ProblemPane({
   history: TestRunRow[];
   disputes: DisputeRow[];
   onCollapse: () => void;
+  /** Present only for generated questions (NEE-386); opens RegenerateModal. */
+  onRegenerate?: () => void;
 }) {
   const [tab, setTab] = useState<'problem' | 'activity'>('problem');
 
@@ -61,6 +64,15 @@ export function ProblemPane({
             Activity
           </button>
         </div>
+        {onRegenerate && (
+          <button
+            className="btn btn-small"
+            onClick={onRegenerate}
+            title="Regenerate this question with feedback — it is archived when the replacement is ready"
+          >
+            ↻ Regenerate
+          </button>
+        )}
         <button className="icon-btn" onClick={onCollapse} title="Collapse problem pane">
           ◂
         </button>

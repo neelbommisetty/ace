@@ -634,6 +634,21 @@ export function unarchiveQuestion(
   return request(questionPath(category, slug, '/unarchive'), { method: 'POST' });
 }
 
+/** Starts a new generation job that revises `category`/`slug` with `feedback`
+ * (NEE-386) — the source question is archived server-side once the
+ * replacement is done. Returns the new job's id, same shape as a fresh /new
+ * generation job. */
+export function regenerateQuestion(
+  category: string,
+  slug: string,
+  feedback: string,
+): Promise<{ jobId: string }> {
+  return request(questionPath(category, slug, '/regenerate'), {
+    method: 'POST',
+    body: JSON.stringify({ feedback }),
+  });
+}
+
 // ---- live preview (NEE-348/NEE-349) ----------------------------------------
 
 export function getPreviewStatus(): Promise<PreviewStatus> {

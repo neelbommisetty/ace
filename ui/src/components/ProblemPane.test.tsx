@@ -106,3 +106,18 @@ describe('ProblemPane — Activity tab "Past attempt code" (NEE-363)', () => {
     expect(screen.queryByText('Past attempt code')).not.toBeInTheDocument();
   });
 });
+
+describe('ProblemPane — "Regenerate" button (NEE-386)', () => {
+  it('renders when onRegenerate is passed and invokes it on click', () => {
+    const onRegenerate = vi.fn();
+    renderPane({ onRegenerate });
+
+    fireEvent.click(screen.getByRole('button', { name: /regenerate/i }));
+    expect(onRegenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it('is absent when onRegenerate is omitted (manual/starter questions)', () => {
+    renderPane();
+    expect(screen.queryByRole('button', { name: /regenerate/i })).not.toBeInTheDocument();
+  });
+});
