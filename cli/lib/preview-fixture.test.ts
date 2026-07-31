@@ -71,6 +71,47 @@ describe('derivePreviewFixture', () => {
     expect(result.propsCode).toBe('{\n  count: 3,\n}');
   });
 
+  it('seeds timer-named number props with a humanly-visible 5000ms, not the generic 1', () => {
+    const signature = [
+      'interface TimerProps {',
+      '  durationMs: number;',
+      '  delay: number;',
+      '  timeoutMs: number;',
+      '  pollIntervalMs: number;',
+      '  maxDurationMs?: number;',
+      '}',
+      '',
+      'export function Timer({ durationMs, delay, timeoutMs, pollIntervalMs, maxDurationMs }: TimerProps)',
+    ].join('\n');
+
+    const result = derivePreviewFixture(signature);
+    expect(result.propsCode).toContain('durationMs: 5000');
+    expect(result.propsCode).toContain('delay: 5000');
+    expect(result.propsCode).toContain('timeoutMs: 5000');
+    expect(result.propsCode).toContain('pollIntervalMs: 5000');
+    // `max` would otherwise win (-> 10): timer naming takes priority.
+    expect(result.propsCode).toContain('maxDurationMs: 5000');
+  });
+
+  it('keeps the prior number heuristics for non-timer names', () => {
+    const signature = [
+      'interface CountersProps {',
+      '  maxTags?: number;',
+      '  minLength?: number;',
+      '  itemCount: number;',
+      '  score: number;',
+      '}',
+      '',
+      'export function Counters({ maxTags, minLength, itemCount, score }: CountersProps)',
+    ].join('\n');
+
+    const result = derivePreviewFixture(signature);
+    expect(result.propsCode).toContain('maxTags: 10');
+    expect(result.propsCode).toContain('minLength: 0');
+    expect(result.propsCode).toContain('itemCount: 3');
+    expect(result.propsCode).toContain('score: 1');
+  });
+
   it('falls back to empty props when the signature has no parseable param type', () => {
     expect(derivePreviewFixture('export function Empty()')).toEqual({
       componentName: 'Empty',
