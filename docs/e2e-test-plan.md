@@ -58,6 +58,9 @@ Steps: start a deliberately slow test run, then request a reset; verify the rese
 9. Clean server shutdown after a reset
 Steps: perform a reset, then close the server; verify `server.close()` resolves promptly, leaving no dangling watcher or database handles.
 
+10. Playground scratch pads
+Steps: from the Library topbar, open the "Playground ▾" dropdown and choose "React playground"; verify it navigates straight into a new `playground/scratch-N` room with a live preview pane that hot-reloads on save and no Run button, test console, or AI panel. Separately choose "TS playground"; verify it navigates into a `playground-ts/scratch-N` room whose pane is titled "Console", shows the template's hello-world log on load, re-runs (with a fresh log) on save, and reloads via its own "Re-run" button. Confirm neither playground category appears in the `/new` picker or is accepted by the generation API (400), that scratch rows are visible and filterable (via the "Scratch"/"TS Scratch" pills) in the Library and History tables, and that an open playground attempt is never surfaced by the Resume card or the Practice next suggestion.
+
 ## Reporting
 
 Record pass/fail per scenario, exit codes / HTTP statuses, and any unexpected filesystem changes. Attach command and server logs when failures occur.

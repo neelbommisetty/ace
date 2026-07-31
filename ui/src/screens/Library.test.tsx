@@ -52,6 +52,7 @@ const {
   installStarterPack,
   archiveQuestion,
   unarchiveQuestion,
+  createPlayground,
 } = vi.hoisted(() => ({
   getWorkspace: vi.fn(),
   getQuestions: vi.fn(),
@@ -60,6 +61,7 @@ const {
   installStarterPack: vi.fn(),
   archiveQuestion: vi.fn(),
   unarchiveQuestion: vi.fn(),
+  createPlayground: vi.fn(),
 }));
 
 vi.mock('../api', async (importOriginal) => {
@@ -73,6 +75,7 @@ vi.mock('../api', async (importOriginal) => {
     installStarterPack,
     archiveQuestion,
     unarchiveQuestion,
+    createPlayground,
   };
 });
 
@@ -634,6 +637,87 @@ describe('Library', () => {
       fireEvent.click(archiveButton);
 
       expect(archiveQuestion).toHaveBeenCalledWith('js-ts', 'missing-question');
+    });
+  });
+
+  // NEE-387: the zero-LLM "Playground ▾" scratch-pad entry point.
+  describe('Playground dropdown (NEE-387)', () => {
+    it('renders the dropdown button and lists the Scratch category pill', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue([question()]);
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibrary();
+
+      await findRoomLink('Closures and Scope');
+      expect(screen.getByRole('button', { name: 'Playground ▾' })).toBeInTheDocument();
+      // Documents the deliberate inclusion (NEE-387 decision: playgrounds
+      // show up in the Library filter pills like any other category).
+      expect(screen.getByRole('button', { name: 'Scratch' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'React playground' })).toBeNull();
+    });
+
+    it('choosing "TS playground" creates it and navigates to its room', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue([]);
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      createPlayground.mockResolvedValue({ category: 'playground-ts', slug: 'scratch-1' });
+      render(
+        <MemoryRouter initialEntries={['/']}>
+          <Routes>
+            <Route path="/" element={<Library />} />
+            <Route path="/q/:category/:slug" element={<div>Room for question</div>} />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      await screen.findByText('No questions yet');
+      fireEvent.click(screen.getByRole('button', { name: 'Playground ▾' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'TS playground' }));
+
+      expect(createPlayground).toHaveBeenCalledWith('ts');
+      expect(await screen.findByText('Room for question')).toBeInTheDocument();
+    });
+
+    it('disables both menu items while the create request is pending', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue([]);
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      let resolveCreate: (result: { category: string; slug: string }) => void = () => {};
+      createPlayground.mockReturnValue(
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+      renderLibrary();
+
+      await screen.findByText('No questions yet');
+      fireEvent.click(screen.getByRole('button', { name: 'Playground ▾' }));
+      const reactItem = await screen.findByRole('button', { name: 'React playground' });
+      const tsItem = screen.getByRole('button', { name: 'TS playground' });
+
+      fireEvent.click(reactItem);
+      expect(reactItem).toBeDisabled();
+      expect(tsItem).toBeDisabled();
+
+      await act(async () => {
+        resolveCreate({ category: 'playground', slug: 'scratch-1' });
+        await Promise.resolve();
+      });
+    });
+
+    it('closes the menu on outside click', async () => {
+      getWorkspace.mockResolvedValue(WORKSPACE_INFO);
+      getQuestions.mockResolvedValue([question()]);
+      getGenerationJobs.mockResolvedValue({ jobs: [] });
+      renderLibrary();
+
+      await findRoomLink('Closures and Scope');
+      fireEvent.click(screen.getByRole('button', { name: 'Playground ▾' }));
+      expect(screen.getByRole('button', { name: 'React playground' })).toBeInTheDocument();
+
+      fireEvent.mouseDown(document.body);
+
+      expect(screen.queryByRole('button', { name: 'React playground' })).toBeNull();
     });
   });
 

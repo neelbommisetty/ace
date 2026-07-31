@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import {
   archiveQuestion,
+  createPlayground,
   getGenerationJobs,
   getQuestions,
   getSettings,
@@ -33,6 +34,7 @@ import type { QuestionWithStats, SettingsInfo, WorkspaceInfo } from '../types';
 const SEARCH_DEBOUNCE_MS = 300;
 
 export function Library() {
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [questions, setQuestions] = useState<QuestionWithStats[] | null>(null);
@@ -112,6 +114,12 @@ export function Library() {
   const [settings, setSettings] = useState<SettingsInfo | null>(null);
   const [addingSamples, setAddingSamples] = useState(false);
   const [samplesNote, setSamplesNote] = useState<string | null>(null);
+  // 'Playground ▾' topbar dropdown (NEE-387): a zero-LLM scratch pad, so the
+  // only async state is the scaffold POST itself — no refetch needed since a
+  // successful create navigates straight into the new room.
+  const [playgroundMenuOpen, setPlaygroundMenuOpen] = useState(false);
+  const [creatingPlayground, setCreatingPlayground] = useState(false);
+  const playgroundMenuRef = useRef<HTMLDivElement>(null);
   // Tracked by job id (not a running +/-1 counter) so a missed/reordered SSE
   // event can't permanently skew the count, and so the seed fetch below can
   // merge with — rather than clobber — whatever the live SSE handlers have
@@ -180,6 +188,37 @@ export function Library() {
         setAddingSamples(false);
       });
   }, [refetch]);
+
+  // Close on outside click — mirrors TestConsole's CaseKebab pattern.
+  useEffect(() => {
+    if (!playgroundMenuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (playgroundMenuRef.current != null && !playgroundMenuRef.current.contains(e.target as Node)) {
+        setPlaygroundMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [playgroundMenuOpen]);
+
+  const handleCreatePlayground = useCallback(
+    (kind: 'react' | 'ts') => {
+      setCreatingPlayground(true);
+      createPlayground(kind)
+        .then(({ category, slug }) => {
+          setPlaygroundMenuOpen(false);
+          navigate(`/q/${category}/${slug}`);
+        })
+        .catch((e: unknown) => {
+          setPlaygroundMenuOpen(false);
+          setError(e instanceof Error ? e.message : 'Failed to create the playground');
+        })
+        .finally(() => {
+          setCreatingPlayground(false);
+        });
+    },
+    [navigate],
+  );
 
   useEffect(() => {
     getGenerationJobs()
@@ -304,6 +343,33 @@ export function Library() {
               {generatingCount} generating…
             </span>
           )}
+          <div className="playground-menu-wrap" ref={playgroundMenuRef}>
+            <button
+              className="btn btn-small"
+              onClick={() => setPlaygroundMenuOpen((v) => !v)}
+              title="Scaffold a zero-LLM scratch pad — nothing here is graded"
+            >
+              Playground ▾
+            </button>
+            {playgroundMenuOpen && (
+              <div className="playground-menu">
+                <button
+                  className="playground-menu-item"
+                  disabled={creatingPlayground}
+                  onClick={() => handleCreatePlayground('react')}
+                >
+                  React playground
+                </button>
+                <button
+                  className="playground-menu-item"
+                  disabled={creatingPlayground}
+                  onClick={() => handleCreatePlayground('ts')}
+                >
+                  TS playground
+                </button>
+              </div>
+            )}
+          </div>
           {workspace != null && (
             <button
               className="workspace-switch-btn mono"
