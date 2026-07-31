@@ -428,4 +428,81 @@ describe('Room live preview pane — react-group gating (NEE-349)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Preview/ }));
     expect(await screen.findByText('boom from the preview')).toBeInTheDocument();
   });
+
+  it('offers the live preview for a playground question but hides Run, the test console, and the AI panel (NEE-387)', async () => {
+    getQuestionDetail.mockResolvedValue(
+      questionDetail({
+        question: questionRow({
+          category: 'playground',
+          slug: 'scratch-1',
+          source: 'manual',
+          dirPath: 'questions/playground/scratch-1',
+        }),
+        files: [{ name: 'App.tsx', relPath: 'App.tsx', kind: 'solution', readonly: false }],
+      }),
+    );
+
+    renderRoom('/q/playground/scratch-1');
+
+    await screen.findByTestId('editor-file:///App.tsx');
+    await waitFor(() => expect(openPreview).toHaveBeenCalled());
+    expect(await screen.findByTitle('Live preview')).toHaveAttribute(
+      'src',
+      'http://127.0.0.1:5199/preview/playground/scratch-1/',
+    );
+
+    expect(screen.queryByTitle('Run tests (⌘/Ctrl+Enter)')).toBeNull();
+    expect(screen.queryByTitle('Show test console')).toBeNull();
+    expect(screen.queryByText('Tests ▴')).toBeNull();
+    expect(screen.queryByTitle('Show AI review panel')).toBeNull();
+  });
+
+  it('renders a console-mode preview pane for a playground-ts question, forwards a console-log entry, and clears it (NEE-387)', async () => {
+    getQuestionDetail.mockResolvedValue(
+      questionDetail({
+        question: questionRow({
+          category: 'playground-ts',
+          slug: 'scratch-1',
+          source: 'manual',
+          dirPath: 'questions/playground-ts/scratch-1',
+        }),
+        files: [{ name: 'index.ts', relPath: 'index.ts', kind: 'solution', readonly: false }],
+      }),
+    );
+
+    renderRoom('/q/playground-ts/scratch-1');
+
+    await screen.findByTestId('editor-file:///index.ts');
+    await waitFor(() => expect(openPreview).toHaveBeenCalled());
+
+    const frame = await screen.findByTitle('Live preview');
+    expect(frame).toHaveClass('preview-frame-hidden');
+    expect(screen.getByText('Console')).toBeInTheDocument();
+    expect(screen.queryByTitle('Mobile width')).toBeNull();
+
+    // Let the Preview pane's message listener attach (keyed off previewOrigin,
+    // computed from the same commit that paints the iframe — see the
+    // forwarding test above for why the settle tick is needed).
+    await new Promise((r) => setTimeout(r, 0));
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: {
+            source: 'ace-preview',
+            kind: 'console-log',
+            text: 'hello from the TS playground',
+            file: null,
+            line: null,
+          },
+          origin: 'http://127.0.0.1:5199',
+        }),
+      );
+    });
+
+    expect(await screen.findByText('hello from the TS playground')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle('Clear console'));
+    expect(screen.queryByText('hello from the TS playground')).toBeNull();
+  });
 });

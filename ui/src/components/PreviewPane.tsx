@@ -1,5 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
+import type { PreviewConsoleEntry } from '../hooks/usePreviewConsole';
 import type { PreviewStatus } from '../types';
+import { PreviewTab } from './TestConsole';
 
 export type PreviewViewport = 'mobile' | 'tablet' | 'full';
 
@@ -24,16 +26,24 @@ function previewPagePath(category: string, slug: string): string {
 
 /**
  * Live preview pane (NEE-349): an iframe pointed at the workspace's Vite dev
- * server for the current question. Rendered only for react-group questions
- * (Room.tsx derives that from the category registry — never a hardcoded
- * list here). Read-only by nature, so it renders the same whether the room
- * itself is a live attempt or a solved read-only reference.
+ * server for the current question. Rendered only for previewable questions
+ * (Room.tsx derives that from the category registry's `preview` field —
+ * never a hardcoded list here). Read-only by nature, so it renders the same
+ * whether the room itself is a live attempt or a solved read-only reference.
  *
  * The iframe's `key` is `${category}/${slug}` ONLY — it must never remount
  * on every keystroke or every autosave. Vite's own HMR keeps the mounted
  * page current; a manual "reload" is a real navigation
  * (`contentWindow.location.reload()`), not a React remount, so it can't
  * fight HMR or loop against the save debounce.
+ *
+ * `mode: 'import'` (NEE-387, e.g. playground-ts) is a console-first variant
+ * for categories with nothing to mount visually: the iframe still MOUNTS
+ * (it's what actually executes the code — no other runner exists) but stays
+ * visually hidden, and the pane's body becomes a scrollable console over
+ * `consoleEntries` reusing TestConsole's own `PreviewTab` renderer rather
+ * than forking a second one. Everyone else (mode 'mount', the default) keeps
+ * the original visible-iframe behaviour untouched.
  */
 export function PreviewPane({
   category,
@@ -42,6 +52,9 @@ export function PreviewPane({
   onRetry,
   flushSaves,
   onCollapse,
+  mode = 'mount',
+  consoleEntries,
+  onClearConsole,
 }: {
   category: string;
   slug: string;
@@ -52,10 +65,20 @@ export function PreviewPane({
    * content is what gets served, never one debounce behind. */
   flushSaves: () => Promise<void>;
   onCollapse: () => void;
+  /** 'import' (NEE-387): console-mode variant — hidden iframe + a scrollable
+   * console instead of a visible frame. Defaults to 'mount', the original
+   * (and only) behaviour before NEE-387. */
+  mode?: 'mount' | 'import';
+  /** Forwarded console/error entries (usePreviewConsole) — only rendered
+   * (and only meaningful) in 'import' mode. */
+  consoleEntries?: PreviewConsoleEntry[];
+  /** Clears `consoleEntries` — only rendered in 'import' mode. */
+  onClearConsole?: () => void;
 }) {
   const [viewport, setViewport] = useState<PreviewViewport>('full');
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const pageUrl = status.state === 'ready' && status.url != null ? status.url + previewPagePath(category, slug) : null;
+  const isConsole = mode === 'import';
 
   const handleReload = useCallback(() => {
     void (async () => {
@@ -80,25 +103,27 @@ export function PreviewPane({
   return (
     <aside className="preview-pane">
       <div className="pane-header">
-        <span className="pane-title">Preview</span>
+        <span className="pane-title">{isConsole ? 'Console' : 'Preview'}</span>
         <div className="ai-header-actions">
-          <div className="preview-viewport-toggle" role="group" aria-label="Preview viewport width">
-            {(['mobile', 'tablet', 'full'] as const).map((mode) => (
-              <button
-                key={mode}
-                className={`preview-viewport-btn ${viewport === mode ? 'active' : ''}`}
-                onClick={() => setViewport(mode)}
-                title={`${mode[0].toUpperCase()}${mode.slice(1)} width`}
-                aria-pressed={viewport === mode}
-              >
-                {mode === 'mobile' ? '📱' : mode === 'tablet' ? '📟' : '🖥️'}
-              </button>
-            ))}
-          </div>
+          {!isConsole && (
+            <div className="preview-viewport-toggle" role="group" aria-label="Preview viewport width">
+              {(['mobile', 'tablet', 'full'] as const).map((vp) => (
+                <button
+                  key={vp}
+                  className={`preview-viewport-btn ${viewport === vp ? 'active' : ''}`}
+                  onClick={() => setViewport(vp)}
+                  title={`${vp[0].toUpperCase()}${vp.slice(1)} width`}
+                  aria-pressed={viewport === vp}
+                >
+                  {vp === 'mobile' ? '📱' : vp === 'tablet' ? '📟' : '🖥️'}
+                </button>
+              ))}
+            </div>
+          )}
           <button
             className="icon-btn"
             onClick={handleReload}
-            title="Reload the preview (flushes unsaved edits first)"
+            title={isConsole ? 'Re-run (reloads the sandbox)' : 'Reload the preview (flushes unsaved edits first)'}
             disabled={status.state !== 'ready'}
           >
             ⟲
@@ -111,6 +136,11 @@ export function PreviewPane({
           >
             ↗
           </button>
+          {isConsole && (
+            <button className="icon-btn" onClick={onClearConsole} title="Clear console">
+              ⊘
+            </button>
+          )}
           <button className="icon-btn" onClick={onCollapse} title="Collapse preview pane">
             ✕
           </button>
@@ -118,16 +148,31 @@ export function PreviewPane({
       </div>
       <div className="preview-body">
         {status.state === 'ready' && pageUrl != null ? (
-          <div className="preview-frame-wrap" data-viewport={viewport}>
-            <iframe
-              key={`${category}/${slug}`}
-              ref={iframeRef}
-              src={pageUrl}
-              title="Live preview"
-              className="preview-frame"
-              style={emulatedWidth != null ? { width: `${emulatedWidth}px` } : undefined}
-            />
-          </div>
+          isConsole ? (
+            <>
+              <iframe
+                key={`${category}/${slug}`}
+                ref={iframeRef}
+                src={pageUrl}
+                title="Live preview"
+                className="preview-frame preview-frame-hidden"
+              />
+              <div className="preview-console-surface">
+                <PreviewTab entries={consoleEntries ?? []} />
+              </div>
+            </>
+          ) : (
+            <div className="preview-frame-wrap" data-viewport={viewport}>
+              <iframe
+                key={`${category}/${slug}`}
+                ref={iframeRef}
+                src={pageUrl}
+                title="Live preview"
+                className="preview-frame"
+                style={emulatedWidth != null ? { width: `${emulatedWidth}px` } : undefined}
+              />
+            </div>
+          )
         ) : (
           <PreviewStatusNotice status={status} onRetry={onRetry} />
         )}

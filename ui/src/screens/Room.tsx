@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { RefObject } from 'react';
 import type { OnMount } from '@monaco-editor/react';
 import { Link, useParams, useSearchParams } from 'react-router';
-import { lookupCategoryConfig } from '@shared/categories';
+import { isPlayground, lookupCategoryConfig } from '@shared/categories';
 import {
   ApiError,
   createOrResumeAttempt,
@@ -325,10 +325,16 @@ function RoomInner({
   // against the current window size on mount and resize.
   const layout = usePaneLayout();
 
-  // ---- live preview (NEE-349/NEE-351) --------------------------------------
-  // Derived from the category registry, never a hardcoded category list:
-  // only web-components/react-apps (group 'react') have anything to mount.
-  const isReactGroup = lookupCategoryConfig(question.category)?.group === 'react';
+  // ---- live preview (NEE-349/NEE-351/NEE-387) ------------------------------
+  // Derived from the category registry, never a hardcoded category list.
+  // `preview` (mount/import/none) drives whether — and how — this category
+  // live-previews; `generatable` (via isPlayground) is an independent axis
+  // (playground-ts previews via 'import' but is a playground; web-components
+  // previews via 'mount' but is not) that instead drives hiding the AI panel.
+  const categoryConfig = lookupCategoryConfig(question.category);
+  const previewMode = categoryConfig?.preview ?? 'none';
+  const showPreview = previewMode !== 'none';
+  const playground = categoryConfig != null && isPlayground(categoryConfig);
   const [previewOpen, setPreviewOpen] = useLocalStorageState('ace-preview-open', true);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>(STOPPED_PREVIEW_STATUS);
   useSseEvent('preview-status', setPreviewStatus);
@@ -340,7 +346,7 @@ function RoomInner({
   // async result that could race the optimistic 'starting' update below and
   // clobber it back to a stale value.
   const startPreview = useCallback(() => {
-    if (!isReactGroup) return;
+    if (!showPreview) return;
     // Optimistic: the server's own 'starting' status arrives over SSE too,
     // but that event and this fetch's resolution race — setting it here
     // means the pane never sits blank while POST /api/preview/open is
@@ -355,7 +361,7 @@ function RoomInner({
           reason: e instanceof Error ? e.message : 'Failed to start the preview server',
         });
       });
-  }, [isReactGroup]);
+  }, [showPreview]);
 
   // Lazily starts the dev server the first time the pane is open for this
   // question — a ref guard (not `previewStatus.state`) so a later failure
@@ -363,10 +369,10 @@ function RoomInner({
   // that. Idempotent server-side when it's already running/starting.
   const autoStartedPreview = useRef(false);
   useEffect(() => {
-    if (!isReactGroup || !previewOpen || autoStartedPreview.current) return;
+    if (!showPreview || !previewOpen || autoStartedPreview.current) return;
     autoStartedPreview.current = true;
     startPreview();
-  }, [isReactGroup, previewOpen, startPreview]);
+  }, [showPreview, previewOpen, startPreview]);
 
   const previewOrigin =
     previewStatus.state === 'ready' && previewStatus.url != null ? new URL(previewStatus.url).origin : null;
@@ -380,9 +386,9 @@ function RoomInner({
   // whenever the file buffers change, and this effect should fire only on
   // an actual open transition, not on every keystroke's autosave churn.
   useEffect(() => {
-    if (isReactGroup && previewOpen) void flushSaves();
+    if (showPreview && previewOpen) void flushSaves();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isReactGroup, previewOpen]);
+  }, [showPreview, previewOpen]);
 
   // ---- keyboard shortcuts overlay + pane-toggle bindings (NEE-309) --------
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -587,7 +593,7 @@ function RoomInner({
                   onDispute={(testName) => {
                     if (runs.lastRun != null) review.openDispute(runs.lastRun.runId, testName);
                   }}
-                  showPreviewTab={isReactGroup}
+                  showPreviewTab={showPreview}
                   previewEntries={previewConsole.entries}
                 />
               </div>
@@ -616,7 +622,7 @@ function RoomInner({
               </button>
             ))}
         </div>
-        {isReactGroup &&
+        {showPreview &&
           (previewOpen ? (
             <>
               <Splitter
@@ -640,6 +646,9 @@ function RoomInner({
                   onRetry={startPreview}
                   flushSaves={flushSaves}
                   onCollapse={() => setPreviewOpen(false)}
+                  mode={previewMode === 'import' ? 'import' : 'mount'}
+                  consoleEntries={previewConsole.entries}
+                  onClearConsole={previewConsole.clear}
                 />
               </div>
             </>
@@ -652,47 +661,48 @@ function RoomInner({
               ▸
             </button>
           ))}
-        {aiOpen ? (
-          <>
-            <Splitter
-              orientation="vertical"
-              label="Resize AI panel"
-              valueNow={layout.aiWidth ?? PANE_DEFAULT_WIDTH.ai}
-              valueMin={layout.aiMin}
-              valueMax={layout.paneMax}
-              onResize={(deltaPx) => layout.resizeAi(-deltaPx)}
-              onReset={layout.resetAi}
-            />
-            <div
-              ref={layout.aiRef}
-              className="pane-slot-ai"
-              style={layout.aiWidth != null ? { width: `${layout.aiWidth}px` } : undefined}
-            >
-              <AiPanel
-                question={question}
-                reviews={review.reviews}
-                stream={review.reviewStream}
-                notice={review.reviewNotice}
-                justDoneId={review.justDoneId}
-                settings={review.settings}
-                onRequest={readonly ? undefined : review.requestReview}
-                probeSets={review.probeSets}
-                probesRunning={review.probesRunning}
-                probeNotice={review.probeNotice}
-                onRequestProbes={readonly ? undefined : review.requestProbes}
-                onCollapse={() => setAiOpen(false)}
+        {!playground &&
+          (aiOpen ? (
+            <>
+              <Splitter
+                orientation="vertical"
+                label="Resize AI panel"
+                valueNow={layout.aiWidth ?? PANE_DEFAULT_WIDTH.ai}
+                valueMin={layout.aiMin}
+                valueMax={layout.paneMax}
+                onResize={(deltaPx) => layout.resizeAi(-deltaPx)}
+                onReset={layout.resetAi}
               />
-            </div>
-          </>
-        ) : (
-          <button
-            className="pane-expander pane-expander-right"
-            onClick={() => setAiOpen(true)}
-            title="Show AI review panel"
-          >
-            ◂
-          </button>
-        )}
+              <div
+                ref={layout.aiRef}
+                className="pane-slot-ai"
+                style={layout.aiWidth != null ? { width: `${layout.aiWidth}px` } : undefined}
+              >
+                <AiPanel
+                  question={question}
+                  reviews={review.reviews}
+                  stream={review.reviewStream}
+                  notice={review.reviewNotice}
+                  justDoneId={review.justDoneId}
+                  settings={review.settings}
+                  onRequest={readonly ? undefined : review.requestReview}
+                  probeSets={review.probeSets}
+                  probesRunning={review.probesRunning}
+                  probeNotice={review.probeNotice}
+                  onRequestProbes={readonly ? undefined : review.requestProbes}
+                  onCollapse={() => setAiOpen(false)}
+                />
+              </div>
+            </>
+          ) : (
+            <button
+              className="pane-expander pane-expander-right"
+              onClick={() => setAiOpen(true)}
+              title="Show AI review panel"
+            >
+              ◂
+            </button>
+          ))}
       </div>
       {review.disputeModal != null && (
         <DisputeModal

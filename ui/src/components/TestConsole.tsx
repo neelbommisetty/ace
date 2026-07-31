@@ -206,8 +206,11 @@ const PREVIEW_KIND_LABEL: Record<PreviewConsoleEntry['kind'], string> = {
 };
 
 /** NEE-351: preview console/error entries — a Preview tab sharing this same
- * console component with test output rather than forking a second one. */
-function PreviewTab({ entries }: { entries: PreviewConsoleEntry[] }) {
+ * console component with test output rather than forking a second one.
+ * Exported (NEE-387) so PreviewPane's console-mode variant (import-mode
+ * categories like playground-ts, which have no TestConsole at all since
+ * hasTests is false) can reuse the exact same rendering. */
+export function PreviewTab({ entries }: { entries: PreviewConsoleEntry[] }) {
   if (entries.length === 0) {
     return <div className="pane-empty">No preview activity yet — console output and errors from the live preview will show up here.</div>;
   }

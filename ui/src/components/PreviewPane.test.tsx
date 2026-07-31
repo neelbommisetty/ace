@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { PreviewPane } from './PreviewPane';
+import type { PreviewConsoleEntry } from '../hooks/usePreviewConsole';
 import type { PreviewStatus } from '../types';
 
 const READY: PreviewStatus = { state: 'ready', url: 'http://127.0.0.1:5199', reason: null };
@@ -98,5 +99,55 @@ describe('PreviewPane (NEE-349)', () => {
     const frame = screen.getByTitle('Live preview');
     rerender(<PreviewPane {...baseProps} status={READY} flushSaves={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.getByTitle('Live preview')).toBe(frame);
+  });
+});
+
+const CONSOLE_ENTRIES: PreviewConsoleEntry[] = [
+  { id: 1, kind: 'console-log', text: 'hello from the console', file: null, line: null, count: 1, at: 0 },
+];
+
+describe('PreviewPane console mode (NEE-387)', () => {
+  it('renders a "Console" header, PreviewTab entries, Re-run, and Clear — no viewport toggle', () => {
+    const onClearConsole = vi.fn();
+    render(
+      <PreviewPane
+        {...baseProps}
+        status={READY}
+        mode="import"
+        consoleEntries={CONSOLE_ENTRIES}
+        onClearConsole={onClearConsole}
+      />,
+    );
+
+    expect(screen.getByText('Console')).toBeInTheDocument();
+    expect(screen.getByText('hello from the console')).toBeInTheDocument();
+    expect(screen.queryByTitle('Mobile width')).toBeNull();
+    expect(screen.getByTitle('Re-run (reloads the sandbox)')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle('Clear console'));
+    expect(onClearConsole).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the iframe mounted (it executes the code) but visually hidden', () => {
+    render(<PreviewPane {...baseProps} status={READY} mode="import" consoleEntries={[]} />);
+    const frame = screen.getByTitle('Live preview');
+    expect(frame).toHaveClass('preview-frame-hidden');
+  });
+
+  it('keeps the iframe stable across consoleEntries prop updates (key stability)', () => {
+    const { rerender } = render(
+      <PreviewPane {...baseProps} status={READY} mode="import" consoleEntries={[]} />,
+    );
+    const frame = screen.getByTitle('Live preview');
+    rerender(<PreviewPane {...baseProps} status={READY} mode="import" consoleEntries={CONSOLE_ENTRIES} />);
+    expect(screen.getByTitle('Live preview')).toBe(frame);
+  });
+
+  it('defaults to the original mount rendering when mode is omitted (regression pin for the new optional props)', () => {
+    render(<PreviewPane {...baseProps} status={READY} />);
+    const frame = screen.getByTitle('Live preview');
+    expect(frame).not.toHaveClass('preview-frame-hidden');
+    expect(screen.getByText('Preview')).toBeInTheDocument();
+    expect(screen.getByTitle('Mobile width')).toBeInTheDocument();
   });
 });

@@ -1829,6 +1829,25 @@ code {
   border-right: 1px solid var(--line);
 }
 
+/* ---- console-mode preview pane (NEE-387) ---------------------------------
+ * Import-mode categories (e.g. playground-ts) have nothing to mount — the
+ * iframe still needs to MOUNT (it's what actually executes the code), but
+ * stays out of the visible layout instead of rendering a blank canvas.
+ * Deliberately NOT display:none — an unloaded/unrendered iframe would never
+ * execute the module it's there to run. */
+.preview-frame-hidden {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border: 0;
+  visibility: hidden;
+}
+
+.preview-console-surface {
+  flex: 1;
+  overflow: auto;
+}
+
 .preview-status {
   margin: auto;
   max-width: 420px;
