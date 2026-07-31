@@ -1,4 +1,6 @@
-node_modules/
+# No trailing slash: worktree checkouts symlink node_modules to the main
+# repo's, and "node_modules/" matches only real directories, not the symlink.
+node_modules
 dist/
 *.tsbuildinfo
 *.tgz
