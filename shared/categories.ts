@@ -17,13 +17,18 @@ export type CategorySlug =
   | 'design-fe'
   | 'design-be'
   | 'design-full'
-  | 'behavioral';
+  | 'behavioral'
+  | 'playground'
+  | 'playground-ts';
 
 export type Difficulty = 'easy' | 'medium' | 'hard';
 
 export type QuestionType = 'coding' | 'design' | 'behavioral';
 
 export type CategoryGroup = 'react' | 'js-ts' | 'leetcode' | 'design' | 'behavioral';
+
+/** Whether — and how — a category's solution is live-previewed (NEE-387). */
+export type PreviewMode = 'mount' | 'import' | 'none';
 
 export interface CategoryConfig {
   slug: CategorySlug;
@@ -38,6 +43,10 @@ export interface CategoryConfig {
   /** LLM-authored read-only support code (e.g. a fake API module) shared by the solution, tests, and the live preview. */
   supportFiles: string[];
   templateDir: string;
+  /** False for the zero-LLM "playground" categories — excludes the slug from every generation surface. */
+  generatable: boolean;
+  /** Whether — and how — this category's solution is live-previewed. */
+  preview: PreviewMode;
 }
 
 export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
@@ -53,6 +62,8 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     testFiles: ['solution.test.ts'],
     supportFiles: [],
     templateDir: 'js-ts',
+    generatable: true,
+    preview: 'none',
   },
   'web-components': {
     slug: 'web-components',
@@ -66,6 +77,8 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     testFiles: ['Component.test.tsx'],
     supportFiles: [],
     templateDir: 'web-components',
+    generatable: true,
+    preview: 'mount',
   },
   'react-apps': {
     slug: 'react-apps',
@@ -79,6 +92,8 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     testFiles: ['App.test.tsx'],
     supportFiles: ['api.ts'],
     templateDir: 'react-apps',
+    generatable: true,
+    preview: 'mount',
   },
   'leetcode-ds': {
     slug: 'leetcode-ds',
@@ -92,6 +107,8 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     testFiles: ['solution.test.ts'],
     supportFiles: [],
     templateDir: 'leetcode-ds',
+    generatable: true,
+    preview: 'none',
   },
   'leetcode-algo': {
     slug: 'leetcode-algo',
@@ -105,6 +122,8 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     testFiles: ['solution.test.ts'],
     supportFiles: [],
     templateDir: 'leetcode-algo',
+    generatable: true,
+    preview: 'none',
   },
   'design-fe': {
     slug: 'design-fe',
@@ -118,6 +137,8 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     testFiles: [],
     supportFiles: [],
     templateDir: 'design',
+    generatable: true,
+    preview: 'none',
   },
   'design-be': {
     slug: 'design-be',
@@ -131,6 +152,8 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     testFiles: [],
     supportFiles: [],
     templateDir: 'design',
+    generatable: true,
+    preview: 'none',
   },
   'design-full': {
     slug: 'design-full',
@@ -144,6 +167,8 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     testFiles: [],
     supportFiles: [],
     templateDir: 'design',
+    generatable: true,
+    preview: 'none',
   },
   behavioral: {
     slug: 'behavioral',
@@ -157,10 +182,47 @@ export const CATEGORIES: Record<CategorySlug, CategoryConfig> = {
     testFiles: [],
     supportFiles: [],
     templateDir: 'behavioral',
+    generatable: true,
+    preview: 'none',
+  },
+  playground: {
+    slug: 'playground',
+    name: 'React Playground',
+    shortName: 'Scratch',
+    hint: 'Blank React canvas — live preview, no tests',
+    type: 'coding',
+    group: 'react',
+    suggestedTimes: { easy: 30, medium: 30, hard: 30 },
+    solutionFiles: ['App.tsx'],
+    testFiles: [],
+    supportFiles: [],
+    templateDir: 'playground',
+    generatable: false,
+    preview: 'mount',
+  },
+  'playground-ts': {
+    slug: 'playground-ts',
+    name: 'TS Playground',
+    shortName: 'TS Scratch',
+    hint: 'Plain TypeScript — run and watch the console, no DOM',
+    type: 'coding',
+    group: 'js-ts',
+    suggestedTimes: { easy: 30, medium: 30, hard: 30 },
+    solutionFiles: ['index.ts'],
+    testFiles: [],
+    supportFiles: [],
+    templateDir: 'playground-ts',
+    generatable: false,
+    preview: 'import',
   },
 };
 
 export const CATEGORY_SLUGS = Object.keys(CATEGORIES) as CategorySlug[];
+
+/** Slugs the generation/brainstorm LLM surfaces may emit or be told about — excludes the playground categories. */
+export const GENERATABLE_CATEGORY_SLUGS = CATEGORY_SLUGS.filter(
+  (slug) => CATEGORIES[slug].generatable,
+);
 
 export function getCategoryConfig(slug: CategorySlug): CategoryConfig {
   return CATEGORIES[slug];
@@ -188,6 +250,11 @@ export function hasTests(config: CategoryConfig): boolean {
 /** True when the candidate's answer is a single markdown document, not code. */
 export function isProseAnswer(config: CategoryConfig): boolean {
   return config.solutionFiles.length > 0 && config.solutionFiles.every((f) => f.endsWith('.md'));
+}
+
+/** True for the zero-LLM "playground" categories — scratch pads, never generated or reviewed. */
+export function isPlayground(config: CategoryConfig): boolean {
+  return !config.generatable;
 }
 
 export function slugify(text: string): string {

@@ -1,6 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { CATEGORY_SLUGS, getCategoryConfig, type CategorySlug, type QuestionType } from './categories.js';
+import {
+  GENERATABLE_CATEGORY_SLUGS,
+  getCategoryConfig,
+  type CategorySlug,
+  type QuestionType,
+} from './categories.js';
 import { getImportMetaDirname } from './import-meta.js';
 
 const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
@@ -165,7 +170,7 @@ export function buildQuestionSection(questionMd: string): string {
  * category capsules, since brainstorm conversations span categories.
  */
 export function buildBrainstormPrompt(): string {
-  const digest = CATEGORY_SLUGS.map((slug) => {
+  const digest = GENERATABLE_CATEGORY_SLUGS.map((slug) => {
     const config = getCategoryConfig(slug);
     const capsuleRelPath = `categories/${slug}.md`;
     const sections = parseCapsuleSections(readPromptFile(capsuleRelPath));

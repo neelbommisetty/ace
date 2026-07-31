@@ -39,7 +39,7 @@ import type {
   TestRunSummary,
   TestRunTrigger,
 } from './types.js';
-import { CATEGORIES, CATEGORY_SLUGS, hasTests } from '../lib/categories.js';
+import { CATEGORIES, CATEGORY_SLUGS, hasTests, isPlayground } from '../lib/categories.js';
 import { isPositiveVerdict } from '../../shared/verdicts.js';
 import { nowIso, uuidv7 } from './ids.js';
 import { MIGRATIONS } from './migrations.js';
@@ -58,6 +58,14 @@ const SCHEMA_VERSION_KEY = 'schema_version';
  * changes.
  */
 const NO_TEST_CATEGORY_SLUGS = CATEGORY_SLUGS.filter((slug) => !hasTests(CATEGORIES[slug]));
+
+/**
+ * Playground category slugs (NEE-387) — scratch pads whose attempt never
+ * ends, so they must never occupy the single-attempt "resume" choke point
+ * (getLatestActiveAttempt, below) or the practice-next recommender.
+ * Computed once from `CATEGORIES`, same pattern as `NO_TEST_CATEGORY_SLUGS`.
+ */
+const PLAYGROUND_CATEGORY_SLUGS = CATEGORY_SLUGS.filter((slug) => isPlayground(CATEGORIES[slug]));
 
 // node:sqlite returns rows as null-prototype objects; values are
 // string | number | null for our schema.
@@ -574,10 +582,19 @@ class SqliteAceDb implements AceDb {
   }
 
   getLatestActiveAttempt(): { attempt: AttemptRow; question: QuestionRow } | null {
+    // Playgrounds are excluded here (NEE-387): their attempt never ends
+    // (isQuestionSolved has no path for them), so without this filter a
+    // scratch pad would permanently colonise the Resume card. The slug set
+    // is a bound parameter list, not interpolated, and follows the same
+    // empty-guard pattern as listQuestions' categoryHasNoTests above.
+    const playgroundPlaceholders = PLAYGROUND_CATEGORY_SLUGS.map(() => '?').join(', ');
+    const excludePlayground =
+      PLAYGROUND_CATEGORY_SLUGS.length > 0 ? `AND q.category NOT IN (${playgroundPlaceholders})` : '';
     const r = this.stmt(
-      `SELECT a.* FROM attempts a WHERE a.ended_at IS NULL
+      `SELECT a.* FROM attempts a JOIN questions q ON q.id = a.question_id
+       WHERE a.ended_at IS NULL ${excludePlayground}
        ORDER BY a.started_at DESC, a.id DESC LIMIT 1`,
-    ).get() as SqlRow | undefined;
+    ).get(...PLAYGROUND_CATEGORY_SLUGS) as SqlRow | undefined;
     if (!r) return null;
     const attempt = rowToAttempt(r);
     const question = this.getQuestionById(attempt.questionId);

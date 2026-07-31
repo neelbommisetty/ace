@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CATEGORY_SLUGS } from './categories.js';
+import { GENERATABLE_CATEGORY_SLUGS, type CategorySlug } from './categories.js';
 import {
   buildBrainstormPrompt,
   buildQuestionSection,
@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 describe('buildSystemPrompt', () => {
-  it.each(FEATURES.flatMap((f) => CATEGORY_SLUGS.map((c) => [f, c] as const)))(
+  it.each(FEATURES.flatMap((f) => GENERATABLE_CATEGORY_SLUGS.map((c) => [f, c] as const)))(
     'assembles a non-empty, slot-free prompt for %s × %s',
     (feature, category) => {
       const prompt = buildSystemPrompt(feature, category);
@@ -92,7 +92,7 @@ describe('charter preference-section canary (NEE-273)', () => {
     /charter domains?/i,
   ];
 
-  it.each(FEATURES.flatMap((f) => CATEGORY_SLUGS.map((c) => [f, c] as const)))(
+  it.each(FEATURES.flatMap((f) => GENERATABLE_CATEGORY_SLUGS.map((c) => [f, c] as const)))(
     'leaves no domain-list or exclusion-list residue in %s × %s',
     (feature, category) => {
       const prompt = buildSystemPrompt(feature, category);
@@ -115,9 +115,21 @@ describe('buildBrainstormPrompt', () => {
     const prompt = buildBrainstormPrompt();
     expect(prompt.startsWith('# Interviewer Charter')).toBe(true);
     expect(prompt).not.toMatch(/\{\{.+?\}\}/);
-    for (const slug of CATEGORY_SLUGS) {
+    for (const slug of GENERATABLE_CATEGORY_SLUGS) {
       expect(prompt).toContain(`(\`${slug}\`)`);
     }
+  });
+
+  it('never digests the playground categories — no capsule file exists for them (NEE-387)', () => {
+    const prompt = buildBrainstormPrompt();
+    expect(prompt).not.toContain('`playground`');
+    expect(prompt).not.toContain('`playground-ts`');
+  });
+});
+
+describe('playground categories have no capsule file (NEE-387)', () => {
+  it('buildSystemPrompt throws for a playground category — documents why generation/review/brainstorm must exclude it', () => {
+    expect(() => buildSystemPrompt('review', 'playground' as CategorySlug)).toThrow();
   });
 });
 

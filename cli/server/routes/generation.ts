@@ -1,5 +1,5 @@
 import type { Hono } from 'hono';
-import { CATEGORY_SLUGS, type CategorySlug, type Difficulty } from '../../lib/categories.js';
+import { GENERATABLE_CATEGORY_SLUGS, type CategorySlug, type Difficulty } from '../../lib/categories.js';
 import { redactGenerationJob } from '../generation.js';
 import { parseLimit, questionLookup, readJsonBody, requireProvider } from '../route-helpers.js';
 import type { RouteContext } from './context.js';
@@ -16,8 +16,11 @@ export function registerGenerationRoutes(app: Hono, ctx: RouteContext): void {
     if (!body) return c.json({ error: 'invalid JSON body' }, 400);
 
     const category = body.category;
-    if (typeof category !== 'string' || !CATEGORY_SLUGS.includes(category as CategorySlug)) {
-      return c.json({ error: `category must be one of: ${CATEGORY_SLUGS.join(', ')}` }, 400);
+    if (typeof category !== 'string' || !GENERATABLE_CATEGORY_SLUGS.includes(category as CategorySlug)) {
+      return c.json(
+        { error: `category must be one of: ${GENERATABLE_CATEGORY_SLUGS.join(', ')}` },
+        400,
+      );
     }
     const difficulty = body.difficulty;
     if (typeof difficulty !== 'string' || !DIFFICULTIES.has(difficulty)) {

@@ -621,6 +621,25 @@ describe('attempt lifecycle', () => {
     expect(db.getLatestActiveAttempt()?.question.id).toBe(qa.id);
   });
 
+  it('getLatestActiveAttempt excludes playground questions (NEE-387)', () => {
+    const scratch = makeQuestion({ category: 'playground', slug: 'scratch-1' });
+    db.createAttempt(scratch.id, { startedAt: '2026-07-01T10:00:00.000Z' });
+
+    // Only an open playground attempt exists — never surfaced as "resume".
+    expect(db.getLatestActiveAttempt()).toBeNull();
+  });
+
+  it('getLatestActiveAttempt skips a newer open playground attempt in favor of an older real one (NEE-387)', () => {
+    const real = makeQuestion({ category: 'js-ts', slug: 'debounce' });
+    const scratch = makeQuestion({ category: 'playground', slug: 'scratch-1' });
+    const older = db.createAttempt(real.id, { startedAt: '2026-07-01T10:00:00.000Z' });
+    db.createAttempt(scratch.id, { startedAt: '2026-07-02T10:00:00.000Z' });
+
+    const latest = db.getLatestActiveAttempt();
+    expect(latest?.attempt.id).toBe(older.id);
+    expect(latest?.question.id).toBe(real.id);
+  });
+
   it('getLatestAttempt returns the newest attempt regardless of ended state', () => {
     const q = makeQuestion();
     expect(db.getLatestAttempt(q.id)).toBeNull();

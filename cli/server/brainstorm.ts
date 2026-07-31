@@ -1,6 +1,6 @@
 import { NoObjectGeneratedError } from 'ai';
 import { z } from 'zod';
-import { CATEGORY_SLUGS } from '../lib/categories.js';
+import { GENERATABLE_CATEGORY_SLUGS } from '../lib/categories.js';
 import { chatObjectStream, type LLMMessage } from '../lib/llm.js';
 import { buildBrainstormPrompt } from '../lib/prompt-builder.js';
 import { NULL_AI_LOG, type AiLog } from './ai-log.js';
@@ -18,7 +18,7 @@ export const IdeaListSchema = z.object({
     .array(
       z.object({
         title: z.string(),
-        category: z.enum(CATEGORY_SLUGS),
+        category: z.enum(GENERATABLE_CATEGORY_SLUGS),
         difficulty: z.enum(['easy', 'medium', 'hard']),
         pitch: z.string(),
         // Ready-to-feed description for POST /api/generation/jobs.
@@ -41,7 +41,7 @@ Respond with a JSON object shaped like this:
   "ideas": [          // 0-5 concrete question ideas surfaced by this reply
     {
       "title": string,
-      "category": ${CATEGORY_SLUGS.join(' | ')},
+      "category": ${GENERATABLE_CATEGORY_SLUGS.join(' | ')},
       "difficulty": "easy" | "medium" | "hard",
       "pitch": string,  // 1-2 sentences selling the idea
       "topic": string   // a ready-to-feed description for question generation

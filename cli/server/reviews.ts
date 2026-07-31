@@ -3,6 +3,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import {
   hasTests,
+  isPlayground,
   isProseAnswer,
   lookupCategoryConfig,
   type CategoryConfig,
@@ -214,6 +215,7 @@ function isUnchangedSinceScaffold(
 export function getReviewGuardError(question: QuestionRow, db?: AceDb): string | null {
   const config = lookupCategoryConfig(question.category);
   if (!config) return `unknown category "${question.category}"`;
+  if (isPlayground(config)) return 'playgrounds are scratch pads — reviews are not available here';
 
   const primary = config.solutionFiles[0];
   const noun = GUARD_NOUN[config.type];

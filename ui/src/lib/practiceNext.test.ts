@@ -250,4 +250,22 @@ describe('pickPracticeNext', () => {
       expect(result?.reason).toContain('failed last attempt');
     });
   });
+
+  // NEE-387: a playground attempt never ends, so it must never occupy the
+  // recommender slot the way a real question would.
+  describe('playground exclusion', () => {
+    it('never suggests a not-attempted playground question', () => {
+      const questions = [q({ id: 'scratch', category: 'playground' })];
+      expect(pickPracticeNext(questions)).toBeNull();
+    });
+
+    it('picks the unattempted js-ts question over an unattempted playground one', () => {
+      const questions = [
+        q({ id: 'scratch', category: 'playground', createdAt: '2025-12-01T00:00:00.000Z' }),
+        q({ id: 'real', category: 'js-ts', createdAt: '2026-01-01T00:00:00.000Z' }),
+      ];
+      const result = pickPracticeNext(questions);
+      expect(result?.question.id).toBe('real');
+    });
+  });
 });

@@ -8,9 +8,14 @@
  * old lookup-table fallbacks.
  */
 
-import { CATEGORY_SLUGS, lookupCategoryConfig } from '@shared/categories';
+import {
+  CATEGORY_SLUGS,
+  GENERATABLE_CATEGORY_SLUGS,
+  isPlayground,
+  lookupCategoryConfig,
+} from '@shared/categories';
 
-export { CATEGORY_SLUGS };
+export { CATEGORY_SLUGS, GENERATABLE_CATEGORY_SLUGS, isPlayground };
 
 function configFor(slug: string) {
   return lookupCategoryConfig(slug);

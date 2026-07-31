@@ -89,6 +89,22 @@ describe('POST /api/generation/jobs', () => {
     expect(res.status).toBe(400);
   });
 
+  // NEE-387: playground categories are real, known slugs (unlike the case
+  // above) but must still 400 here — they are excluded from generation, not
+  // unknown to the registry.
+  it.each(['playground', 'playground-ts'])('400s on the playground category %s', async (category) => {
+    setProviderConfigured();
+    const fetch = buildApp();
+    const res = await postJson(fetch, '/api/generation/jobs', {
+      category,
+      difficulty: 'medium',
+      topic: 'anything',
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).not.toContain('playground');
+  });
+
   it('400s on an invalid difficulty', async () => {
     setProviderConfigured();
     const fetch = buildApp();

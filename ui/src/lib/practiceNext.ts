@@ -5,9 +5,16 @@
  * isolation from the component that renders it.
  */
 
+import { isPlayground, lookupCategoryConfig } from '@shared/categories';
 import { categoryShortName } from './categories';
 import { relTime } from './format';
 import type { QuestionWithStats } from '../types';
+
+/** True only for a known playground category — an unknown slug is never treated as one. */
+function isPlaygroundSlug(category: string): boolean {
+  const config = lookupCategoryConfig(category);
+  return config != null && isPlayground(config);
+}
 
 export interface PracticeNextSuggestion {
   question: QuestionWithStats;
@@ -25,7 +32,11 @@ export interface PracticeNextSuggestion {
  */
 export function pickPracticeNext(questions: QuestionWithStats[]): PracticeNextSuggestion | null {
   const candidates = questions.filter(
-    (q) => q.archivedAt == null && q.missingAt == null && q.stats.status !== 'solved',
+    (q) =>
+      q.archivedAt == null &&
+      q.missingAt == null &&
+      q.stats.status !== 'solved' &&
+      !isPlaygroundSlug(q.category),
   );
   if (candidates.length === 0) return null;
 

@@ -11,7 +11,7 @@ import {
 import { GenerationJobStrip } from '../components/GenerationJobStrip';
 import { IdeaCard } from '../components/IdeaCard';
 import { useCancellableEffect } from '../hooks/useCancellableEffect';
-import { CATEGORY_SLUGS, categoryHint, categoryShortName } from '../lib/categories';
+import { GENERATABLE_CATEGORY_SLUGS, categoryHint, categoryShortName } from '../lib/categories';
 import { isKeyless, modelLabel, resolvedModelFor } from '../lib/models';
 import { useSseEvent } from '../sse';
 import type { BrainstormSessionRow, Difficulty, GenerationJobRow, SettingsInfo } from '../types';
@@ -116,7 +116,7 @@ function DescribeForm({
   disabled: boolean;
   settings: SettingsInfo | null;
 }) {
-  const [category, setCategory] = useState<string>(CATEGORY_SLUGS[0]);
+  const [category, setCategory] = useState<string>(GENERATABLE_CATEGORY_SLUGS[0]);
   const [difficulty, setDifficulty] = useState<Difficulty>('medium');
   const [topic, setTopic] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -185,7 +185,7 @@ function DescribeForm({
           disabled={disabled}
           onChange={(e) => setCategory(e.target.value)}
         >
-          {CATEGORY_SLUGS.map((slug) => (
+          {GENERATABLE_CATEGORY_SLUGS.map((slug) => (
             <option key={slug} value={slug}>
               {categoryShortName(slug)} — {categoryHint(slug)}
             </option>

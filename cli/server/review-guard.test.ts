@@ -216,6 +216,37 @@ describe('getReviewGuardError — guard messages are per-type, not hardcoded to 
   });
 });
 
+describe('getReviewGuardError — playgrounds are never reviewable (NEE-387)', () => {
+  // No scaffoldQuestionAt here (the playground scaffold templates land in a
+  // later subtask) — the guard only reads the row + a real file on disk, so
+  // the dir/file are built by hand, same shape scaffoldQuestionAt would leave.
+  it('rejects a playground question even with a real, non-stub solution file', () => {
+    const dir = path.join(tempRoot, 'questions', 'playground', 'scratch-1');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'App.tsx'),
+      'export default function App() { return <div>hello</div>; }\n',
+      'utf-8',
+    );
+    const question = db.upsertQuestion({
+      category: 'playground',
+      slug: 'scratch-1',
+      title: 'Scratch #1',
+      difficulty: 'easy',
+      suggestedMinutes: 30,
+      dirPath: dir,
+      source: 'manual',
+    });
+
+    expect(getReviewGuardError(question)).toBe(
+      'playgrounds are scratch pads — reviews are not available here',
+    );
+    expect(getReviewGuardError(question, db)).toBe(
+      'playgrounds are scratch pads — reviews are not available here',
+    );
+  });
+});
+
 describe('hasMeaningfulNotes', () => {
   it('treats a wrapped multi-line HTML comment block as a comment in full', () => {
     const notes = `# Title
