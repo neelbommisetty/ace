@@ -254,6 +254,13 @@ function escapeHtml(text: string): string {
  * buttons rendered black (NEE-380). The question's own styling still
  * overrides everything here — this is only a baseline, not a reset.
  *
+ * The baseline CANNOT pin `@media (prefers-color-scheme)` — that media query
+ * follows the OS/browser preference no matter what `color-scheme` declares
+ * (on the iframe element, in the parent document, or here), so
+ * scheme-conditional author styles would still evaluate dark on a dark-OS
+ * machine. Tailwind's default `dark:` variant is exactly that media query,
+ * which is why the Tailwind branch below overrides it (NEE-405).
+ *
  * `tailwindBrowserEntry` (NEE-381), when resolved, injects Tailwind's
  * runtime-JIT build (`@tailwindcss/browser`) as its own `<script>` BEFORE the
  * harness entry — a MutationObserver-driven compiler beats static class
@@ -261,7 +268,12 @@ function escapeHtml(text: string): string {
  * dynamically, which a build-time scanner can't see. Accepted tradeoff:
  * Tailwind's preflight restyles every preview when the script is present
  * (the standard Tailwind baseline) — `null` (not installed anywhere) skips
- * the script entirely and the harness is unaffected.
+ * the script entirely and the harness is unaffected. Alongside the script
+ * goes a `text/tailwindcss` block switching the `dark:` variant to the
+ * class strategy (NEE-405): media-driven `dark:` fires on every dark-OS
+ * machine inside this deterministically-light canvas (white-on-white text),
+ * while class-driven `dark:` is inert until something sets `.dark` — the
+ * same determinism the NEE-380 baseline gives UA defaults.
  */
 export function buildHarnessHtml(
   target: PreviewTarget,
@@ -280,7 +292,10 @@ export function buildHarnessHtml(
     '<body>',
     '<div id="root"></div>',
     ...(tailwindBrowserEntry != null
-      ? [`<script type="module" src="/@fs${escapeHtml(tailwindBrowserEntry)}"></script>`]
+      ? [
+          '<style type="text/tailwindcss">@custom-variant dark (&:where(.dark, .dark *));</style>',
+          `<script type="module" src="/@fs${escapeHtml(tailwindBrowserEntry)}"></script>`,
+        ]
       : []),
     `<script type="module" src="${previewEntryPath(target.category, target.slug)}"></script>`,
     '</body>',

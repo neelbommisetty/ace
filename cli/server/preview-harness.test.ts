@@ -305,9 +305,24 @@ describe('harness generation', () => {
     expect(entryIdx).toBeGreaterThan(tailwindIdx);
   });
 
-  it('omits the tailwind script when the entry is null or omitted', () => {
-    expect(buildHarnessHtml(target, null)).not.toContain('@tailwindcss/browser');
-    expect(buildHarnessHtml(target)).not.toContain('@tailwindcss/browser');
+  // NEE-405: `dark:` must be class-driven, not media-driven — the NEE-380
+  // light canvas can't pin `@media (prefers-color-scheme)`, so on a dark-OS
+  // machine the default variant fires and paints e.g. dark:text-white onto
+  // the white body. The override rides with the Tailwind script.
+  it('switches the tailwind dark variant to the class strategy alongside the script', () => {
+    const html = buildHarnessHtml(target, '/ace/node_modules/@tailwindcss/browser/dist/index.global.js');
+    const variantTag =
+      '<style type="text/tailwindcss">@custom-variant dark (&:where(.dark, .dark *));</style>';
+    expect(html).toContain(variantTag);
+    // Before the runtime script, matching config-before-runtime order.
+    expect(html.indexOf(variantTag)).toBeLessThan(html.indexOf('/@fs/ace/node_modules'));
+  });
+
+  it('omits the tailwind script and dark-variant override when the entry is null or omitted', () => {
+    for (const html of [buildHarnessHtml(target, null), buildHarnessHtml(target)]) {
+      expect(html).not.toContain('@tailwindcss/browser');
+      expect(html).not.toContain('text/tailwindcss');
+    }
   });
 
   it('html-escapes the tailwind entry path', () => {
