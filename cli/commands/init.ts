@@ -43,6 +43,10 @@ const PACKAGE_JSON_TEMPLATE = {
   devDependencies: {
     '@testing-library/jest-dom': '^6.9.1',
     '@testing-library/react': '^16.3.2',
+    // Runtime-JIT Tailwind for the live preview pane (NEE-381) — `ace init`
+    // merges missing devDependencies into an existing package.json, so
+    // pre-existing workspaces pick this up by re-running init.
+    '@tailwindcss/browser': '^4.3.3',
     '@types/react': '^19.2.14',
     '@types/react-dom': '^19.2.3',
     // vite + plugin-react power the live preview pane (NEE-348). `ace init`

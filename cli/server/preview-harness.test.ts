@@ -241,6 +241,31 @@ describe('harness generation', () => {
     expect(html).toContain('background:#fff;color:#111');
   });
 
+  // NEE-381: runtime-JIT Tailwind script, when resolved, must load BEFORE
+  // the harness entry — the app's own module graph runs after Tailwind's
+  // MutationObserver is already installed.
+  it('injects the tailwind script before the entry script when an entry is passed', () => {
+    const html = buildHarnessHtml(target, '/ace/node_modules/@tailwindcss/browser/dist/index.global.js');
+    const tailwindTag =
+      '<script type="module" src="/@fs/ace/node_modules/@tailwindcss/browser/dist/index.global.js"></script>';
+    expect(html).toContain(tailwindTag);
+    const tailwindIdx = html.indexOf(tailwindTag);
+    const entryIdx = html.indexOf(`src="${previewEntryPath('react-apps', 'demo')}"`);
+    expect(tailwindIdx).toBeGreaterThan(-1);
+    expect(entryIdx).toBeGreaterThan(tailwindIdx);
+  });
+
+  it('omits the tailwind script when the entry is null or omitted', () => {
+    expect(buildHarnessHtml(target, null)).not.toContain('@tailwindcss/browser');
+    expect(buildHarnessHtml(target)).not.toContain('@tailwindcss/browser');
+  });
+
+  it('html-escapes the tailwind entry path', () => {
+    const html = buildHarnessHtml(target, '/ace/node_modules/@tailwindcss/browser/"><script>alert(1)</script>');
+    expect(html).not.toContain('"><script>alert(1)</script>');
+    expect(html).toContain('&quot;&gt;&lt;script&gt;');
+  });
+
   it('entry embeds the module path, expected name, and the SAME resolution rule', () => {
     const entry = buildHarnessEntry(target);
     expect(entry).toContain('"/@fs/ws/questions/react-apps/demo/App.tsx"');

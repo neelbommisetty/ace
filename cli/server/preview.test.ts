@@ -163,6 +163,43 @@ describe('resolvePreviewDependencies', () => {
       expect(path.basename(dir)).toBe('node_modules');
     }
   });
+
+  // NEE-381: @tailwindcss/browser follows the same workspace-then-fallback
+  // resolution as the vite pair, but a miss is graceful (null), never a
+  // failed resolution.
+  it('resolves @tailwindcss/browser via the default ace-side fallback when the workspace lacks it', () => {
+    const ws = track(makePreviewWorkspace({ nodeModules: false }));
+    // react/react-dom get no ace fallback (browser-graph deps) — symlink
+    // them workspace-side so the overall resolution succeeds and the vite
+    // pair + tailwind fall through to the default ace fallback.
+    fs.mkdirSync(path.join(ws.root, 'node_modules'), { recursive: true });
+    for (const name of ['react', 'react-dom']) {
+      fs.symlinkSync(path.join(ACE_NODE_MODULES, name), path.join(ws.root, 'node_modules', name));
+    }
+    const result = resolvePreviewDependencies(ws.root);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.deps.tailwindBrowserEntry).not.toBeNull();
+    expect(result.deps.tailwindBrowserEntry as string).toMatch(/dist[\\/]index\.global\.js$/);
+  });
+
+  it('leaves tailwindBrowserEntry null (not a failed resolution) with no fallback and no workspace copy', () => {
+    const ws = track(makePreviewWorkspace({ nodeModules: false }));
+    fs.mkdirSync(path.join(ws.root, 'node_modules', '@vitejs'), { recursive: true });
+    for (const name of ['vite', 'react', 'react-dom']) {
+      fs.symlinkSync(path.join(ACE_NODE_MODULES, name), path.join(ws.root, 'node_modules', name));
+    }
+    fs.symlinkSync(
+      path.join(ACE_NODE_MODULES, '@vitejs', 'plugin-react'),
+      path.join(ws.root, 'node_modules', '@vitejs', 'plugin-react'),
+    );
+    // No @tailwindcss/browser symlinked workspace-side, and fallbackDir:null
+    // forbids the ace-side fallback — the package is genuinely absent.
+    const result = resolvePreviewDependencies(ws.root, { fallbackDir: null });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.deps.tailwindBrowserEntry).toBeNull();
+  });
 });
 
 describe('preview manager lifecycle + fs guard (real vite)', () => {
@@ -220,6 +257,34 @@ describe('preview manager lifecycle + fs guard (real vite)', () => {
     expect(manager.status(ws.root).state).toBe('stopped');
     expect(events.map((e) => e.state)).toEqual(['starting', 'ready', 'stopped']);
     expect(await isPortFree(port)).toBe(true);
+  }, 30_000);
+
+  // NEE-381: the workspace symlink in makePreviewWorkspace() carries the
+  // whole of ace's node_modules, so @tailwindcss/browser resolves and the
+  // harness page must inject it — proving both that the script is wired in
+  // and that server.fs.allow actually covers wherever it resolved to.
+  it('serves the tailwind runtime-JIT script and its /@fs URL is reachable', async () => {
+    const ws = track(makePreviewWorkspace());
+    const manager = trackManager(createPreviewManager({ bus: createBus() }));
+    const status = await manager.open(ws.root);
+    expect(status.state).toBe('ready');
+    const url = status.url as string;
+
+    const page = await fetch(`${url}/preview/react-apps/demo/`);
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    const match = html.match(
+      /<script type="module" src="(\/@fs[^"]*@tailwindcss\/browser[^"]*)"><\/script>/,
+    );
+    expect(match).not.toBeNull();
+    const scriptPath = (match as RegExpMatchArray)[1];
+    // The tailwind script must load before the harness entry script.
+    expect(html.indexOf(scriptPath)).toBeLessThan(html.indexOf('/@ace-preview/'));
+
+    const script = await fetch(`${url}${scriptPath}`);
+    expect(script.status).toBe(200);
+    const js = await script.text();
+    expect(js.length).toBeGreaterThan(0);
   }, 30_000);
 
   it('stops itself after the idle timeout', async () => {

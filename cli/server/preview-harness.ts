@@ -220,8 +220,20 @@ function escapeHtml(text: string): string {
  * (`.preview-frame` in ui/src/styles.css), so text went invisible and
  * buttons rendered black (NEE-380). The question's own styling still
  * overrides everything here — this is only a baseline, not a reset.
+ *
+ * `tailwindBrowserEntry` (NEE-381), when resolved, injects Tailwind's
+ * runtime-JIT build (`@tailwindcss/browser`) as its own `<script>` BEFORE the
+ * harness entry — a MutationObserver-driven compiler beats static class
+ * scanning here because generated/LLM question code composes class strings
+ * dynamically, which a build-time scanner can't see. Accepted tradeoff:
+ * Tailwind's preflight restyles every preview when the script is present
+ * (the standard Tailwind baseline) — `null` (not installed anywhere) skips
+ * the script entirely and the harness is unaffected.
  */
-export function buildHarnessHtml(target: PreviewTarget): string {
+export function buildHarnessHtml(
+  target: PreviewTarget,
+  tailwindBrowserEntry: string | null = null,
+): string {
   const title = `${target.category}/${target.slug} — ace preview`;
   return [
     '<!doctype html>',
@@ -234,6 +246,9 @@ export function buildHarnessHtml(target: PreviewTarget): string {
     '</head>',
     '<body>',
     '<div id="root"></div>',
+    ...(tailwindBrowserEntry != null
+      ? [`<script type="module" src="/@fs${escapeHtml(tailwindBrowserEntry)}"></script>`]
+      : []),
     `<script type="module" src="${previewEntryPath(target.category, target.slug)}"></script>`,
     '</body>',
     '</html>',

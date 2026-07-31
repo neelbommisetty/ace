@@ -40,8 +40,17 @@ export interface PreviewDeps {
   /** Absolute entry file of the workspace-resolved `@vitejs/plugin-react`. */
   pluginReactEntry: string;
   /**
+   * Absolute entry file of `@tailwindcss/browser` (runtime-JIT Tailwind,
+   * NEE-381), resolved the same workspace-first-then-fallback way as the
+   * vite pair. `null` means it isn't installed anywhere reachable — a
+   * graceful absence, not a failure: the preview works exactly as before,
+   * just without Tailwind classes rendering.
+   */
+  tailwindBrowserEntry: string | null;
+  /**
    * Realpath'd `node_modules` dirs containing every resolved dep — the
-   * fs.allow contribution that lets Vite serve react/react-dom sources.
+   * fs.allow contribution that lets Vite serve react/react-dom (and, when
+   * resolved, @tailwindcss/browser) sources.
    */
   nodeModulesDirs: string[];
 }
@@ -94,7 +103,7 @@ function missingDepMessage(name: string, workspaceRoot: string): string {
 }
 
 /**
- * Resolves the four packages the preview needs, workspace-first.
+ * Resolves the packages the preview needs, workspace-first.
  *
  *  - `vite` / `@vitejs/plugin-react` are imported by the ACE PROCESS and are
  *    resolved AS A PAIR from a single origin (see tryResolvePair): the
@@ -105,6 +114,10 @@ function missingDepMessage(name: string, workspaceRoot: string): string {
  *  - `react` / `react-dom` are imported by the BROWSER module graph, which
  *    Vite resolves from the question file upward — an ace-side fallback could
  *    never serve them, so they get no fallback and a miss is reported as-is.
+ *  - `@tailwindcss/browser` (NEE-381) is resolved the same workspace-then-
+ *    fallback way as the vite pair, but its absence is NOT a failure — a
+ *    `null` entry just means the harness omits the runtime-JIT script and
+ *    the preview works exactly as before.
  */
 export function resolvePreviewDependencies(
   workspaceRoot: string,
@@ -133,6 +146,12 @@ export function resolvePreviewDependencies(
     }
     resolved[name] = entry;
   }
+  const tailwindBrowserEntry =
+    tryResolveFrom(workspaceRoot, '@tailwindcss/browser') ??
+    (fallbackDir != null ? tryResolveFrom(fallbackDir, '@tailwindcss/browser') : null);
+  if (tailwindBrowserEntry != null) {
+    resolved['@tailwindcss/browser'] = tailwindBrowserEntry;
+  }
 
   const nodeModulesDirs = [...new Set(Object.values(resolved).map(containingNodeModulesDir))];
   return {
@@ -140,6 +159,7 @@ export function resolvePreviewDependencies(
     deps: {
       viteEntry: resolved['vite'],
       pluginReactEntry: resolved['@vitejs/plugin-react'],
+      tailwindBrowserEntry,
       nodeModulesDirs,
     },
   };
@@ -190,7 +210,10 @@ function sleep(ms: number): Promise<void> {
  *    transformIndexHtml, so plugin-react injects its refresh preamble)
  *  - /@ace-preview/<category>/<slug>/entry.js → the harness entry module
  */
-function acePreviewHarnessPlugin(questionsDir: string): Record<string, unknown> {
+function acePreviewHarnessPlugin(
+  questionsDir: string,
+  tailwindBrowserEntry: string | null,
+): Record<string, unknown> {
   return {
     name: 'ace-preview-harness',
     resolveId(id: string): string | undefined {
@@ -230,7 +253,7 @@ function acePreviewHarnessPlugin(questionsDir: string): Record<string, unknown> 
             }
             const html = await server.transformIndexHtml(
               req.url ?? pathname,
-              buildHarnessHtml(resolution.target),
+              buildHarnessHtml(resolution.target, tailwindBrowserEntry),
             );
             res.setHeader('content-type', 'text/html; charset=utf-8');
             res.end(html);
@@ -400,7 +423,7 @@ export function createPreviewManager(opts: CreatePreviewManagerOptions): Preview
         },
         plugins: [
           pluginReactMod.default(),
-          acePreviewHarnessPlugin(questionsDir),
+          acePreviewHarnessPlugin(questionsDir, deps.tailwindBrowserEntry),
           {
             name: 'ace-preview-activity',
             configureServer(s: ViteDevServerLike) {
