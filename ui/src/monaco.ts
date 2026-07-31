@@ -19,6 +19,7 @@ import cssGrammar from 'shiki/langs/css.mjs';
 import htmlGrammar from 'shiki/langs/html.mjs';
 import markdownGrammar from 'shiki/langs/markdown.mjs';
 import { EDITOR_THEME } from './editor-options';
+import { MODULE_RESOLUTION_NOISE, REACT_TYPE_LIBS } from './monaco-react-typings';
 import { triggerStaleReload } from './stale-reload';
 
 // Every language the room can open still needs Monaco's own language
@@ -147,35 +148,47 @@ self.MonacoEnvironment = {
 };
 
 // Semantic validation is the room's linter: type errors, undefined names,
-// wrong argument counts. Solutions import from test-only or workspace-level
-// deps monaco can't see (./solution, vitest, react), so every diagnostic
-// that amounts to "module/typings not found" is suppressed — the unresolved
-// import types as `any` and the rest of the file still checks cleanly.
+// wrong argument counts. MODULE_RESOLUTION_NOISE (monaco-react-typings.ts)
+// keeps genuinely unresolvable imports (./solution, vitest,
+// @testing-library/*) squiggle-free, while React itself now resolves for
+// real via the REACT_TYPE_LIBS extra libs registered below.
 // (monaco 0.55 moved languages.typescript to a top-level namespace.)
-const MODULE_RESOLUTION_NOISE = [
-  2307, // Cannot find module '...' or its corresponding type declarations
-  2792, // Cannot find module — "did you mean to set moduleResolution?" variant
-  7016, // Could not find a declaration file for module '...'
-  2875, // This JSX tag requires the module path 'react/jsx-runtime' to exist
-  7026, // JSX element implicitly has type 'any' (no React types loaded)
-  2580, // Cannot find name 'require'/'process' — "install @types/node"
-  2591, // Cannot find name '...' — "install @types/node" variant
-];
 monaco.typescript.typescriptDefaults.setDiagnosticsOptions({
   noSemanticValidation: false,
   noSyntaxValidation: false,
   diagnosticCodesToIgnore: MODULE_RESOLUTION_NOISE,
 });
+// javascriptDefaults keeps 2875/7026 suppressed on top of the shared list:
+// the room's corpus has no .js/.jsx solution files (react categories are
+// .tsx under the 'typescript' language id, js-ts is .ts) and REACT_TYPE_LIBS
+// is registered on typescriptDefaults only, so a hypothetical stray .jsx
+// would otherwise light up with JSX-`any` noise it can never resolve.
 monaco.typescript.javascriptDefaults.setDiagnosticsOptions({
   noSemanticValidation: false,
   noSyntaxValidation: false,
-  diagnosticCodesToIgnore: MODULE_RESOLUTION_NOISE,
+  diagnosticCodesToIgnore: [
+    ...MODULE_RESOLUTION_NOISE,
+    2875, // This JSX tag requires the module path 'react/jsx-runtime' to exist
+    7026, // JSX element implicitly has type 'any' (no React types loaded)
+  ],
 });
 monaco.typescript.typescriptDefaults.setCompilerOptions({
   jsx: monaco.typescript.JsxEmit.ReactJSX,
   target: monaco.typescript.ScriptTarget.ESNext,
   allowNonTsExtensions: true,
+  // NodeJs resolution is what lets the worker walk up from the room's
+  // file:///<relPath> models (EditorPane's `path` prop) into the
+  // file:///node_modules extra libs registered below.
+  moduleResolution: monaco.typescript.ModuleResolutionKind.NodeJs,
+  allowSyntheticDefaultImports: true,
 });
+
+// React 19 typings at their real package-layout paths (NEE-385): .tsx models
+// get typed JSX — <button onclick={…}> is now a real error with an onClick
+// suggestion — plus typed useState/createRoot completions.
+for (const lib of REACT_TYPE_LIBS) {
+  monaco.typescript.typescriptDefaults.addExtraLib(lib.content, 'file://' + lib.path);
+}
 
 // The hand-rolled `monaco.editor.defineTheme(EDITOR_THEME, ...)` that used
 // to live here is gone: `shikiToMonaco()` above already registers a Monaco
