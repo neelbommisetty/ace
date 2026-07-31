@@ -127,6 +127,25 @@ Never pad a naturally short question to look bigger than it is.
   behavioral structure ("one listitem per tag") — and must never grow a
   containment matrix or prescribe which element wraps which: the DOM shape
   is the candidate's to choose.
+- **Description self-sufficiency**: every state-machine transition the
+  tests assert — pending → settled, dismissal → empty render,
+  disabled-during-flight — must be stated BEHAVIORALLY in the problem
+  statement or `## Constraints`, including what stays on screen and what
+  leaves at each step. Behavior-level always, DOM-level never: the
+  description says WHAT the user observes; tests may only check that
+  WHAT. Constraints must never point AWAY from tested behavior. Canonical
+  trap: tests expect an action visible-but-disabled while its async work
+  is in flight and removed only after settlement, but a constraint says
+  the settled state "must not offer the action" — a candidate who hides
+  it the moment it is triggered has obeyed the text and fails. State the
+  pending shape explicitly.
+- **Lifecycle narration**: the `## Problem Statement` must narrate the
+  component's observable lifecycle end-to-end — initial render → each
+  transition → terminal render — with concrete behavior at every step,
+  including terminal states that render nothing (e.g. "after Dismiss the
+  component renders nothing at all"). A terminal or intermediate state
+  the candidate must reverse-engineer from Constraints and Hints is a
+  description defect, not a difficulty device.
 
 ## Example Test File
 

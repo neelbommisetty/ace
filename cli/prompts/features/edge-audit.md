@@ -57,7 +57,15 @@ reference solution, test file, and interviewer packet. Work through it:
    loosest screen-level query that still verifies the behavior, with
    role-scoped `within()` only where the `## UI Contract` declares the
    repetition.
-5. **Drop nothing silently**: if a class is genuinely out of scope for the
+5. **Audit derivability**: could a candidate who never opens the test file
+   pass every test? For each assertion, name where the description states
+   the behavior it checks. If nowhere, FIX THE DESCRIPTION — state the
+   transition behaviorally (what stays on screen, what leaves, at each
+   step) — or loosen the test if it asserts more than the description
+   promises. A constraint that points AWAY from tested behavior (e.g.
+   implying an action disappears when the tests require it
+   visible-but-disabled during flight) is a defect to fix here.
+6. **Drop nothing silently**: if a class is genuinely out of scope for the
    question, mark it covered=false with action "none" — do not pretend it
    is covered.
 

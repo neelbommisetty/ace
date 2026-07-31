@@ -138,6 +138,20 @@ Never pad a naturally short question to look bigger than it is.
   behavioral structure ("one listitem per notification") — and must never
   grow a containment matrix or prescribe which element wraps which: the
   DOM shape is the candidate's to choose.
+- **Description self-sufficiency**: every state-machine transition the
+  tests assert — pending → settled, dismissal → empty render,
+  disabled-during-flight — must be stated BEHAVIORALLY in the problem
+  statement or `## Constraints`, including what stays on screen and what
+  leaves at each step. Behavior-level always, DOM-level never: the
+  description says WHAT the user observes; tests may only check that
+  WHAT. Constraints must never point AWAY from tested behavior. Canonical
+  trap: tests expect a mark-read action visible-but-disabled while its
+  request is in flight and removed only after settlement, but a
+  constraint reads "read notifications must not offer the action" — a
+  candidate who hides the button the moment it is clicked has obeyed the
+  text and fails. State the pending shape explicitly instead: "while the
+  save is in flight the action stays visible and disabled; it disappears
+  only once the save settles."
 
 ## Example Test File
 

@@ -178,8 +178,12 @@ repairing your previous output, included in that message:
    (`within(...)`, `getAllByRole(...)[i]`): is the scope derivable from
    the declared `## UI Contract` and description alone — never from your
    reference solution's DOM shape? If not, loosen the query.
-9. Does the interviewer packet contain all five required sections?
-10. (Behavioral categories) Is `description` a single interviewer-voiced
+9. (Coding categories) Could a candidate who never opens the test file
+   pass every test? For each assertion, name where the description states
+   the behavior it checks. If nowhere, fix the description — or loosen
+   the test if it asserts more than the description promises.
+10. Does the interviewer packet contain all five required sections?
+11. (Behavioral categories) Is `description` a single interviewer-voiced
    prompt with no section headings — never a multi-part scenario? Does
    `competency` match exactly one value from the closed vocabulary, and does
    the difficulty reflect discomfort (a success story vs an owned failure),
