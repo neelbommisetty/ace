@@ -13,6 +13,7 @@ import type {
   HistoryItem,
   ImportPreviewItem,
   ImportResult,
+  PlaygroundCreateResult,
   PreviewStatus,
   ProbeSetRow,
   QuestionDetail,
@@ -659,4 +660,11 @@ export function getPreviewStatus(): Promise<PreviewStatus> {
  * already running. Resolves with the terminal status ('ready' or 'failed'). */
 export function openPreview(): Promise<PreviewStatus> {
   return request('/api/preview/open', { method: 'POST' });
+}
+
+// ---- playground (NEE-387) --------------------------------------------------
+
+/** Scaffolds a zero-LLM scratch question ('playground' or 'playground-ts') and returns where it landed. */
+export function createPlayground(kind: 'react' | 'ts'): Promise<PlaygroundCreateResult> {
+  return request('/api/playground', { method: 'POST', body: JSON.stringify({ kind }) });
 }

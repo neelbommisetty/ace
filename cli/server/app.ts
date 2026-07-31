@@ -245,6 +245,7 @@ export function createApp(opts: CreateAppOptions): Hono {
   routes.registerHistoryRoutes(app, ctx);
   routes.registerSettingsRoutes(app, ctx);
   routes.registerStarterPackRoutes(app, ctx);
+  routes.registerPlaygroundRoutes(app, ctx);
   routes.registerResetRoutes(app, ctx);
   routes.registerSseRoutes(app, ctx);
   routes.registerStaticRoutes(app, ctx);

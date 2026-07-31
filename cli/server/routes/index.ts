@@ -6,6 +6,7 @@ export { registerDisputeRoutes } from './disputes.js';
 export { registerFileRoutes } from './files.js';
 export { registerGenerationRoutes } from './generation.js';
 export { registerHistoryRoutes } from './history.js';
+export { registerPlaygroundRoutes } from './playground.js';
 export { registerPreviewRoutes } from './preview.js';
 export { registerProbeRoutes } from './probes.js';
 export { registerQuestionRoutes } from './questions.js';

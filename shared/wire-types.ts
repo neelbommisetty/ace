@@ -332,6 +332,12 @@ export interface StarterPackInstallResult {
   unavailable: string[];
 }
 
+/** POST /api/playground — the freshly-scaffolded scratch question (NEE-387). */
+export interface PlaygroundCreateResult {
+  category: string;
+  slug: string;
+}
+
 export type HistoryItem =
   | { type: 'review'; at: string; question: QuestionRow; review: ReviewRow }
   | { type: 'dispute'; at: string; question: QuestionRow; dispute: DisputeRow };

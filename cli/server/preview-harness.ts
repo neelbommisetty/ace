@@ -82,6 +82,13 @@ export interface PreviewTarget {
    * is self-sufficient bare).
    */
   fixtureHint: string | null;
+  /**
+   * 'mount' renders the module's resolved export into the root div (the
+   * original — and only — behaviour before NEE-387); 'import' just executes
+   * the module for its side effects (console output) — no React, no root,
+   * no export resolution. Driven by the category's `preview` registry field.
+   */
+  mode: 'mount' | 'import';
 }
 
 export type PreviewTargetResolution =
@@ -119,13 +126,38 @@ export function resolvePreviewTarget(
   if (config == null) {
     return { ok: false, reason: `unknown category "${category}"` };
   }
-  if (config.group !== 'react') {
+  if (config.preview === 'none') {
     return {
       ok: false,
-      reason: `live preview is only available for React categories — "${category}" has nothing to mount`,
+      reason: `live preview is not available for "${category}" — nothing to run`,
     };
   }
   const solutionFile = config.solutionFiles[0];
+  // Import mode (NEE-387, e.g. playground-ts) always runs the bare solution
+  // file — the preview.tsx fixture seam is mount-mode-only (it exists to hand
+  // a props-taking component example props before mounting it; a plain TS
+  // module has neither props nor a mount).
+  if (config.preview === 'import') {
+    const moduleFile = path.join(questionsDir, category, slug, solutionFile);
+    if (!fs.existsSync(moduleFile)) {
+      return {
+        ok: false,
+        reason: `no ${solutionFile} found for ${category}/${slug}`,
+      };
+    }
+    return {
+      ok: true,
+      target: {
+        category,
+        slug,
+        moduleFile,
+        expectedName: null,
+        usesFixture: false,
+        fixtureHint: null,
+        mode: 'import',
+      },
+    };
+  }
   const fixtureFile = path.join(questionsDir, category, slug, 'preview.tsx');
   const usesFixture = fs.existsSync(fixtureFile);
   const moduleFile = usesFixture ? fixtureFile : path.join(questionsDir, category, slug, solutionFile);
@@ -147,6 +179,7 @@ export function resolvePreviewTarget(
         !usesFixture && category === 'web-components'
           ? 'No preview.tsx yet — add one in this question folder to preview with real props.'
           : null,
+      mode: 'mount',
     },
   };
 }
@@ -349,6 +382,43 @@ for (const level of ['log', 'warn', 'error']) {
 `;
 
 /**
+ * Import-mode entry (NEE-387, e.g. playground-ts): the module is executed
+ * for its side effects only — no root, no export resolution, no react-dom.
+ * The import MUST be dynamic and MUST come after the console patch below: a
+ * static `import` hoists above every other statement in its module (the
+ * ES module spec), so a static import here would run the question's code —
+ * and any of its early `console.log`s — before ACE_PREVIEW_FORWARDING_SOURCE
+ * ever patches `console`, silently dropping them from the pane. Re-running on
+ * save needs no code here at all: this module accepts no HMR boundary, so
+ * Vite's default behaviour (a full page reload) already re-executes it from
+ * scratch — the "Re-run" button in the pane just reloads the iframe.
+ */
+function buildImportHarnessEntry(target: PreviewTarget): string {
+  return `const MODULE_LABEL = ${JSON.stringify(`${target.category}/${target.slug}/${path.basename(target.moduleFile)}`)};
+
+${ACE_PREVIEW_FORWARDING_SOURCE}
+
+if (import.meta.hot) {
+  // Only compile/transform failures need forwarding here — there is no
+  // render step to re-resolve, and a runtime throw from the import below is
+  // already caught by its own .catch.
+  import.meta.hot.on('vite:error', (payload) => {
+    const err = payload && payload.err;
+    const loc = err && err.loc;
+    let text = (err && err.message) || (MODULE_LABEL + ': preview failed to compile');
+    if (err && err.frame) text += '\\n' + err.frame;
+    acePreviewPost('vite-error', text, {
+      file: (loc && loc.file) || (err && err.id) || null,
+      line: loc ? loc.line : null,
+    });
+  });
+}
+
+import(${JSON.stringify('/@fs' + target.moduleFile)}).catch((err) => acePreviewPost('window-error', String((err && err.stack) || err)));
+`;
+}
+
+/**
  * The virtual entry module. Plain JS with React.createElement (no JSX, so it
  * needs no transform of its own); React 19 createRoot with StrictMode ON —
  * double-invoked effects are exactly the bug class a practice tool should
@@ -358,6 +428,9 @@ for (const level of ['log', 'warn', 'error']) {
  * triggers a full reload, whose fresh import re-resolves from scratch.
  */
 export function buildHarnessEntry(target: PreviewTarget): string {
+  if (target.mode === 'import') {
+    return buildImportHarnessEntry(target);
+  }
   return `import React from 'react';
 import { createRoot } from 'react-dom/client';
 import * as questionModule from ${JSON.stringify('/@fs' + target.moduleFile)};

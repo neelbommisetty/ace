@@ -21,6 +21,7 @@ import {
   previewPagePath,
   resolvePreviewExport,
   resolvePreviewTarget,
+  type PreviewTarget,
 } from './preview-harness.js';
 import { createPreviewManager, type PreviewManager } from './preview.js';
 import { createBus } from './sse.js';
@@ -121,6 +122,13 @@ describe('resolvePreviewTarget', () => {
     fs.writeFileSync(path.join(qdir, 'react-apps', 'demo', 'App.tsx'), 'export default 1;\n');
     fs.mkdirSync(path.join(qdir, 'web-components', 'widget'), { recursive: true });
     fs.writeFileSync(path.join(qdir, 'web-components', 'widget', 'Component.tsx'), 'export default 1;\n');
+    fs.mkdirSync(path.join(qdir, 'playground', 'scratch-1'), { recursive: true });
+    fs.writeFileSync(path.join(qdir, 'playground', 'scratch-1', 'App.tsx'), 'export default 1;\n');
+    fs.mkdirSync(path.join(qdir, 'playground-ts', 'scratch-1'), { recursive: true });
+    fs.writeFileSync(
+      path.join(qdir, 'playground-ts', 'scratch-1', 'index.ts'),
+      "console.log('hi');\n",
+    );
     return qdir;
   }
 
@@ -134,6 +142,7 @@ describe('resolvePreviewTarget', () => {
         moduleFile: path.join(qdir, 'react-apps', 'demo', 'App.tsx'),
         usesFixture: false,
         fixtureHint: null,
+        mode: 'mount',
       },
     });
     const comp = resolvePreviewTarget(qdir, 'web-components', 'widget');
@@ -144,6 +153,44 @@ describe('resolvePreviewTarget', () => {
         usesFixture: false,
         // web-components with no preview.tsx yet gets a hint; react-apps never does.
         fixtureHint: expect.stringContaining('preview.tsx'),
+        mode: 'mount',
+      },
+    });
+  });
+
+  // NEE-387: playground categories drive their preview through the SAME
+  // registry field ('preview'), not a hardcoded group check.
+  it('resolves the react playground in mount mode like any other react-group category', () => {
+    const qdir = makeQuestions();
+    const resolved = resolvePreviewTarget(qdir, 'playground', 'scratch-1');
+    expect(resolved).toMatchObject({
+      ok: true,
+      target: {
+        moduleFile: path.join(qdir, 'playground', 'scratch-1', 'App.tsx'),
+        expectedName: 'App',
+        usesFixture: false,
+        mode: 'mount',
+      },
+    });
+  });
+
+  it('resolves the ts playground in import mode, ignoring any preview.tsx fixture', () => {
+    const qdir = makeQuestions();
+    // Import mode never consults the fixture seam — even a stray preview.tsx
+    // dropped in the dir is ignored, unlike the mount-mode web-components case.
+    fs.writeFileSync(
+      path.join(qdir, 'playground-ts', 'scratch-1', 'preview.tsx'),
+      'export default function Preview() { return null; }\n',
+    );
+    const resolved = resolvePreviewTarget(qdir, 'playground-ts', 'scratch-1');
+    expect(resolved).toMatchObject({
+      ok: true,
+      target: {
+        moduleFile: path.join(qdir, 'playground-ts', 'scratch-1', 'index.ts'),
+        expectedName: null,
+        usesFixture: false,
+        fixtureHint: null,
+        mode: 'import',
       },
     });
   });
@@ -172,12 +219,14 @@ describe('resolvePreviewTarget', () => {
     expect(resolved).toMatchObject({ ok: true, target: { fixtureHint: null } });
   });
 
-  it('rejects non-react categories, unknown categories, and missing questions', () => {
+  it('rejects non-previewing categories, unknown categories, and missing questions', () => {
     const qdir = makeQuestions();
+    // js-ts has preview: 'none' — still rejected, just with the field-driven
+    // reason rather than the old hardcoded group==='react' message.
     const jsTs = resolvePreviewTarget(qdir, 'js-ts', 'anything');
     expect(jsTs).toMatchObject({ ok: false });
     if (jsTs.ok) throw new Error('unreachable');
-    expect(jsTs.reason).toContain('only available for React categories');
+    expect(jsTs.reason).toContain('not available for "js-ts"');
 
     expect(resolvePreviewTarget(qdir, 'not-a-category', 'x')).toMatchObject({ ok: false });
     const missing = resolvePreviewTarget(qdir, 'react-apps', 'nope');
@@ -220,13 +269,14 @@ describe('preview URL scheme', () => {
 // ---------------------------------------------------------------------------
 
 describe('harness generation', () => {
-  const target = {
+  const target: PreviewTarget = {
     category: 'react-apps',
     slug: 'demo',
     moduleFile: '/ws/questions/react-apps/demo/App.tsx',
     expectedName: 'App',
     usesFixture: false,
     fixtureHint: null,
+    mode: 'mount',
   };
 
   it('html mounts the entry module and nothing else', () => {
@@ -366,6 +416,52 @@ describe('harness generation', () => {
       expect(postCalls.length).toBeGreaterThan(0);
     });
   });
+
+  // NEE-387: import-only entry (playground-ts) — executes the module for its
+  // side effects, no react/root/export-resolution at all.
+  describe('import-mode entry', () => {
+    const importTarget: PreviewTarget = {
+      category: 'playground-ts',
+      slug: 'scratch-1',
+      moduleFile: '/ws/questions/playground-ts/scratch-1/index.ts',
+      expectedName: null,
+      usesFixture: false,
+      fixtureHint: null,
+      mode: 'import',
+    };
+    const entry = buildHarnessEntry(importTarget);
+
+    it('dynamically imports the module for side effects only', () => {
+      expect(entry).toContain('"/@fs/ws/questions/playground-ts/scratch-1/index.ts"');
+      expect(entry).toMatch(/import\(\s*"\/@fs\/ws\/questions\/playground-ts\/scratch-1\/index\.ts"\s*\)/);
+    });
+
+    it('carries the ace-preview forwarding marker and a vite:error handler', () => {
+      expect(entry).toContain("source: 'ace-preview'");
+      expect(entry).toContain("import.meta.hot.on('vite:error'");
+    });
+
+    it('has no react/createRoot/export-resolution machinery', () => {
+      expect(entry).not.toContain('react-dom');
+      expect(entry).not.toContain('createRoot');
+      expect(entry).not.toContain('resolvePreviewExport');
+      expect(entry).not.toContain('PreviewErrorBoundary');
+      expect(entry).not.toContain("import.meta.hot.on('vite:afterUpdate'");
+    });
+
+    // Load-bearing ordering (NEE-387): a static import hoists above every
+    // other statement, so if the module import ran before the console patch,
+    // an early `console.log` in the question's code would never forward —
+    // the feature would look silently dead. The dynamic `import(` call must
+    // therefore appear LATER in the string than the console-patching line.
+    it('patches console BEFORE dynamically importing the module (ordering is load-bearing)', () => {
+      const consolePatchIdx = entry.indexOf('console[level] =');
+      const importIdx = entry.indexOf('import(');
+      expect(consolePatchIdx).toBeGreaterThan(-1);
+      expect(importIdx).toBeGreaterThan(-1);
+      expect(consolePatchIdx).toBeLessThan(importIdx);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -401,6 +497,11 @@ describe('harness over a real vite server', () => {
     );
     write('questions/web-components/no-export/Component.tsx', 'export const helper = 1;\n');
     write('questions/js-ts/algo/solution.ts', 'export const solve = () => 1;\n');
+    // NEE-387: the import-mode (playground-ts) fixture.
+    write(
+      'questions/playground-ts/scratch-1/index.ts',
+      "console.log('hello from the ts playground');\n",
+    );
     fs.symlinkSync(ACE_NODE_MODULES, path.join(root, 'node_modules'));
     return root;
   }
@@ -445,15 +546,30 @@ describe('harness over a real vite server', () => {
     const mod = await fetch(`${url}/@fs${realRoot}/questions/react-apps/default-app/App.tsx`);
     expect(mod.status).toBe(200);
 
-    // Non-react categories have nothing to preview.
+    // Categories with preview: 'none' have nothing to preview.
     const jsTs = await fetch(url + previewPagePath('js-ts', 'algo'));
     expect(jsTs.status).toBe(404);
-    expect(await jsTs.text()).toContain('only available for React categories');
+    expect(await jsTs.text()).toContain('not available for "js-ts"');
 
     // Unknown question under a react category.
     const missing = await fetch(url + previewPagePath('react-apps', 'nope'));
     expect(missing.status).toBe(404);
     expect(await missing.text()).toContain('App.tsx');
+
+    // NEE-387: the ts playground (import mode) gets a page + entry too, but
+    // an entry with none of the mount-mode machinery.
+    const tsPage = await fetch(url + previewPagePath('playground-ts', 'scratch-1'));
+    expect(tsPage.status).toBe(200);
+    const tsHtml = await tsPage.text();
+    expect(tsHtml).toContain(previewEntryPath('playground-ts', 'scratch-1'));
+
+    const tsEntry = await fetch(url + previewEntryPath('playground-ts', 'scratch-1'));
+    expect(tsEntry.status).toBe(200);
+    const tsJs = await tsEntry.text();
+    expect(tsJs).toContain('acePreviewPost');
+    expect(tsJs).toContain('ace-preview');
+    expect(tsJs).not.toContain('resolvePreviewExport');
+    expect(tsJs).not.toContain('StrictMode');
   }, 30_000);
 
   // NEE-352: preview.tsx fixture — mounted instead of the bare (often
