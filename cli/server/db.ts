@@ -199,6 +199,8 @@ function rowToGenerationJob(r: SqlRow): GenerationJobRow {
     difficulty: r.difficulty as Difficulty,
     topic: r.topic as string,
     brainstormSessionId: (r.brainstorm_session_id as string | null) ?? null,
+    feedback: (r.feedback as string | null) ?? null,
+    sourceQuestionId: (r.source_question_id as string | null) ?? null,
     title: (r.title as string | null) ?? null,
     slug: (r.slug as string | null) ?? null,
     result:
@@ -1031,18 +1033,23 @@ class SqliteAceDb implements AceDb {
     difficulty: Difficulty;
     topic: string;
     brainstormSessionId?: string | null;
+    // NEE-386: set together (or neither) — the regenerate-with-feedback flow.
+    feedback?: string | null;
+    sourceQuestionId?: string | null;
   }): GenerationJobRow {
     const now = nowIso();
     const row = this.stmt(
       `INSERT INTO generation_jobs
-        (id, status, category, difficulty, topic, brainstorm_session_id, created_at, run_started_at)
-       VALUES (?, 'running', ?, ?, ?, ?, ?, ?) RETURNING *`,
+        (id, status, category, difficulty, topic, brainstorm_session_id, feedback, source_question_id, created_at, run_started_at)
+       VALUES (?, 'running', ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
     ).get(
       uuidv7(),
       j.category,
       j.difficulty,
       j.topic,
       j.brainstormSessionId ?? null,
+      j.feedback ?? null,
+      j.sourceQuestionId ?? null,
       now,
       now,
     ) as SqlRow;
@@ -1117,6 +1124,17 @@ class SqliteAceDb implements AceDb {
       'SELECT * FROM generation_jobs ORDER BY created_at DESC, id DESC LIMIT ?',
     ).all(limit) as SqlRow[];
     return rows.map(rowToGenerationJob);
+  }
+
+  // Newest done job for a question — the regenerate flow's source of the
+  // prior result_json (server-side use only, the result is answer key).
+  // Ordering matches listGenerationJobs (created_at DESC, id DESC).
+  getLatestDoneGenerationJobForQuestion(questionId: string): GenerationJobRow | null {
+    const r = this.stmt(
+      `SELECT * FROM generation_jobs WHERE question_id = ? AND status = 'done'
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).get(questionId) as SqlRow | undefined;
+    return r ? rowToGenerationJob(r) : null;
   }
 
   setQuestionSource(id: string, source: QuestionSource): void {

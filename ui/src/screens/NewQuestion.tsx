@@ -141,6 +141,8 @@ function DescribeForm({
       difficulty,
       topic: trimmedTopic,
       brainstormSessionId: null,
+      feedback: null,
+      sourceQuestionId: null,
       title: null,
       slug: null,
       result: null,

@@ -198,6 +198,9 @@ export interface AceDb {
     difficulty: Difficulty;
     topic: string;
     brainstormSessionId?: string | null;
+    // NEE-386: set together (or neither) — the regenerate-with-feedback flow.
+    feedback?: string | null;
+    sourceQuestionId?: string | null;
   }): GenerationJobRow;
   /**
    * Throws when the existing row's status is already 'done' (terminal rows
@@ -222,6 +225,11 @@ export interface AceDb {
   getGenerationJob(id: string): GenerationJobRow | null;
   /** Newest first. */
   listGenerationJobs(limit?: number): GenerationJobRow[];
+  /**
+   * Newest done job for a question — the regenerate flow's source of the
+   * prior result_json; server-side use only, the result is answer key.
+   */
+  getLatestDoneGenerationJobForQuestion(questionId: string): GenerationJobRow | null;
   /**
    * Narrow provenance-correction escape hatch: a plain `UPDATE questions SET
    * source = ?`, used only by the generation engine to re-assert 'generated'

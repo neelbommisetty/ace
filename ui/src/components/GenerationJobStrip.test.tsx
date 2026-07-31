@@ -69,6 +69,8 @@ function job(overrides: Partial<GenerationJobRow> = {}): GenerationJobRow {
     difficulty: 'medium',
     topic: 'closures and scope',
     brainstormSessionId: null,
+    feedback: null,
+    sourceQuestionId: null,
     title: null,
     slug: null,
     result: null,

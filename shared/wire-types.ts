@@ -191,6 +191,11 @@ export interface GenerationJobRow {
   difficulty: Difficulty;
   topic: string;
   brainstormSessionId: string | null;
+  // NEE-386: set together (or neither) when this job regenerates a prior
+  // question with feedback. Write-once — patchGenerationJob never touches
+  // them, so every existing patch preserves them untouched.
+  feedback: string | null;
+  sourceQuestionId: string | null;
   title: string | null;
   slug: string | null;
   result: Record<string, unknown> | null; // parsed LLM object, persisted BEFORE any scaffolding

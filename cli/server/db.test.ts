@@ -55,7 +55,7 @@ describe('openDb', () => {
   it('creates .ace and .ace/tmp and tracks schema_version', () => {
     expect(fs.existsSync(path.join(tempRoot, '.ace', 'ace.db'))).toBe(true);
     expect(fs.statSync(path.join(tempRoot, '.ace', 'tmp')).isDirectory()).toBe(true);
-    expect(db.getMeta('schema_version')).toBe('8');
+    expect(db.getMeta('schema_version')).toBe('9');
   });
 
   it('reopens an existing db without re-running migrations', () => {
@@ -64,7 +64,7 @@ describe('openDb', () => {
     db.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('8');
+    expect(db.getMeta('schema_version')).toBe('9');
     expect(db.getMeta('custom')).toBe('kept');
     expect(db.getQuestionById(q.id)?.slug).toBe('debounce');
   });
@@ -72,7 +72,7 @@ describe('openDb', () => {
 
 describe('migration 3 (generation jobs + brainstorm sessions)', () => {
   it('lands schema_version=3 and creates the new tables + indexes', () => {
-    expect(db.getMeta('schema_version')).toBe('8');
+    expect(db.getMeta('schema_version')).toBe('9');
 
     const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
     try {
@@ -140,7 +140,7 @@ describe('migration 3 (generation jobs + brainstorm sessions)', () => {
     // picks up migration 4 (NEE-178 backfill), migration 5 (NEE-266 AI
     // activity log), migration 6 (NEE-277 run_started_at) and migration 7
     // (NEE-286 idx_reviews_question_id) on top of migration 3.
-    expect(db.getMeta('schema_version')).toBe('8');
+    expect(db.getMeta('schema_version')).toBe('9');
     expect(db.getQuestionById('seed-q1')?.slug).toBe('debounce');
 
     const raw = new DatabaseSync(dbPath);
@@ -231,7 +231,7 @@ describe('migration 4 (NEE-178 backfill: close stale solved-question attempts)',
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('8');
+    expect(db.getMeta('schema_version')).toBe('9');
 
     const a1 = db.getAttempt('a1')!;
     expect(a1.endReason).toBe('solved');
@@ -252,7 +252,7 @@ describe('migration 4 (NEE-178 backfill: close stale solved-question attempts)',
 
 describe('migration 5 (NEE-266: ai activity log)', () => {
   it('creates ai_runs/ai_steps and their indexes', () => {
-    expect(db.getMeta('schema_version')).toBe('8');
+    expect(db.getMeta('schema_version')).toBe('9');
 
     const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
     try {
@@ -314,7 +314,7 @@ describe('migration 5 (NEE-266: ai activity log)', () => {
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('8');
+    expect(db.getMeta('schema_version')).toBe('9');
     expect(db.getQuestionById('seed-q1')?.slug).toBe('debounce');
     expect(db.listAiRuns()).toEqual([]);
   });
@@ -343,7 +343,7 @@ describe('migration 6 (NEE-277: generation_jobs.run_started_at)', () => {
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('8');
+    expect(db.getMeta('schema_version')).toBe('9');
     const migrated = db.getGenerationJob('gj-old')!;
     // Backfilled to created_at so historical jobs keep their current reading.
     expect(migrated.runStartedAt).toBe('2026-01-01T00:00:00.000Z');
@@ -354,7 +354,7 @@ describe('migration 6 (NEE-277: generation_jobs.run_started_at)', () => {
 
 describe('migration 7 (NEE-286: idx_reviews_question_id)', () => {
   it('creates the index', () => {
-    expect(db.getMeta('schema_version')).toBe('8');
+    expect(db.getMeta('schema_version')).toBe('9');
 
     const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
     try {
@@ -399,7 +399,7 @@ describe('migration 7 (NEE-286: idx_reviews_question_id)', () => {
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('8');
+    expect(db.getMeta('schema_version')).toBe('9');
     expect(db.listReviews('seed-q1')).toHaveLength(1);
     expect(db.listReviews('seed-q1')[0].id).toBe('rv-old');
   });
@@ -407,7 +407,7 @@ describe('migration 7 (NEE-286: idx_reviews_question_id)', () => {
 
 describe('migration 8 (NEE-345: probe_sets)', () => {
   it('creates the table and its question_id index', () => {
-    expect(db.getMeta('schema_version')).toBe('8');
+    expect(db.getMeta('schema_version')).toBe('9');
 
     const raw = new DatabaseSync(path.join(tempRoot, '.ace', 'ace.db'));
     try {
@@ -458,9 +458,64 @@ describe('migration 8 (NEE-345: probe_sets)', () => {
     seed.close();
 
     db = openDb(tempRoot);
-    expect(db.getMeta('schema_version')).toBe('8');
+    expect(db.getMeta('schema_version')).toBe('9');
     expect(db.getQuestionById('seed-q1')?.slug).toBe('a-story');
     expect(db.listProbeSets('seed-q1')).toEqual([]);
+  });
+});
+
+describe('migration 9 (NEE-386: generation_jobs feedback + source_question_id)', () => {
+  it('migrates a db pre-seeded at schema_version 8 cleanly to 9, backfilling legacy rows to null', () => {
+    db.close();
+    const dbPath = path.join(tempRoot, '.ace', 'ace.db');
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(`${dbPath}-wal`, { force: true });
+    fs.rmSync(`${dbPath}-shm`, { force: true });
+
+    const seed = new DatabaseSync(dbPath);
+    seed.exec('PRAGMA journal_mode = WAL');
+    for (const m of MIGRATIONS.slice(0, 8)) seed.exec(m);
+    seed.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('schema_version', '8');
+    // A pre-migration job row has neither new column at all.
+    seed
+      .prepare(
+        `INSERT INTO generation_jobs
+          (id, status, category, difficulty, topic, created_at, run_started_at)
+         VALUES (?, 'done', 'js-ts', 'medium', 'pre-migration job', ?, ?)`,
+      )
+      .run('gj-old', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    seed.close();
+
+    db = openDb(tempRoot);
+    expect(db.getMeta('schema_version')).toBe('9');
+    const migrated = db.getGenerationJob('gj-old')!;
+    expect(migrated.feedback).toBeNull();
+    expect(migrated.sourceQuestionId).toBeNull();
+  });
+
+  it('round-trips feedback + sourceQuestionId through createGenerationJob/getGenerationJob', () => {
+    const q = makeQuestion({ slug: 'debounce' });
+    const job = db.createGenerationJob({
+      category: 'js-ts',
+      difficulty: 'medium',
+      topic: 'a debounce utility',
+      feedback: 'too easy',
+      sourceQuestionId: q.id,
+    });
+    expect(job.feedback).toBe('too easy');
+    expect(job.sourceQuestionId).toBe(q.id);
+    expect(db.getGenerationJob(job.id)).toEqual(job);
+  });
+
+  it('rejects a bogus source_question_id under PRAGMA foreign_keys=ON', () => {
+    expect(() =>
+      db.createGenerationJob({
+        category: 'js-ts',
+        difficulty: 'medium',
+        topic: 'x',
+        sourceQuestionId: 'does-not-exist',
+      }),
+    ).toThrow();
   });
 });
 
@@ -1399,6 +1454,91 @@ describe('generation jobs', () => {
     expect(db.listGenerationJobs().map((j) => j.id)).toEqual([j3.id, j2.id, j1.id]);
     expect(db.listGenerationJobs(2).map((j) => j.id)).toEqual([j3.id, j2.id]);
     expect(db.listGenerationJobs(1).map((j) => j.id)).toEqual([j3.id]);
+  });
+
+  describe('getLatestDoneGenerationJobForQuestion', () => {
+    it('returns the newest done job for the question, ignoring other statuses and other questions', () => {
+      const q1 = makeQuestion({ slug: 'debounce' });
+      const q2 = makeQuestion({ slug: 'throttle' });
+
+      const older = db.createGenerationJob({
+        category: 'js-ts',
+        difficulty: 'medium',
+        topic: 'older',
+      });
+      db.patchGenerationJob(older.id, {
+        status: 'done',
+        questionId: q1.id,
+        result: { title: 'Older' },
+      });
+
+      // A running job for the same question must not shadow the done one.
+      const running = db.createGenerationJob({
+        category: 'js-ts',
+        difficulty: 'medium',
+        topic: 'running',
+      });
+      db.patchGenerationJob(running.id, { questionId: q1.id });
+
+      const newer = db.createGenerationJob({
+        category: 'js-ts',
+        difficulty: 'medium',
+        topic: 'newer',
+      });
+      db.patchGenerationJob(newer.id, {
+        status: 'done',
+        questionId: q1.id,
+        result: { title: 'Newer' },
+      });
+
+      // A done job for a different question must not leak in.
+      const otherDone = db.createGenerationJob({
+        category: 'js-ts',
+        difficulty: 'medium',
+        topic: 'other',
+      });
+      db.patchGenerationJob(otherDone.id, {
+        status: 'done',
+        questionId: q2.id,
+        result: { title: 'Other' },
+      });
+
+      const latest = db.getLatestDoneGenerationJobForQuestion(q1.id);
+      expect(latest?.id).toBe(newer.id);
+      expect(latest?.result).toEqual({ title: 'Newer' });
+    });
+
+    it('returns null when no done job exists for the question', () => {
+      const q = makeQuestion({ slug: 'debounce' });
+      expect(db.getLatestDoneGenerationJobForQuestion(q.id)).toBeNull();
+      expect(db.getLatestDoneGenerationJobForQuestion('nope')).toBeNull();
+    });
+  });
+
+  it('patchGenerationJob never touches feedback/sourceQuestionId (write-once)', () => {
+    const q1 = makeQuestion({ slug: 'debounce' });
+    const q2 = makeQuestion({ slug: 'debounce-2' });
+    const job = db.createGenerationJob({
+      category: 'js-ts',
+      difficulty: 'medium',
+      topic: 'x',
+      feedback: 'too easy',
+      sourceQuestionId: q1.id,
+    });
+
+    // A retry-shaped patch (status back to running, error cleared, run_started_at
+    // re-stamped) must preserve the write-once regenerate fields untouched.
+    const restarted = db.patchGenerationJob(job.id, {
+      status: 'running',
+      errorMessage: null,
+      runStartedAt: '2026-07-27T12:00:00.000Z',
+    });
+    expect(restarted.feedback).toBe('too easy');
+    expect(restarted.sourceQuestionId).toBe(q1.id);
+
+    const done = db.patchGenerationJob(job.id, { status: 'done', questionId: q2.id });
+    expect(done.feedback).toBe('too easy');
+    expect(done.sourceQuestionId).toBe(q1.id);
   });
 
   it('setQuestionSource flips provenance and a later upsertQuestion rescan does not revert it', () => {

@@ -272,4 +272,16 @@ CREATE TABLE probe_sets (
 
 CREATE INDEX idx_probe_sets_question_id ON probe_sets (question_id);
 `,
+  // Migration 9 (NEE-386): regenerate-with-feedback. Both columns are
+  // write-once — patchGenerationJob never learns to patch them, so every
+  // existing patch preserves them untouched. In-place replacement of a
+  // question is ruled out structurally (attempts/test_runs/reviews/
+  // snapshots/disputes all FK questions.id), so regeneration always creates
+  // a NEW question row and archives the source rather than patching it —
+  // source_question_id just records which prior question this job revises.
+  // Pure nullable ALTERs, legal under PRAGMA foreign_keys = ON (NULL default).
+  `
+ALTER TABLE generation_jobs ADD COLUMN feedback TEXT;
+ALTER TABLE generation_jobs ADD COLUMN source_question_id TEXT REFERENCES questions (id);
+`,
 ];
