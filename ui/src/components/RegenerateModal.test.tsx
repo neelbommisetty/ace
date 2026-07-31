@@ -73,6 +73,35 @@ describe('RegenerateModal', () => {
     );
   });
 
+  it('ignores a second click while the request is in flight — one POST, button disabled as Regenerating…', async () => {
+    // Deferred promise: the double-click guard only matters BEFORE the first
+    // request settles, so hold the request open across both clicks.
+    let resolveRequest!: (value: { jobId: string }) => void;
+    regenerateQuestion.mockImplementation(
+      () =>
+        new Promise<{ jobId: string }>((resolve) => {
+          resolveRequest = resolve;
+        }),
+    );
+    renderModal();
+
+    fireEvent.change(screen.getByLabelText('Feedback'), { target: { value: 'too easy' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
+
+    // In-flight state: the button is disabled and relabeled…
+    const inFlightButton = screen.getByRole('button', { name: 'Regenerating…' });
+    expect(inFlightButton).toBeDisabled();
+    // …and a second click (fireEvent dispatches even on a disabled button,
+    // standing in for any path around the disabled attribute) must be
+    // swallowed by the submit guard — exactly one POST.
+    fireEvent.click(inFlightButton);
+    expect(regenerateQuestion).toHaveBeenCalledTimes(1);
+
+    resolveRequest({ jobId: 'job-1' });
+    expect(await screen.findByRole('link', { name: /Go to Library/i })).toBeInTheDocument();
+    expect(regenerateQuestion).toHaveBeenCalledTimes(1);
+  });
+
   it('flips to the started confirmation state on success, with the textarea gone', async () => {
     regenerateQuestion.mockResolvedValue({ jobId: 'job-1' });
     renderModal();
