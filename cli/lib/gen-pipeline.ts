@@ -267,6 +267,15 @@ export interface GenerateParams {
   userMessage: string;
   /** Workspace whose node_modules/.ace/tmp the sandbox verification uses. */
   workspaceRoot: string;
+  /**
+   * Set when this run revises a prior generated question with user feedback
+   * (NEE-386). When present, stage 1 builds its prompt via
+   * buildRegenerateUserMessage instead of sending userMessage verbatim, and
+   * priorQuestion's spoiler values (referenceSolution/interviewerPacket/
+   * followUps) must be treated as secrets — registered with the recorder's
+   * literal scrubber before the model call.
+   */
+  regenerate?: { priorQuestion: GeneratedQuestion; feedback: string } | null;
 }
 
 /**
@@ -471,6 +480,35 @@ with ALL fields (not only the ones you changed).`,
   ]);
 }
 
+/**
+ * Exported for tests (masked-variant assertions), not for callers. Modeled
+ * byte-for-byte on buildCalibrationReworkUserMessage — topic brief + the
+ * prior output's JSON fence (masked twin via maskSpoilerValues) + the user's
+ * feedback verbatim (wire-safe, like topic — no masking) + an instruction
+ * that, unlike the rework/repair builders, does NOT pin "title"/"slug": a
+ * regenerated question may legitimately retitle (NEE-386).
+ */
+export function buildRegenerateUserMessage(
+  params: GenerateParams,
+  priorQuestion: GeneratedQuestion,
+  feedback: string,
+): BuiltPrompt {
+  return renderSections([
+    { text: params.userMessage },
+    {
+      text: `## Current Output\n\n\`\`\`json\n${JSON.stringify(priorQuestion, null, 2)}\n\`\`\``,
+      masked: `## Current Output\n\n\`\`\`json\n${JSON.stringify(maskSpoilerValues(priorQuestion), null, 2)}\n\`\`\``,
+    },
+    { text: `## User Feedback\n\n${feedback}` },
+    {
+      text: `Regenerate the question to address the feedback above. This is a revision
+of the current output, not a from-scratch prompt — but you MAY change any
+field, including "title" and "slug", when the feedback calls for it. Return
+the complete JSON object with ALL fields (not only the ones you changed).`,
+    },
+  ]);
+}
+
 /** Exported for tests (masked-variant assertions), not for callers. */
 export function buildRepairUserMessage(
   question: GeneratedQuestion,
@@ -624,16 +662,27 @@ export async function generateVerifiedQuestion(
       step,
     );
 
-  // Stage 1 — generate. The prompt is the caller's topic brief — no spoilers
-  // exist yet, so the recorder gets it as-is (the taxonomy's one shown prompt).
+  // Stage 1 — generate. Ordinarily the prompt is the caller's topic brief —
+  // no spoilers exist yet, so the recorder gets it as-is (the taxonomy's one
+  // shown prompt). When regenerating (NEE-386), the prompt instead wraps the
+  // prior question + user feedback via buildRegenerateUserMessage — the
+  // recorder gets the constructed masked twin, on the SAME 'generate' slug
+  // (WIRE_SAFE_KEYS.generate needs no new entry), and the prior question's
+  // spoiler values are registered as secrets before the call. For a
+  // non-regenerate run, prompt === maskedPrompt === userMessage, byte-
+  // identical to before this refactor.
   onProgress('generating', 1);
+  const initialPrompt: BuiltPrompt = params.regenerate
+    ? buildRegenerateUserMessage(params, params.regenerate.priorQuestion, params.regenerate.feedback)
+    : { prompt: params.userMessage, maskedPrompt: params.userMessage };
+  if (params.regenerate) registerSpoilers(params.regenerate.priorQuestion);
   const generateStep = steps.step({
     slug: 'generate',
     label: 'Writing the question',
     kind: 'llm',
-    prompt: params.userMessage,
+    prompt: initialPrompt.maskedPrompt,
   });
-  let question = await callGenerate(params.userMessage, generateStep).catch((err: unknown) => {
+  let question = await callGenerate(initialPrompt.prompt, generateStep).catch((err: unknown) => {
     // Raw model text is never stored on a parse failure (it is the unparsed
     // answer key) — only the error's own message, masked by the recorder.
     generateStep.fail(errorText(err));

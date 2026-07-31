@@ -4,6 +4,7 @@ import {
   buildAuditUserMessage,
   buildCalibrationReworkUserMessage,
   buildCalibrationUserMessage,
+  buildRegenerateUserMessage,
   buildRepairUserMessage,
   findDisallowedImports,
   generateVerifiedQuestion,
@@ -571,6 +572,61 @@ describe('step recording (NEE-268)', () => {
       outcome: 'provider 500 during generate',
     });
   });
+
+  it('regenerate context (NEE-386): sends the revision prompt to the model, records the masked twin on the generate slug, and registers the prior spoilers', async () => {
+    const priorQuestion: GeneratedQuestion = {
+      ...STAGE1,
+      title: 'Autosave Queue (prior)',
+      slug: 'autosave-queue-prior',
+    };
+    const freshQuestion: GeneratedQuestion = {
+      ...STAGE1,
+      title: 'Autosave Queue v2',
+      slug: 'autosave-queue-v2',
+    };
+    const { llm, calls } = makeLlm([freshQuestion], [AUDIT_NOOP]);
+    const { sink, recorded, secrets } = makeStepsSink();
+
+    const result = await generateVerifiedQuestion(
+      {
+        ...PARAMS,
+        regenerate: { priorQuestion, feedback: 'Too easy — add an O(n) constraint.' },
+      },
+      { llm, verify: makeVerify([GREEN]), steps: sink },
+    );
+
+    // The model-bound call carries the revision framing plus the prior spoilers and the feedback.
+    const generateCall = calls[0];
+    expect(generateCall.purpose).toBe('generate');
+    expect(generateCall.user).toContain('## Current Output');
+    expect(generateCall.user).toContain('return {} as never');
+    expect(generateCall.user).toContain('## User Feedback');
+    expect(generateCall.user).toContain('Too easy — add an O(n) constraint.');
+
+    // The recorded step is the constructed masked twin, on the SAME 'generate' slug — no answer-key leak.
+    const generateStep = recorded[0];
+    expect(generateStep.slug).toBe('generate');
+    expect(generateStep.prompt).toContain(WITHHELD_MARKER);
+    expect(generateStep.prompt).not.toContain('return {} as never');
+
+    // The prior question's spoilers are registered as scrub secrets before the call.
+    expect(secrets).toContain(priorQuestion.referenceSolution);
+    expect(secrets).toContain(priorQuestion.interviewerPacket);
+
+    // No identity pin at stage 1 — the fresh title/slug from the model wins.
+    expect(result.question.title).toBe(freshQuestion.title);
+    expect(result.question.slug).toBe(freshQuestion.slug);
+  });
+
+  it('regression pin (NEE-386): a non-regenerate run still records the plain topic brief verbatim', async () => {
+    const { llm, calls } = makeLlm([STAGE1], [AUDIT_NOOP]);
+    const { sink, recorded } = makeStepsSink();
+
+    await generateVerifiedQuestion(PARAMS, { llm, verify: makeVerify([GREEN]), steps: sink });
+
+    expect(calls[0].user).toBe(PARAMS.userMessage);
+    expect(recorded[0].prompt).toBe(PARAMS.userMessage);
+  });
 });
 
 describe('verifyFailureDetail (closed vocabulary)', () => {
@@ -867,6 +923,44 @@ describe('masked prompt construction (NEE-265)', () => {
     expect(built.maskedPrompt).not.toContain('drop the retry-with-backoff branch');
     expect(built.maskedPrompt).toContain('too-big');
     expect(built.maskedPrompt).toContain(`"referenceSolution": "${WITHHELD_MARKER}"`);
+  });
+
+  it('buildRegenerateUserMessage embeds the topic brief, prior output, and feedback — masks spoilers, allows retitle/re-slug', () => {
+    const priorQuestion: GeneratedQuestion = {
+      ...STAGE1,
+      followUps: ['What would you do differently under sustained load?'],
+    };
+    const built = buildRegenerateUserMessage(
+      PARAMS,
+      priorQuestion,
+      'Too easy — needs an O(n) constraint.',
+    );
+
+    // The model-bound prompt carries the topic brief, the prior spoilers, and the feedback verbatim.
+    expect(built.prompt).toContain(PARAMS.userMessage);
+    expect(built.prompt).toContain('return {} as never');
+    expect(built.prompt).toContain('Concurrency realities');
+    expect(built.prompt).toContain('## User Feedback\n\nToo easy — needs an O(n) constraint.');
+
+    // The masked twin withholds the answer-key fields but keeps wire-safe content and feedback visible.
+    expect(built.maskedPrompt).toContain(PARAMS.userMessage);
+    expect(built.maskedPrompt).not.toContain('return {} as never');
+    expect(built.maskedPrompt).not.toContain('Concurrency realities');
+    expect(built.maskedPrompt).not.toContain('What would you do differently under sustained load?');
+    expect(built.maskedPrompt).toContain(`"referenceSolution": "${WITHHELD_MARKER}"`);
+    expect(built.maskedPrompt).toContain(`"interviewerPacket": "${WITHHELD_MARKER}"`);
+    expect(built.maskedPrompt).toContain(`"followUps": "${WITHHELD_MARKER}"`);
+    expect(built.maskedPrompt).toContain(`"title": ${JSON.stringify(priorQuestion.title)}`);
+    expect(built.maskedPrompt).toContain(priorQuestion.description!);
+    // testCode is multi-line; JSON.stringify escapes its newlines, so a
+    // single-line slice (rather than the raw multi-line field) is what
+    // survives verbatim inside the fence.
+    expect(built.maskedPrompt).toContain("it('saves', () => { expect(1).toBe(1); });");
+    expect(built.maskedPrompt).toContain('Too easy — needs an O(n) constraint.');
+
+    // Unlike rework/repair, no title/slug pin — a regenerated question may legitimately retitle.
+    expect(built.prompt).not.toContain('Keep "title"');
+    expect(built.maskedPrompt).not.toContain('Keep "title"');
   });
 });
 
