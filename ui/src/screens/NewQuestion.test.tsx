@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useEffect, useRef } from 'react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NewQuestion } from './NewQuestion';
+import { GENERATABLE_CATEGORY_SLUGS } from '../lib/categories';
 import type { SettingsInfo } from '../types';
 
 // Same seam as GenerationJobStrip.test.tsx: `useSseEvent` registers into a
@@ -93,6 +94,24 @@ describe('NewQuestion — describe mode', () => {
     expect(screen.getByRole('option', { name: 'easy' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'medium' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'hard' })).toBeInTheDocument();
+  });
+
+  it('offers exactly the generatable categories — never the playground slugs, whose jobs 400 server-side (NEE-387)', async () => {
+    getSettings.mockResolvedValue(CONFIGURED_SETTINGS);
+    getGenerationJobs.mockResolvedValue({ jobs: [] });
+    renderNewQuestion();
+    await waitFor(() => expect(getSettings).toHaveBeenCalled());
+
+    // Pins the picker to GENERATABLE_CATEGORY_SLUGS: a revert to the full
+    // CATEGORY_SLUGS list (plausible — Library/History legitimately use it)
+    // would offer Scratch / TS Scratch here, and every submit with one
+    // selected dies on the server's 'category must be one of: …' 400.
+    const options = within(screen.getByLabelText('Category')).getAllByRole(
+      'option',
+    ) as HTMLOptionElement[];
+    expect(options.map((o) => o.value)).toEqual(GENERATABLE_CATEGORY_SLUGS);
+    expect(GENERATABLE_CATEGORY_SLUGS).not.toContain('playground');
+    expect(GENERATABLE_CATEGORY_SLUGS).not.toContain('playground-ts');
   });
 
   it('disables submit when the topic is empty and enables it once text is entered', async () => {

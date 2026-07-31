@@ -16,11 +16,12 @@ import type { AceDb } from './types.js';
 // in beforeAll before a dynamic import, rather than a static top-level one.
 // (ai-log.js reaches llm.js through gen-pipeline.js, so it rides along.)
 let createBrainstormEngine: typeof CreateBrainstormEngineFn;
+let IdeaListSchema: (typeof import('./brainstorm.js'))['IdeaListSchema'];
 let createAiLog: typeof CreateAiLogFn;
 
 beforeAll(async () => {
   process.env.ACE_E2E_MOCK_LLM = '1';
-  ({ createBrainstormEngine } = await import('./brainstorm.js'));
+  ({ createBrainstormEngine, IdeaListSchema } = await import('./brainstorm.js'));
   ({ createAiLog } = await import('./ai-log.js'));
 });
 
@@ -334,6 +335,42 @@ describe('createBrainstormEngine', () => {
     // The stale error from turn 1 must not linger once the session recovers.
     expect(recovered.errorMessage).toBeNull();
     expect(calls).toHaveLength(2);
+  });
+});
+
+describe('brainstorm playground exclusion (NEE-387)', () => {
+  // Both pins guard the same one-line hazard: brainstorm.ts importing
+  // CATEGORY_SLUGS instead of GENERATABLE_CATEGORY_SLUGS (a plausible merge
+  // resolution — Library/History legitimately use the full list). That
+  // revert typechecks and every other test stays green, but the LLM would
+  // then mint playground idea cards whose Generate click 400s server-side
+  // ('category must be one of: …' — routes/generation.ts).
+
+  it('IdeaListSchema rejects an otherwise-valid idea carrying a playground category', () => {
+    const withCategory = (category: string) => ({
+      ...VALID_IDEA_PAYLOAD,
+      ideas: [{ ...VALID_IDEA_PAYLOAD.ideas[0], category }],
+    });
+    // Anchor: the same payload with a generatable category parses — so the
+    // rejections below can only come from the category enum itself.
+    expect(IdeaListSchema.safeParse(withCategory('react-apps')).success).toBe(true);
+    expect(IdeaListSchema.safeParse(withCategory('playground')).success).toBe(false);
+    expect(IdeaListSchema.safeParse(withCategory('playground-ts')).success).toBe(false);
+  });
+
+  it('never advertises the playground categories in the system prompt sent to the llm', async () => {
+    const { llm, calls } = makeFakeLlm([() => VALID_IDEA_PAYLOAD]);
+    const engine = createBrainstormEngine({ db, bus, workspaceRoot: tempRoot, llm });
+
+    const done = waitFor('brainstorm-done');
+    engine.startTurn(null, 'idea about arrays');
+    await done;
+
+    const systemPrompt = calls[0].messages[0].content;
+    // Anchor: the addendum's category list really is in this prompt…
+    expect(systemPrompt).toContain('react-apps');
+    // …and nothing in it (builder output or addendum) names a playground.
+    expect(systemPrompt).not.toContain('playground');
   });
 });
 
