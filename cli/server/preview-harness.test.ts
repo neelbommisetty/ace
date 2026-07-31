@@ -233,7 +233,12 @@ describe('harness generation', () => {
     const html = buildHarnessHtml(target);
     expect(html).toContain('<div id="root"></div>');
     expect(html).toContain(`src="${previewEntryPath('react-apps', 'demo')}"`);
-    expect(html).toContain('color-scheme:light dark');
+    // NEE-380: a deterministic light canvas, not OS-derived — a dark-OS
+    // `color-scheme:light dark` left text invisible and buttons black behind
+    // the app pane's opaque white backdrop.
+    expect(html).toContain('color-scheme:light');
+    expect(html).not.toContain('color-scheme:light dark');
+    expect(html).toContain('background:#fff;color:#111');
   });
 
   it('entry embeds the module path, expected name, and the SAME resolution rule', () => {

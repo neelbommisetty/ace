@@ -213,9 +213,13 @@ function escapeHtml(text: string): string {
 }
 
 /**
- * The per-question index.html. Neutral baseline styling ONLY — the
- * question's own styling is the thing under test, so no reset beyond a
- * margin-free body and the platform font stack.
+ * The per-question index.html. A deterministic LIGHT canvas — not
+ * OS-derived — is the baseline: under a dark-OS `color-scheme:light dark`
+ * the iframe resolves the dark scheme (white default text, dark form
+ * controls) while the app pane behind it paints an opaque white backdrop
+ * (`.preview-frame` in ui/src/styles.css), so text went invisible and
+ * buttons rendered black (NEE-380). The question's own styling still
+ * overrides everything here — this is only a baseline, not a reset.
  */
 export function buildHarnessHtml(target: PreviewTarget): string {
   const title = `${target.category}/${target.slug} — ace preview`;
@@ -226,7 +230,7 @@ export function buildHarnessHtml(target: PreviewTarget): string {
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     `<title>${escapeHtml(title)}</title>`,
-    '<style>:root{color-scheme:light dark}body{margin:0;font-family:system-ui,sans-serif}</style>',
+    '<style>:root{color-scheme:light}body{margin:0;background:#fff;color:#111;font-family:system-ui,sans-serif}</style>',
     '</head>',
     '<body>',
     '<div id="root"></div>',
