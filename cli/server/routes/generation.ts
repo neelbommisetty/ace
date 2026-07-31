@@ -1,13 +1,15 @@
 import type { Hono } from 'hono';
 import { CATEGORY_SLUGS, type CategorySlug, type Difficulty } from '../../lib/categories.js';
 import { redactGenerationJob } from '../generation.js';
-import { parseLimit, readJsonBody, requireProvider } from '../route-helpers.js';
+import { parseLimit, questionLookup, readJsonBody, requireProvider } from '../route-helpers.js';
 import type { RouteContext } from './context.js';
 
 const DIFFICULTIES: ReadonlySet<string> = new Set<Difficulty>(['easy', 'medium', 'hard']);
 const GENERATION_CAP_ERROR = 'three generations are already running — let one finish first';
 
 export function registerGenerationRoutes(app: Hono, ctx: RouteContext): void {
+  const lookupQuestion = questionLookup(ctx);
+
   app.post('/api/generation/jobs', async (c) => {
     const { db, generation } = ctx.requireSession();
     const body = await readJsonBody(c);
@@ -94,6 +96,61 @@ export function registerGenerationRoutes(app: Hono, ctx: RouteContext): void {
     }
 
     const { jobId } = generation.retry(job);
+    return c.json({ jobId }, 202);
+  });
+
+  // Regenerate-with-feedback (NEE-386): question-scoped rather than
+  // job-scoped — the Room/Library only have (category, slug), and
+  // questionLookup gives the 404 for free. Reuses the same cap-3 +
+  // provider gating as POST /api/generation/jobs; category/difficulty/topic
+  // are copied verbatim from the source question's own latest done job
+  // (the ticket's "same topic" call), never re-supplied by the client.
+  app.post('/api/questions/:category/:slug/regenerate', lookupQuestion, async (c) => {
+    const { db, generation } = ctx.requireSession();
+    const question = c.get('question');
+
+    const body = await readJsonBody(c);
+    if (!body) return c.json({ error: 'invalid JSON body' }, 400);
+
+    const feedback = body.feedback;
+    if (typeof feedback !== 'string' || feedback.length < 1 || feedback.length > 4000) {
+      return c.json({ error: 'feedback must be a string between 1 and 4000 characters' }, 400);
+    }
+
+    if (question.source !== 'generated') {
+      return c.json({ error: 'only generated questions can be regenerated with feedback' }, 409);
+    }
+
+    // The prior result is answer key — resolved here (server-side, never
+    // sent to the client) purely to confirm it still exists and to hand the
+    // engine the (category, difficulty, topic) to reuse; the engine
+    // re-resolves it again at run time from the row alone.
+    const sourceJob = db.getLatestDoneGenerationJobForQuestion(question.id);
+    if (sourceJob?.result == null) {
+      return c.json(
+        {
+          error:
+            'the original generation result is no longer available — generate a new question instead',
+        },
+        409,
+      );
+    }
+
+    if (generation.runningCount() >= 3) {
+      return c.json({ error: GENERATION_CAP_ERROR }, 409);
+    }
+    const noProvider = requireProvider(c);
+    if (noProvider) return noProvider;
+
+    // brainstormSessionId is deliberately omitted (null) — a regenerate job
+    // never traces back to a brainstorm turn.
+    const { jobId } = generation.start({
+      category: sourceJob.category as CategorySlug,
+      difficulty: sourceJob.difficulty,
+      topic: sourceJob.topic,
+      feedback,
+      sourceQuestionId: question.id,
+    });
     return c.json({ jobId }, 202);
   });
 }

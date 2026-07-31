@@ -102,9 +102,16 @@ function resolveSuggestedMinutes(
  * vanished between `listQuestions()` and this read (or predates NEE-343 and
  * has no `**Competency:**` line at all) just contributes "unknown" rather
  * than dropping the title from the feed.
+ *
+ * `excludeQuestionId` (NEE-386) drops one question from the feed — the
+ * source question of a regenerate-with-feedback run, so the model isn't told
+ * to avoid the very competency the revision is meant to keep or address.
+ * Defaults to undefined, which excludes nothing (today's exact behaviour).
  */
-function buildBehavioralCorpusNote(db: AceDb): string {
-  const existing = db.listQuestions().filter((q) => q.category === 'behavioral');
+function buildBehavioralCorpusNote(db: AceDb, excludeQuestionId?: string | null): string {
+  const existing = db
+    .listQuestions()
+    .filter((q) => q.category === 'behavioral' && q.id !== excludeQuestionId);
   if (existing.length === 0) return '';
 
   const lines = existing.map((q) => {
@@ -159,6 +166,15 @@ export interface GenerationEngine {
     difficulty: Difficulty;
     topic: string;
     brainstormSessionId?: string | null;
+    /**
+     * Set together (or neither) — the regenerate-with-feedback flow
+     * (NEE-386): `sourceQuestionId` is the question this job revises,
+     * `feedback` is the user's free-text critique. runJob resolves the prior
+     * result server-side from `sourceQuestionId`'s latest done job; redaction
+     * never touches the in-db row.
+     */
+    feedback?: string | null;
+    sourceQuestionId?: string | null;
   }): { jobId: string };
   /**
    * Resumes a job that landed on 'error'. Throws if `job.status` is anything
@@ -249,7 +265,30 @@ export function createGenerationEngine(opts: {
         const provider = resolveProvider();
         if (!provider) throw new Error('no LLM API key configured — add one in Settings');
 
-        const corpusNote = category === 'behavioral' ? buildBehavioralCorpusNote(db) : '';
+        // Regenerate-with-feedback (NEE-386): both fields are write-once on
+        // the job row, so this is re-derivable on every runJob call
+        // (including a retry) purely from `job` — no separate state to keep
+        // in sync. The prior result is resolved HERE, server-side, never via
+        // redactGenerationJob (which strips spoilers) — the pipeline needs
+        // the real referenceSolution/interviewerPacket to build the revision
+        // prompt and to register them as scrub secrets.
+        let regenerate: { priorQuestion: GeneratedQuestion; feedback: string } | undefined;
+        if (job.sourceQuestionId != null && job.feedback != null) {
+          const sourceJob = db.getLatestDoneGenerationJobForQuestion(job.sourceQuestionId);
+          if (sourceJob?.result == null) {
+            throw new Error('the original generation result is no longer available for this question');
+          }
+          regenerate = {
+            priorQuestion: sourceJob.result as unknown as GeneratedQuestion,
+            feedback: job.feedback,
+          };
+        }
+
+        // Exclude the source question from its own dedupe feed (NEE-386) —
+        // otherwise a behavioral regenerate would be told to avoid the exact
+        // competency the revision is meant to keep or address.
+        const corpusNote =
+          category === 'behavioral' ? buildBehavioralCorpusNote(db, job.sourceQuestionId) : '';
         const userMessage = `Generate a ${difficulty} difficulty ${config.name} interview question about: ${job.topic}
 
 Category slug: ${category}
@@ -260,9 +299,11 @@ Question type: ${config.type}${corpusNote}`;
         // stage's paid output is persisted immediately via onStageResult; the
         // pipeline's per-call no-output-progress timeout (plus its absolute
         // ceiling) bounds a stalled provider without cutting a slow-but-
-        // streaming call (NEE-264).
+        // streaming call (NEE-264). `regenerate`, when set, makes the
+        // pipeline's stage 1 a revision of the prior question via
+        // buildRegenerateUserMessage instead of sending userMessage verbatim.
         const outcome = await generateVerifiedQuestion(
-          { provider, category, difficulty, userMessage, workspaceRoot },
+          { provider, category, difficulty, userMessage, workspaceRoot, regenerate },
           {
             llm,
             verify: opts.verify,
@@ -444,6 +485,24 @@ Question type: ${config.type}${corpusNote}`;
       scaffoldStep.done(`questions/${category}/${slug}`);
 
       db.patchGenerationJob(jobId, { status: 'done', questionId: question.id });
+
+      // Auto-archive the source question of a regenerate-with-feedback run
+      // (NEE-386) — best-effort, on the shared done path so a scaffold-only
+      // retry resume still archives. Never patches the done source job
+      // itself; `archiveQuestion` only flips `archivedAt`. Guarded against
+      // the (accepted, v1) concurrent-regenerate case where this job's own
+      // question IS the source (can't happen today — a fresh scaffold always
+      // gets a new id — but the check costs nothing and rules out ever
+      // self-archiving the just-created question).
+      if (job.sourceQuestionId != null && job.sourceQuestionId !== question.id) {
+        try {
+          if (db.archiveQuestion(job.sourceQuestionId)) bus.emit('questions-changed', {});
+        } catch {
+          // best-effort — the replacement is already live; a failure here
+          // must never poison the already-'done' job.
+        }
+      }
+
       run.done();
       bus.emit('generation-done', { jobId, question });
     } catch (err) {
@@ -508,6 +567,8 @@ Question type: ${config.type}${corpusNote}`;
         difficulty: params.difficulty,
         topic: params.topic,
         brainstormSessionId: params.brainstormSessionId ?? null,
+        feedback: params.feedback ?? null,
+        sourceQuestionId: params.sourceQuestionId ?? null,
       });
       inFlight.claim(job.id, job.id);
       bus.emit('generation-started', { job: redactGenerationJob(job) });

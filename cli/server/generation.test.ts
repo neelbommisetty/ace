@@ -1508,3 +1508,215 @@ describe('behavioral generation (NEE-343)', () => {
     expect(phases).not.toContain('repairing');
   });
 });
+
+describe('regenerate with feedback (NEE-386)', () => {
+  /** A real engine run that produces a scaffolded 'generated' question + its done job, to regenerate against. */
+  async function seedSourceQuestion() {
+    const { llm } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
+    const seedEngine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    const done = waitFor('generation-done');
+    seedEngine.start({ category: 'leetcode-ds', difficulty: 'medium', topic: 'two sum variant' });
+    const { question } = await done;
+    return question;
+  }
+
+  it('builds the regenerate prompt from the source, suffixes a slug collision, and auto-archives the source on done', async () => {
+    const source = await seedSourceQuestion();
+
+    // The revision echoes the SAME slug as the source — resolveSlug must
+    // suffix it, since the source dir still exists at scaffold time (it is
+    // archived only AFTER the new question lands).
+    const revisedPayload = {
+      ...VALID_GENERATED_PAYLOAD,
+      title: 'Two Sum Variant (Revised)',
+      slug: 'two-sum-variant',
+    };
+    const { llm, calls } = makeFakeLlm([() => revisedPayload]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+
+    const busEvents: string[] = [];
+    bus.subscribe((name) => busEvents.push(name));
+
+    const done = waitFor('generation-done');
+    engine.start({
+      category: 'leetcode-ds',
+      difficulty: 'medium',
+      topic: 'two sum variant',
+      feedback: 'too easy — needs an O(n) constraint',
+      sourceQuestionId: source.id,
+    });
+    const { question: revised } = await done;
+
+    expect(calls).toHaveLength(1);
+    const userMessage = calls[0].messages[1]?.content ?? '';
+    expect(userMessage).toContain('## Current Output');
+    expect(userMessage).toContain('too easy — needs an O(n) constraint');
+
+    expect(revised.id).not.toBe(source.id);
+    expect(revised.slug).toBe('two-sum-variant-2');
+    expect(revised.source).toBe('generated');
+    expect(revised.archivedAt).toBeNull();
+
+    const reloadedSource = db.getQuestionById(source.id)!;
+    expect(reloadedSource.archivedAt).not.toBeNull();
+    expect(busEvents).toContain('questions-changed');
+  });
+
+  it('lands on error with a fixed message and makes no LLM call when the source has no done job result', async () => {
+    // A 'generated' question with no done generation job pointing at it at all.
+    const orphan = db.upsertQuestion({
+      category: 'leetcode-ds',
+      slug: 'orphan',
+      title: 'Orphan',
+      difficulty: 'medium',
+      suggestedMinutes: 30,
+      dirPath: path.join(tempRoot, 'questions', 'leetcode-ds', 'orphan'),
+      source: 'generated',
+    });
+
+    const { llm, calls } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+
+    const errored = waitFor('generation-error');
+    const { jobId } = engine.start({
+      category: 'leetcode-ds',
+      difficulty: 'medium',
+      topic: 'anything',
+      feedback: 'too easy',
+      sourceQuestionId: orphan.id,
+    });
+    const { message } = await errored;
+    expect(message).toBe(
+      'the original generation result is no longer available for this question',
+    );
+
+    const job = db.getGenerationJob(jobId)!;
+    expect(job.status).toBe('error');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('retry of a failed regenerate re-runs the full pipeline, still carrying the persisted feedback into the prompt', async () => {
+    const source = await seedSourceQuestion();
+
+    const { llm, calls } = makeFakeLlm([
+      () => {
+        throw new Error('simulated transient provider failure');
+      },
+      () => ({
+        ...VALID_GENERATED_PAYLOAD,
+        title: 'Two Sum Variant (Retry)',
+        slug: 'two-sum-variant-retry',
+      }),
+    ]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+
+    const errored = waitFor('generation-error');
+    const { jobId } = engine.start({
+      category: 'leetcode-ds',
+      difficulty: 'medium',
+      topic: 'two sum variant',
+      feedback: 'needs a twist',
+      sourceQuestionId: source.id,
+    });
+    await errored;
+
+    const failedJob = db.getGenerationJob(jobId)!;
+    expect(failedJob.status).toBe('error');
+    expect(failedJob.result).toBeNull();
+    expect(failedJob.feedback).toBe('needs a twist');
+    expect(failedJob.sourceQuestionId).toBe(source.id);
+
+    const done = waitFor('generation-done');
+    engine.retry(failedJob);
+    await done;
+
+    // A 2nd generate call, carrying the SAME persisted feedback — proves
+    // retry re-derives the regenerate context from the row alone.
+    expect(calls).toHaveLength(2);
+    const userMessage = calls[1].messages[1]?.content ?? '';
+    expect(userMessage).toContain('## Current Output');
+    expect(userMessage).toContain('needs a twist');
+
+    const finalJob = db.getGenerationJob(jobId)!;
+    expect(finalJob.status).toBe('done');
+    expect(db.getQuestionById(source.id)!.archivedAt).not.toBeNull();
+  });
+
+  it('archives the source on a scaffold-failure-then-retry resume of a regenerate job (auto-archive on the shared done path)', async () => {
+    const source = await seedSourceQuestion();
+
+    const { llm, calls } = makeFakeLlm([
+      () => ({
+        ...VALID_GENERATED_PAYLOAD,
+        title: 'Two Sum Variant (Resumed)',
+        slug: 'two-sum-variant-resumed',
+      }),
+    ]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+
+    const mkdirSpy = vi
+      .spyOn(fs, 'mkdirSync')
+      .mockImplementationOnce(() => {
+        throw new Error('EACCES: permission denied, mkdir');
+      });
+    const errored = waitFor('generation-error');
+    const { jobId } = engine.start({
+      category: 'leetcode-ds',
+      difficulty: 'medium',
+      topic: 'two sum variant',
+      feedback: 'needs a twist',
+      sourceQuestionId: source.id,
+    });
+    await errored;
+    mkdirSpy.mockRestore();
+
+    const failedJob = db.getGenerationJob(jobId)!;
+    expect(failedJob.status).toBe('error');
+    // Post-pipeline (scaffold) failure — the paid result survives for a
+    // scaffold-only resume.
+    expect(failedJob.result).not.toBeNull();
+
+    const done = waitFor('generation-done');
+    engine.retry(failedJob);
+    const { question: revised } = await done;
+
+    expect(calls).toHaveLength(1); // scaffold-only resume — no second llm call
+    expect(db.getQuestionById(source.id)!.archivedAt).not.toBeNull();
+    expect(revised.archivedAt).toBeNull();
+  });
+});

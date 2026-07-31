@@ -2,11 +2,12 @@
 //
 // Route-level tests for the generation job endpoints (POST/GET
 // /api/generation/jobs, GET /api/generation/jobs/:id, POST
-// /api/generation/jobs/:id/retry). Mirrors app-session.test.ts's pattern: a
-// real Hono app + real Request/Response over a real (temp-dir) db, with a
-// FAKE generation engine injected via EngineFactories so no LLM call or real
-// job pipeline ever runs — only the route's own validation/gating logic is
-// under test.
+// /api/generation/jobs/:id/retry, POST
+// /api/questions/:category/:slug/regenerate). Mirrors app-session.test.ts's
+// pattern: a real Hono app + real Request/Response over a real (temp-dir)
+// db, with a FAKE generation engine injected via EngineFactories so no LLM
+// call or real job pipeline ever runs — only the route's own
+// validation/gating logic is under test.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBus } from './sse.js';
 import { createWorkspaceSession, type WorkspaceSession } from './session.js';
@@ -418,6 +419,177 @@ describe('POST /api/generation/jobs/:id/retry', () => {
     expect(res.status).toBe(202);
     const body = (await res.json()) as { jobId: string };
     expect(body.jobId).toBe(job.id);
+  });
+});
+
+describe('POST /api/questions/:category/:slug/regenerate (NEE-386)', () => {
+  /** A 'generated' question with a done job carrying a persisted result, ready to regenerate against. */
+  function seedGeneratedQuestionWithDoneJob() {
+    const question = ws.session.db.upsertQuestion({
+      category: 'js-ts',
+      slug: 'two-sum',
+      title: 'Two Sum',
+      difficulty: 'medium',
+      suggestedMinutes: 30,
+      dirPath: '/tmp/does-not-matter/two-sum',
+      source: 'generated',
+    });
+    const job = ws.session.db.createGenerationJob({
+      category: 'js-ts',
+      difficulty: 'medium',
+      topic: 'two sum variants',
+    });
+    ws.session.db.patchGenerationJob(job.id, {
+      status: 'done',
+      result: { title: 'Two Sum' },
+      questionId: question.id,
+    });
+    return { question, job };
+  }
+
+  it('202s and starts the engine with category/difficulty/topic copied from the source job, plus feedback + sourceQuestionId', async () => {
+    setProviderConfigured();
+    const { question, job } = seedGeneratedQuestionWithDoneJob();
+    const fetch = buildApp();
+    const res = await postJson(fetch, `/api/questions/${question.category}/${question.slug}/regenerate`, {
+      feedback: 'too easy — needs an O(n) constraint',
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { jobId: string };
+    expect(body.jobId).toBe('fake-started-job-id');
+
+    expect(ws.session.generation.start).toHaveBeenCalledWith({
+      category: job.category,
+      difficulty: job.difficulty,
+      topic: job.topic,
+      feedback: 'too easy — needs an O(n) constraint',
+      sourceQuestionId: question.id,
+    });
+  });
+
+  it('400s on invalid JSON body', async () => {
+    setProviderConfigured();
+    const { question } = seedGeneratedQuestionWithDoneJob();
+    const fetch = buildApp();
+    const res = await fetch(`/api/questions/${question.category}/${question.slug}/regenerate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'not json',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('400s when feedback is missing', async () => {
+    setProviderConfigured();
+    const { question } = seedGeneratedQuestionWithDoneJob();
+    const fetch = buildApp();
+    const res = await postJson(fetch, `/api/questions/${question.category}/${question.slug}/regenerate`, {});
+    expect(res.status).toBe(400);
+  });
+
+  it('400s when feedback is not a string', async () => {
+    setProviderConfigured();
+    const { question } = seedGeneratedQuestionWithDoneJob();
+    const fetch = buildApp();
+    const res = await postJson(fetch, `/api/questions/${question.category}/${question.slug}/regenerate`, {
+      feedback: 42,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('400s on empty feedback', async () => {
+    setProviderConfigured();
+    const { question } = seedGeneratedQuestionWithDoneJob();
+    const fetch = buildApp();
+    const res = await postJson(fetch, `/api/questions/${question.category}/${question.slug}/regenerate`, {
+      feedback: '',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('400s on feedback over 4000 characters', async () => {
+    setProviderConfigured();
+    const { question } = seedGeneratedQuestionWithDoneJob();
+    const fetch = buildApp();
+    const res = await postJson(fetch, `/api/questions/${question.category}/${question.slug}/regenerate`, {
+      feedback: 'x'.repeat(4001),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('404s on an unknown question', async () => {
+    setProviderConfigured();
+    const fetch = buildApp();
+    const res = await postJson(fetch, '/api/questions/js-ts/does-not-exist/regenerate', {
+      feedback: 'anything',
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("409s for a 'manual' question — only generated questions can be regenerated", async () => {
+    setProviderConfigured();
+    const question = ws.session.db.upsertQuestion({
+      category: 'js-ts',
+      slug: 'manual-one',
+      title: 'Manual One',
+      difficulty: 'medium',
+      suggestedMinutes: 30,
+      dirPath: '/tmp/does-not-matter/manual-one',
+      source: 'manual',
+    });
+    const fetch = buildApp();
+    const res = await postJson(fetch, `/api/questions/${question.category}/${question.slug}/regenerate`, {
+      feedback: 'anything',
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/only generated questions/);
+  });
+
+  it('409s for a generated question with no done job result', async () => {
+    setProviderConfigured();
+    const question = ws.session.db.upsertQuestion({
+      category: 'js-ts',
+      slug: 'no-done-job',
+      title: 'No Done Job',
+      difficulty: 'medium',
+      suggestedMinutes: 30,
+      dirPath: '/tmp/does-not-matter/no-done-job',
+      source: 'generated',
+    });
+    const fetch = buildApp();
+    const res = await postJson(fetch, `/api/questions/${question.category}/${question.slug}/regenerate`, {
+      feedback: 'anything',
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/original generation result is no longer available/);
+  });
+
+  it('409s when three generations are already running', async () => {
+    setProviderConfigured();
+    ws.cleanup();
+    buildSession(() => 3);
+    const { question } = seedGeneratedQuestionWithDoneJob();
+    const fetch = buildApp();
+    const res = await postJson(fetch, `/api/questions/${question.category}/${question.slug}/regenerate`, {
+      feedback: 'anything',
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/three generations are already running/);
+  });
+
+  it('503s when no LLM provider is configured', async () => {
+    // setKeyless() already ran in beforeEach; no setProviderConfigured() here.
+    const { question } = seedGeneratedQuestionWithDoneJob();
+    const fetch = buildApp();
+    const res = await postJson(fetch, `/api/questions/${question.category}/${question.slug}/regenerate`, {
+      feedback: 'anything',
+    });
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/no LLM API key configured/);
   });
 });
 
