@@ -250,8 +250,8 @@ let keylessHome: string | null = null;
 let savedEnv: NodeJS.ProcessEnv | null = null;
 
 /**
- * HOME-isolation for provider gating. resolveProvider() (called directly by
- * app.ts, not injectable) bottoms out in lib/llm.js's getDefaultProvider(),
+ * HOME-isolation for provider gating. hasProvider() (called directly by
+ * app.ts, not injectable) bottoms out in lib/llm.js's hasAnyProvider(),
  * which reads ~/.ace/config.json (via getGlobalAceDir() -> process.env.HOME)
  * and process.env.*_API_KEY, cached at the module level until
  * clearConfigCache() busts it. Pointing HOME at a fresh, empty temp dir and
@@ -273,7 +273,7 @@ export function setKeyless(): void {
   clearConfigCache();
 }
 
-/** Writes a fake (unvalidated — resolveProvider never validates) key under the setKeyless() HOME so resolveProvider() is truthy. */
+/** Writes a fake (unvalidated — the gate never validates) key under the setKeyless() HOME so hasProvider() is true. */
 export function setProviderConfigured(): void {
   if (keylessHome === null) {
     throw new Error('setProviderConfigured() requires setKeyless() to run first');

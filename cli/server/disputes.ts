@@ -12,7 +12,7 @@ import { saveBlob } from './blobs.js';
 import { readWorkspaceFile, toWorkspaceRelPath, writeWorkspaceFile } from './files.js';
 import { uuidv7 } from './ids.js';
 import { createJobRegistry, toEngineErrorMessage } from './job-engine.js';
-import { resolveProvider } from './settings.js';
+import { hasProvider } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, DisputeRow, QuestionRow, TestRunRow } from './types.js';
 
@@ -144,8 +144,7 @@ export function createDisputeEngine(opts: {
       label: question.title,
     });
     try {
-      const provider = resolveProvider();
-      if (!provider) throw new Error('no LLM API key configured — add one in Settings');
+      if (!hasProvider()) throw new Error('no LLM API key configured — add one in Settings');
 
       const readme = readFileOr(path.join(question.dirPath, 'README.md'));
 
@@ -224,9 +223,8 @@ ${buildFailureOutput(run)}
       });
       let result: DisputeResult;
       try {
-        result = await chatObjectStream(provider, messages, DisputeResultSchema, {
+        result = await chatObjectStream('dispute', messages, DisputeResultSchema, {
           abortSignal: abort.signal,
-          purpose: 'dispute',
           onPartial: (partial) => step.partial(partial),
           onStreamActivity: () => {
             lastActivityAt = Date.now();

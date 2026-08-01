@@ -1,6 +1,6 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import type { RouteContext } from './routes/context.js';
-import { resolveProvider } from './settings.js';
+import { hasProvider } from './settings.js';
 import type { QuestionRow } from './types.js';
 
 declare module 'hono' {
@@ -54,7 +54,7 @@ export function parseLimit(
 
 /** Returns the 503 refusal when no LLM provider is configured, or null to proceed. */
 export function requireProvider(c: Context): Response | null {
-  if (resolveProvider()) return null;
+  if (hasProvider()) return null;
   return c.json({ error: 'no LLM API key configured — add one in Settings' }, 503);
 }
 

@@ -2,11 +2,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { VerifyResult } from './gen-verify.js';
 import { getSuggestedTime } from './categories.js';
 import {
+  AUTHORING_ORDER,
+  AuthorPacketSchema,
+  AuthorSolutionSchema,
+  AuthorTestsSchema,
   buildAuditUserMessage,
   buildCalibrationReworkUserMessage,
   buildCalibrationUserMessage,
+  buildPacketUserMessage,
   buildRegenerateUserMessage,
   buildRepairUserMessage,
+  buildSolutionUserMessage,
+  buildTestsUserMessage,
+  DraftProblemSchema,
   findDisallowedImports,
   generateVerifiedQuestion,
   GenerationVerifyError,
@@ -57,7 +65,7 @@ const RED: VerifyResult = {
 };
 
 interface CapturedCall {
-  purpose: string | undefined;
+  slot: string;
   system: string;
   user: string;
 }
@@ -66,13 +74,19 @@ interface CapturedCall {
 const DEFAULT_CALIBRATION: CalibrationResult = { verdict: 'fits', estimatedMinutes: null, issues: null };
 
 /**
- * chatObjectStream fake dispatching on opts.purpose: 'generate' calls pop
- * from `generates` (initial call first, then repairs AND calibrate reworks
- * — both reuse the 'generate' purpose); 'edge-audit' pops from `audits`;
- * 'calibrate' pops from `calibrations`, defaulting to an immediate 'fits' so
- * tests that don't care about calibration never need to thread it through.
- * Captures every call for message assertions. The pipeline is
- * streaming-only now (NEE-264), so the fake exposes only chatObjectStream.
+ * chatObjectStream fake dispatching on the slot. Tests still author WHOLE
+ * `GeneratedQuestion` fixtures; the fake answers each authoring stage by
+ * running the caller's own schema over the current fixture, which slices it
+ * exactly the way the real staged call does (and would throw on a fixture
+ * missing a stage's fields, same as a real parse failure).
+ *
+ * `generates` is the whole-object queue in CALL order: the 'draft-problem'
+ * call shifts the next entry and every 'author-*' stage slices it, then each
+ * later whole-object call — repair, calibration rework, regenerate — shifts
+ * the next one. 'edge-audit' pops from `audits`; 'calibrate' pops from
+ * `calibrations`, defaulting to an immediate 'fits' so tests that don't care
+ * about calibration never need to thread it through. The pipeline is
+ * streaming-only (NEE-264), so the fake exposes only chatObjectStream.
  */
 function makeLlm(
   generates: GeneratedQuestion[],
@@ -83,17 +97,25 @@ function makeLlm(
   const genQueue = [...generates];
   const auditQueue = [...audits];
   const calibQueue = [...calibrations];
-  const chatObjectStream = vi.fn(async (_provider, messages, _schema, opts) => {
+  let authoring: GeneratedQuestion | undefined;
+  const chatObjectStream = vi.fn(async (slot, messages, schema, _opts) => {
     calls.push({
-      purpose: opts?.purpose,
+      slot,
       system: messages[0]?.content ?? '',
       user: messages[1]?.content ?? '',
     });
-    if (opts?.purpose === 'edge-audit') return auditQueue.shift();
-    if (opts?.purpose === 'calibrate') return calibQueue.shift() ?? DEFAULT_CALIBRATION;
-    return genQueue.shift();
+    if (slot === 'edge-audit') return auditQueue.shift();
+    if (slot === 'calibrate') return calibQueue.shift() ?? DEFAULT_CALIBRATION;
+    if (slot === 'draft-problem') authoring = genQueue.shift();
+    if (slot === 'repair') return genQueue.shift();
+    return schema.parse(authoring);
   });
   return { llm: { chatObjectStream: chatObjectStream as never }, calls };
+}
+
+/** The nth call on a slot — indices into `calls` would drift with every stage added. */
+function callOn(calls: CapturedCall[], slot: string, n = 0): CapturedCall {
+  return calls.filter((c) => c.slot === slot)[n];
 }
 
 function makeVerify(results: VerifyResult[]) {
@@ -102,15 +124,191 @@ function makeVerify(results: VerifyResult[]) {
 }
 
 const PARAMS = {
-  provider: 'openai' as const,
   category: 'js-ts' as const,
   difficulty: 'medium' as const,
   userMessage: 'Generate a medium question about autosave queues.',
   workspaceRoot: '/nonexistent-not-touched-by-fakes',
 };
 
+describe('staged authoring (the split generation capsule)', () => {
+  it('runs the four stages in order, each on its own slot, merging into one question', async () => {
+    const { llm, calls } = makeLlm([STAGE1], [AUDIT_NOOP]);
+    const staged: GeneratedQuestion[] = [];
+
+    const result = await generateVerifiedQuestion(PARAMS, {
+      llm,
+      verify: makeVerify([GREEN]),
+      onStageResult: (q) => staged.push(q),
+    });
+
+    expect(calls.map((c) => c.slot)).toEqual([
+      'draft-problem',
+      'author-solution',
+      'author-tests',
+      'author-packet',
+      'edge-audit',
+      'calibrate',
+    ]);
+    // Every stage's slice landed in the merged question.
+    expect(result.question.title).toBe(STAGE1.title);
+    expect(result.question.referenceSolution).toBe(STAGE1.referenceSolution);
+    expect(result.question.testCode).toBe(STAGE1.testCode);
+    expect(result.question.interviewerPacket).toBe(STAGE1.interviewerPacket);
+    // Per-stage persistence: 4 authoring stages + the post-audit merge — the
+    // job row carries paid output the moment each stage lands.
+    expect(staged).toHaveLength(5);
+    expect(staged[0].title).toBe(STAGE1.title);
+    expect(staged[0].testCode).toBeNull(); // tests are two stages away yet
+    expect(staged[2].testCode).toBe(STAGE1.testCode);
+  });
+
+  it('gives each stage exactly the context it needs — and no stage the answer key it must not see', async () => {
+    const withSupport: GeneratedQuestion = {
+      ...STAGE1,
+      supportCode: 'export const fixtures = { drafts: [] };',
+    };
+    const { llm, calls } = makeLlm([withSupport], [AUDIT_NOOP]);
+
+    await generateVerifiedQuestion(PARAMS, { llm, verify: makeVerify([GREEN]) });
+
+    // Stage 2 sees the problem only — there is no solution to leak yet.
+    const solution = callOn(calls, 'author-solution');
+    expect(solution.user).toContain(STAGE1.description!);
+    expect(solution.user).not.toContain('## Reference Solution');
+
+    // Stage 3 is written AGAINST the reference solution (+ support module).
+    const tests = callOn(calls, 'author-tests');
+    expect(tests.user).toContain('## Reference Solution');
+    expect(tests.user).toContain('return {} as never');
+    expect(tests.user).toContain('export const fixtures');
+
+    // Stage 4 sees everything authored so far.
+    const packet = callOn(calls, 'author-packet');
+    expect(packet.user).toContain('## Reference Solution');
+    expect(packet.user).toContain('## Test File');
+    expect(packet.user).toContain("it('saves'");
+
+    // Each stage's system prompt is its own feature skeleton.
+    expect(solution.system).toContain('Task: Author the Reference Solution');
+    expect(tests.system).toContain('Task: Author the Test File');
+    expect(packet.system).toContain('Task: Author the Interviewer Packet');
+    // The packet author is explicitly forbidden from stating a duration —
+    // the blind calibrate stage reads the packet (see buildCalibrationUserMessage).
+    expect(packet.system).toContain('Never state a time estimate');
+  });
+
+  // The packet's `## Capability Tested` section and the README's
+  // `**Competency:**` line describe the same question, but competency is a
+  // stage-1 output and the packet is stage 4 — without it in the prompt, the
+  // packet author re-derives a label from the problem text alone and can name
+  // a different one than the README (which competencies.ts treats as truth).
+  it('tells the packet author which competency stage 1 assigned', () => {
+    const behavioral = { ...PARAMS, category: 'behavioral' as const };
+    const question: GeneratedQuestion = {
+      ...STAGE1,
+      testCode: null,
+      referenceSolution: null,
+      competency: 'influence-without-authority',
+    };
+
+    const built = buildPacketUserMessage(behavioral, question, true);
+    expect(built.prompt).toContain('influence-without-authority');
+    // Wire-safe (it is on the README) — prompt and masked twin agree.
+    expect(built.maskedPrompt).toContain('influence-without-authority');
+
+    // Nothing assigned (every coding/design category): no such section.
+    const coding = buildPacketUserMessage(PARAMS, { ...STAGE1, competency: null }, false);
+    expect(coding.prompt).not.toContain('Assigned Competency');
+  });
+
+  // A draft with no problem statement is knowable at stage 1, but the first
+  // structural check used to be the verify loop's static-check — five paid
+  // calls later — and it never inspected `description` at all, so for
+  // design/behavioral (which skip that loop) an empty one reached disk.
+  it('fails fast on an unusable draft instead of paying for the later stages', async () => {
+    const { llm, calls } = makeLlm([{ ...STAGE1, description: '  ' }], [AUDIT_NOOP]);
+    const { sink, recorded } = makeStepsSink();
+
+    await expect(
+      generateVerifiedQuestion(PARAMS, { llm, verify: makeVerify([GREEN]), steps: sink }),
+    ).rejects.toThrow(/description/);
+
+    expect(calls.map((c) => c.slot)).toEqual(['draft-problem']);
+    const step = recorded.find((r) => r.slug === 'draft-problem')!;
+    expect(step.status).toBe('error');
+    expect(step.outcome).toBe('missing: description');
+  });
+
+  it('fails fast on a coding draft with no signature', async () => {
+    const { llm, calls } = makeLlm([{ ...STAGE1, signature: null }], [AUDIT_NOOP]);
+
+    await expect(
+      generateVerifiedQuestion(PARAMS, { llm, verify: makeVerify([GREEN]) }),
+    ).rejects.toThrow(/signature/);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('does not demand a signature from design and behavioral drafts', async () => {
+    const { llm } = makeLlm([{ ...STAGE1, signature: null, testCode: null }], [AUDIT_NOOP]);
+
+    const result = await generateVerifiedQuestion(
+      { ...PARAMS, category: 'behavioral' },
+      { llm, verify: makeVerify([GREEN]) },
+    );
+
+    expect(result.question.title).toBe(STAGE1.title);
+  });
+
+  it('skips the code-authoring stages for design and behavioral, recording them as skipped steps', async () => {
+    for (const [category, reason] of [
+      ['design-fe', 'not applicable to design questions'],
+      ['behavioral', 'not applicable to behavioral questions'],
+    ] as const) {
+      const noCode: GeneratedQuestion = {
+        ...STAGE1,
+        signature: null,
+        testCode: null,
+        referenceSolution: null,
+      };
+      const { llm, calls } = makeLlm([noCode], [AUDIT_NOOP]);
+      const { sink, recorded } = makeStepsSink();
+
+      await generateVerifiedQuestion(
+        { ...PARAMS, category },
+        { llm, verify: makeVerify([]), steps: sink },
+      );
+
+      expect(calls.map((c) => c.slot)).not.toContain('author-solution');
+      expect(calls.map((c) => c.slot)).not.toContain('author-tests');
+      const skipped = recorded.filter((r) => r.status === 'skipped');
+      expect(skipped.map((r) => [r.slug, r.outcome])).toEqual(
+        expect.arrayContaining([
+          ['author-solution', reason],
+          ['author-tests', reason],
+        ]),
+      );
+    }
+  });
+
+  it('freezes identity at draft-problem: no later stage even has a title/slug field to drift', () => {
+    for (const schema of [AuthorSolutionSchema, AuthorTestsSchema, AuthorPacketSchema]) {
+      expect(Object.keys(schema.shape)).not.toContain('title');
+      expect(Object.keys(schema.shape)).not.toContain('slug');
+    }
+    expect(Object.keys(DraftProblemSchema.shape)).toContain('title');
+    expect(Object.keys(DraftProblemSchema.shape)).toContain('slug');
+    // The stage order is the contract the prompts are written against.
+    expect(AUTHORING_ORDER).toEqual([
+      'draft-problem',
+      'author-solution',
+      'author-tests',
+      'author-packet',
+    ]);
+  });
+});
+
 describe('generateVerifiedQuestion', () => {
-  it('merges non-null audit artifacts over the stage-1 result and verifies once', async () => {
+  it('merges non-null audit artifacts over the authored result and verifies once', async () => {
     const audit: EdgeAuditResult = {
       ...AUDIT_NOOP,
       testCode: 'AUDITED TESTS',
@@ -118,13 +316,8 @@ describe('generateVerifiedQuestion', () => {
     };
     const { llm } = makeLlm([STAGE1], [audit]);
     const verify = makeVerify([GREEN]);
-    const staged: GeneratedQuestion[] = [];
 
-    const result = await generateVerifiedQuestion(PARAMS, {
-      llm,
-      verify,
-      onStageResult: (q) => staged.push(q),
-    });
+    const result = await generateVerifiedQuestion(PARAMS, { llm, verify });
 
     expect(result.question.testCode).toBe('AUDITED TESTS');
     expect(result.question.interviewerPacket).toBe('AUDITED PACKET');
@@ -137,8 +330,6 @@ describe('generateVerifiedQuestion', () => {
     expect(artifacts.testCode).toBe('AUDITED TESTS');
     expect(artifacts.stubSolution).toContain('createAutosaver');
     expect(artifacts.stubSolution).toContain('// TODO: implement');
-    // Per-stage persistence: stage 1 + post-audit merge.
-    expect(staged).toHaveLength(2);
   });
 
   it('repairs on red and re-verifies, pinning title/slug across the repair', async () => {
@@ -163,16 +354,18 @@ describe('generateVerifiedQuestion', () => {
     expect(result.question.slug).toBe(STAGE1.slug);
     expect(verify).toHaveBeenCalledTimes(2);
     expect(phases).toEqual([
-      ['generating', 1],
+      ['drafting', 1],
+      ['authoring-solution', 1],
+      ['authoring-tests', 1],
+      ['authoring-packet', 1],
       ['auditing', 1],
       ['calibrating', 1],
       ['verifying', 1],
       ['repairing', 2],
       ['verifying', 2],
     ]);
-    // calls[2] is the (default-fits) calibrate call; the repair call comes after it.
-    const repairCall = calls[3];
-    expect(repairCall.purpose).toBe('generate');
+    const repairCall = callOn(calls, 'repair');
+    expect(repairCall.system).toContain('Task: Revise an Interview Question');
     expect(repairCall.user).toContain('Verification Failure Report');
     expect(repairCall.user).toContain('expected 2 to be 1');
   });
@@ -214,8 +407,7 @@ describe('generateVerifiedQuestion', () => {
     expect(result.question.testCode).toBe(STAGE1.testCode);
     // Attempt 1 never reached the sandbox; only the repaired suite did.
     expect(verify).toHaveBeenCalledTimes(1);
-    // calls[2] is the (default-fits) calibrate call; the repair call comes after it.
-    const repairCall = calls[3];
+    const repairCall = callOn(calls, 'repair');
     expect(repairCall.user).toContain('@testing-library/user-event');
     expect(repairCall.user).toContain('allowlist');
   });
@@ -229,8 +421,7 @@ describe('generateVerifiedQuestion', () => {
 
     expect(result.question.testCode).toBe(STAGE1.testCode);
     expect(verify).toHaveBeenCalledTimes(1);
-    // calls[2] is the (default-fits) calibrate call; the repair call comes after it.
-    expect(calls[3].user).toContain('missing required field');
+    expect(callOn(calls, 'repair').user).toContain('missing required field');
   });
 
   it('reports missing fields AND disallowed imports in one repair round', async () => {
@@ -244,8 +435,7 @@ describe('generateVerifiedQuestion', () => {
 
     await generateVerifiedQuestion(PARAMS, { llm, verify });
 
-    // calls[2] is the (default-fits) calibrate call; the repair call comes after it.
-    const repairMessage = calls[3].user;
+    const repairMessage = callOn(calls, 'repair').user;
     expect(repairMessage).toContain('missing required field');
     expect(repairMessage).toContain('@testing-library/user-event');
   });
@@ -284,14 +474,19 @@ describe('generateVerifiedQuestion', () => {
     expect(result.question.description).toBe('Sharpened design brief with concrete numbers.');
     expect(result.edgeCases).toEqual(critique.edgeCases);
     expect(verify).not.toHaveBeenCalled();
-    // generate + edge-audit + calibrate (design categories run calibrate too).
-    expect(calls).toHaveLength(3);
+    // draft-problem + author-packet + edge-audit + calibrate — the two
+    // code-authoring stages never fire for a design category.
+    expect(calls.map((c) => c.slot)).toEqual([
+      'draft-problem',
+      'author-packet',
+      'edge-audit',
+      'calibrate',
+    ]);
     // Design audits get the critique framing, not code artifacts.
-    expect(calls[1].user).not.toContain('## Test File');
+    expect(callOn(calls, 'edge-audit').user).not.toContain('## Test File');
     // Calibrate (design path) states the static time budget, not code sections.
-    expect(calls[2].purpose).toBe('calibrate');
-    expect(calls[2].user).toContain('40 minutes');
-    expect(calls[2].user).not.toContain('## Test File');
+    expect(callOn(calls, 'calibrate').user).toContain('40 minutes');
+    expect(callOn(calls, 'calibrate').user).not.toContain('## Test File');
   });
 });
 
@@ -322,15 +517,11 @@ describe('calibration stage (2.5: time & complexity)', () => {
     // The calibrator's own re-derived estimate wins, not the model's first guess.
     expect(result.question.estimatedMinutes).toBe(42);
 
-    expect(calls[0].purpose).toBe('generate');
-    expect(calls[1].purpose).toBe('edge-audit');
-    expect(calls[2].purpose).toBe('calibrate');
-    // The rework call reuses the generate purpose and carries the calibrator's issues.
-    expect(calls[3].purpose).toBe('generate');
-    expect(calls[3].user).toContain('drop the retry-with-backoff branch');
-    expect(calls[3].user).toContain(PARAMS.userMessage);
-    expect(calls[4].purpose).toBe('calibrate');
-    expect(calls).toHaveLength(5);
+    // The rework is a repair-class call: repair slot, repair prompt.
+    const rework = callOn(calls, 'repair');
+    expect(rework.user).toContain('drop the retry-with-backoff branch');
+    expect(rework.user).toContain(PARAMS.userMessage);
+    expect(calls.filter((c) => c.slot === 'calibrate')).toHaveLength(2);
   });
 
   it('proceeds after exhausting the rework budget on a non-fits verdict — never throws', async () => {
@@ -354,6 +545,116 @@ describe('calibration stage (2.5: time & complexity)', () => {
     expect(calibrateSteps[1].status).toBe('done');
     expect(calibrateSteps[1].outcome).toContain('too-big');
     expect(calibrateSteps[1].outcome).toContain('budget exhausted');
+  });
+
+  it('is BLIND: the draft\'s own estimate never reaches the calibrate prompt, and both numbers meet only in the outcome line', async () => {
+    // A sentinel the calibrator must never see. It is the drafted estimate,
+    // so any future prompt section that renders `estimatedMinutes` fails here.
+    const drafted: GeneratedQuestion = { ...STAGE1, estimatedMinutes: 4242 };
+    const { llm, calls } = makeLlm(
+      [drafted],
+      [AUDIT_NOOP],
+      [{ verdict: 'fits', estimatedMinutes: 25, issues: null }],
+    );
+    const { sink, recorded } = makeStepsSink();
+
+    const result = await generateVerifiedQuestion(PARAMS, {
+      llm,
+      verify: makeVerify([GREEN]),
+      steps: sink,
+    });
+
+    const calibrate = callOn(calls, 'calibrate');
+    expect(calibrate.user).not.toContain('4242');
+    expect(calibrate.user).toContain(
+      `${getSuggestedTime(PARAMS.category, PARAMS.difficulty)} minutes`,
+    );
+    // The outcome line is where the two estimates finally meet — auditable,
+    // and out of the model's sight.
+    const step = recorded.find((r) => r.slug === 'calibrate')!;
+    expect(step.outcome).toBe('fits · ~25m (draft guessed 4242m)');
+    expect(result.question.estimatedMinutes).toBe(25);
+  });
+
+  // The calibrate stage OWNS time (EdgeAuditSchema's comment says so, and it
+  // is the only stage that re-derives the number independently). Repair
+  // returns the WHOLE question, so an unpinned estimate let the last repair
+  // round's guess overwrite the calibrated value — and nothing recalibrates
+  // afterwards, so that guess is what reached the README and
+  // questions.suggestedMinutes.
+  it("keeps the calibrator's estimate through the verify/repair loop", async () => {
+    const repaired: GeneratedQuestion = {
+      ...STAGE1,
+      testCode: 'FIXED TESTS',
+      estimatedMinutes: 55, // the repair model's own guess — must be discarded
+    };
+    const { llm } = makeLlm(
+      [{ ...STAGE1, estimatedMinutes: 30 }, repaired],
+      [AUDIT_NOOP],
+      [{ verdict: 'fits', estimatedMinutes: 22, issues: null }],
+    );
+
+    const result = await generateVerifiedQuestion(PARAMS, {
+      llm,
+      verify: makeVerify([RED, GREEN]),
+    });
+
+    expect(result.question.testCode).toBe('FIXED TESTS');
+    expect(result.question.estimatedMinutes).toBe(22);
+  });
+
+  it("attributes the DRAFT's estimate on a second calibrate round, not the rework's", async () => {
+    const reworked: GeneratedQuestion = {
+      ...STAGE1,
+      description: 'A smaller autosave queue.',
+      estimatedMinutes: 45, // the rework model echoing the static target
+    };
+    const { llm } = makeLlm(
+      [{ ...STAGE1, estimatedMinutes: 30 }, reworked],
+      [AUDIT_NOOP],
+      [
+        { verdict: 'too-big', estimatedMinutes: 90, issues: 'too large' },
+        { verdict: 'too-big', estimatedMinutes: 80, issues: 'still too large' },
+      ],
+    );
+    const { sink, recorded } = makeStepsSink();
+
+    await generateVerifiedQuestion(PARAMS, { llm, verify: makeVerify([GREEN]), steps: sink });
+
+    const calibrateSteps = recorded.filter((r) => r.slug === 'calibrate');
+    expect(calibrateSteps[0].outcome).toBe('too-big · ~90m (draft guessed 30m)');
+    // 45 would attribute the rework model's number to the drafter, which is
+    // the opposite of the auditability this line exists for.
+    expect(calibrateSteps[1].outcome).toBe(
+      'too-big · ~80m (draft guessed 30m) — budget exhausted, proceeding anyway',
+    );
+  });
+
+  it('states the time budget for coding too, with the 60-minute hard cap (NEE-407)', () => {
+    const built = buildCalibrationUserMessage(PARAMS, STAGE1, false);
+    expect(built.prompt).toContain('## Time Budget');
+    expect(built.prompt).toContain(
+      `${getSuggestedTime(PARAMS.category, PARAMS.difficulty)} minutes`,
+    );
+    expect(built.prompt).toContain('60 minutes is the hard cap');
+    expect(built.maskedPrompt).toContain('## Time Budget');
+  });
+
+  it('never renders estimatedMinutes in either variant of the calibration message', () => {
+    const built = buildCalibrationUserMessage(
+      PARAMS,
+      { ...STAGE1, estimatedMinutes: 4242 },
+      false,
+    );
+    expect(built.prompt).not.toContain('4242');
+    expect(built.maskedPrompt).not.toContain('4242');
+    const design = buildCalibrationUserMessage(
+      { ...PARAMS, category: 'design-fe' },
+      { ...STAGE1, estimatedMinutes: 4242, testCode: null, referenceSolution: null },
+      true,
+    );
+    expect(design.prompt).not.toContain('4242');
+    expect(design.maskedPrompt).not.toContain('4242');
   });
 });
 
@@ -415,7 +716,10 @@ describe('step recording (NEE-268)', () => {
     await generateVerifiedQuestion(PARAMS, { llm, verify, steps: sink });
 
     expect(recorded.map((r) => [r.slug, r.status, r.outcome])).toEqual([
-      ['generate', 'done', undefined],
+      ['draft-problem', 'done', undefined],
+      ['author-solution', 'done', undefined],
+      ['author-tests', 'done', undefined],
+      ['author-packet', 'done', undefined],
       ['edge-audit', 'done', '1 edge case · 0 changes applied'],
       ['calibrate', 'done', 'fits'],
       ['static-check', 'done', 'ok'],
@@ -426,30 +730,39 @@ describe('step recording (NEE-268)', () => {
       ['verify', 'done', '3/3 passed vs reference · stub fails as required'],
     ]);
 
-    // The generate prompt is the caller's topic brief, shown as-is.
-    const generate = recorded[0];
-    expect(generate.prompt).toBe(PARAMS.userMessage);
+    // The draft prompt is the caller's topic brief, shown as-is.
+    expect(recorded[0].label).toBe('Writing the problem');
+    expect(recorded[0].prompt).toBe(PARAMS.userMessage);
+
+    // Stage 3/4 prompts embed the answer key — the recorder gets the
+    // constructed masked twins, never the reference body.
+    const tests = recorded[2];
+    expect(tests.prompt).toContain(WITHHELD_MARKER);
+    expect(tests.prompt).not.toContain('return {} as never');
+    const packet = recorded[3];
+    expect(packet.prompt).toContain(WITHHELD_MARKER);
+    expect(packet.prompt).not.toContain('return {} as never');
 
     // The audit prompt is the constructed masked twin — spoilers withheld.
-    const audit = recorded[1];
+    const audit = recorded[4];
     expect(audit.label).toBe('Auditing edge cases');
     expect(audit.prompt).toContain(WITHHELD_MARKER);
     expect(audit.prompt).not.toContain('return {} as never');
 
     // The calibrate prompt is likewise the constructed masked twin.
-    const calibrate = recorded[2];
+    const calibrate = recorded[5];
     expect(calibrate.label).toBe('Checking time & complexity');
     expect(calibrate.prompt).toContain(WITHHELD_MARKER);
     expect(calibrate.prompt).not.toContain('return {} as never');
 
     // Attempt labels carry the human-facing N/3.
-    expect(recorded[4].label).toBe('Running tests (attempt 1/3)');
-    expect(recorded[5].label).toBe('Fixing tests (attempt 2/3)');
-    expect(recorded[5].attempt).toBe(2);
-    expect(recorded[7].label).toBe('Running tests (attempt 2/3)');
+    expect(recorded[7].label).toBe('Running tests (attempt 1/3)');
+    expect(recorded[8].label).toBe('Fixing tests (attempt 2/3)');
+    expect(recorded[8].attempt).toBe(2);
+    expect(recorded[10].label).toBe('Running tests (attempt 2/3)');
 
     // The repair prompt is masked: no reference body, no assertion diffs.
-    const repair = recorded[5];
+    const repair = recorded[8];
     expect(repair.prompt).toContain(WITHHELD_MARKER);
     expect(repair.prompt).not.toContain('return {} as never');
     expect(repair.prompt).not.toContain('expected 2 to be 1');
@@ -458,6 +771,25 @@ describe('step recording (NEE-268)', () => {
     expect(secrets).toContain(STAGE1.referenceSolution);
     expect(secrets).toContain(STAGE1.interviewerPacket);
     expect(secrets).toContain(RED.failureReport);
+  });
+
+  it('registers each stage\'s spoilers as scrub literals as soon as that stage lands', async () => {
+    // The solution stage's answer key must already be a registered secret
+    // when the TESTS stage fires — that call's prompt embeds it verbatim.
+    const { llm: baseLlm } = makeLlm([STAGE1], [AUDIT_NOOP]);
+    const { sink, secrets } = makeStepsSink();
+    let secretsAtTestsCall: string[] | null = null;
+    const inner = baseLlm.chatObjectStream as unknown as (...args: unknown[]) => Promise<unknown>;
+    const llm = {
+      chatObjectStream: (async (...args: unknown[]) => {
+        if (args[0] === 'author-tests') secretsAtTestsCall = [...secrets];
+        return inner(...args);
+      }) as never,
+    };
+
+    await generateVerifiedQuestion(PARAMS, { llm, verify: makeVerify([GREEN]), steps: sink });
+
+    expect(secretsAtTestsCall).toContain(STAGE1.referenceSolution);
   });
 
   it('marks the last red step with the fixed exhausted phrase (never report text) when verification is exhausted', async () => {
@@ -511,13 +843,16 @@ describe('step recording (NEE-268)', () => {
     );
 
     expect(recorded.map((r) => [r.slug, r.status, r.outcome])).toEqual([
-      ['generate', 'done', undefined],
+      ['draft-problem', 'done', undefined],
+      ['author-solution', 'skipped', 'not applicable to design questions'],
+      ['author-tests', 'skipped', 'not applicable to design questions'],
+      ['author-packet', 'done', undefined],
       ['edge-audit', 'done', '1 edge case · 0 changes applied'],
       // Design categories run calibrate too — never skipped.
       ['calibrate', 'done', 'fits'],
       ['verify', 'skipped', 'not applicable to design questions'],
     ]);
-    expect(recorded[1].label).toBe('Critiquing requirements');
+    expect(recorded[4].label).toBe('Critiquing requirements');
   });
 
   it('records a skipped sandbox step for behavioral categories — no phantom verify stage, no repair loop off a null testCode (NEE-343)', async () => {
@@ -538,18 +873,22 @@ describe('step recording (NEE-268)', () => {
     );
 
     expect(recorded.map((r) => [r.slug, r.status, r.outcome])).toEqual([
-      ['generate', 'done', undefined],
+      ['draft-problem', 'done', undefined],
+      ['author-solution', 'skipped', 'not applicable to behavioral questions'],
+      ['author-tests', 'skipped', 'not applicable to behavioral questions'],
+      ['author-packet', 'done', undefined],
       ['edge-audit', 'done', '1 edge case · 0 changes applied'],
       // Behavioral is the one type that skips calibrate entirely.
       ['calibrate', 'skipped', 'not applicable to behavioral questions'],
       ['verify', 'skipped', 'not applicable to behavioral questions'],
     ]);
-    expect(recorded[1].label).toBe('Critiquing the prompt');
+    expect(recorded[4].label).toBe('Critiquing the prompt');
     // No repair step ever recorded — a missing testCode never drives the
     // coding-only static-check/verify/repair loop for a no-test category.
     expect(recorded.some((r) => r.slug === 'repair')).toBe(false);
     expect(recorded.some((r) => r.slug === 'static-check')).toBe(false);
     expect(result.question.competency).toBe('conflict');
+    expect(result.question.followUps).toEqual(behavioralStage1.followUps);
   });
 
   it('fails the llm step (and rethrows) when the call dies mid-stream', async () => {
@@ -568,16 +907,16 @@ describe('step recording (NEE-268)', () => {
 
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toMatchObject({
-      slug: 'generate',
+      slug: 'draft-problem',
       status: 'error',
       outcome: 'provider 500 during generate',
     });
   });
 
-  it('regenerate context (NEE-386): sends the revision prompt to the model, records the masked twin on the generate slug, and registers the prior spoilers', async () => {
+  it('regenerate context (NEE-386): one whole-object repair-slot call, masked twin on the repair slug, prior spoilers registered first', async () => {
     // Prior spoiler values DISTINCT from the fresh output's: the pipeline
     // unconditionally registers the FRESH question's spoilers right after
-    // stage 1, so only strings absent from the fresh output can prove the
+    // the call, so only strings absent from the fresh output can prove the
     // regenerate-specific prior-question registration exists at all.
     const priorQuestion: GeneratedQuestion = {
       ...STAGE1,
@@ -593,18 +932,15 @@ describe('step recording (NEE-268)', () => {
     };
     const { sink, recorded, secrets } = makeStepsSink();
     const { llm: baseLlm, calls } = makeLlm([freshQuestion], [AUDIT_NOOP]);
-    // Snapshot the registered secrets AT generate-call time: registration
-    // must happen BEFORE the model call — the scrubber exists for a provider
-    // error that echoes the prompt, so it must already know the prior key
-    // when the call fires.
-    let secretsAtGenerateCall: string[] | null = null;
+    // Snapshot the registered secrets AT call time: registration must happen
+    // BEFORE the model call — the scrubber exists for a provider error that
+    // echoes the prompt, so it must already know the prior key when the call
+    // fires.
+    let secretsAtCall: string[] | null = null;
     const inner = baseLlm.chatObjectStream as unknown as (...args: unknown[]) => Promise<unknown>;
     const llm = {
       chatObjectStream: (async (...args: unknown[]) => {
-        const opts = args[3] as { purpose?: string } | undefined;
-        if (opts?.purpose === 'generate' && secretsAtGenerateCall === null) {
-          secretsAtGenerateCall = [...secrets];
-        }
+        if (args[0] === 'repair' && secretsAtCall === null) secretsAtCall = [...secrets];
         return inner(...args);
       }) as never,
     };
@@ -617,29 +953,32 @@ describe('step recording (NEE-268)', () => {
       { llm, verify: makeVerify([GREEN]), steps: sink },
     );
 
-    // The model-bound call carries the revision framing plus the prior spoilers and the feedback.
-    const generateCall = calls[0];
-    expect(generateCall.purpose).toBe('generate');
-    expect(generateCall.user).toContain('## Current Output');
-    expect(generateCall.user).toContain('PRIOR-ONLY reference solution body');
-    expect(generateCall.user).toContain('PRIOR-ONLY interviewer packet');
-    expect(generateCall.user).toContain('## User Feedback');
-    expect(generateCall.user).toContain('Too easy — add an O(n) constraint.');
+    // ONE authoring-class call, on the repair slot — a revision is never
+    // re-authored stage by stage.
+    expect(calls.map((c) => c.slot)).toEqual(['repair', 'edge-audit', 'calibrate']);
+    const revision = calls[0];
+    expect(revision.user).toContain('## Current Output');
+    expect(revision.user).toContain('PRIOR-ONLY reference solution body');
+    expect(revision.user).toContain('PRIOR-ONLY interviewer packet');
+    expect(revision.user).toContain('## User Feedback');
+    expect(revision.user).toContain('Too easy — add an O(n) constraint.');
 
-    // The recorded step is the constructed masked twin, on the SAME 'generate' slug — no answer-key leak.
-    const generateStep = recorded[0];
-    expect(generateStep.slug).toBe('generate');
-    expect(generateStep.prompt).toContain(WITHHELD_MARKER);
-    expect(generateStep.prompt).not.toContain('PRIOR-ONLY');
+    // The recorded step is the constructed masked twin, on the 'repair' slug
+    // (whose WIRE_SAFE_KEYS entry covers the whole-object response).
+    const revisionStep = recorded[0];
+    expect(revisionStep.slug).toBe('repair');
+    expect(revisionStep.label).toBe('Revising the question');
+    expect(revisionStep.prompt).toContain(WITHHELD_MARKER);
+    expect(revisionStep.prompt).not.toContain('PRIOR-ONLY');
 
     // The PRIOR question's exact spoiler strings are registered as scrub
     // secrets — and were already registered when the model call fired.
     expect(secrets).toContain(priorQuestion.referenceSolution);
     expect(secrets).toContain(priorQuestion.interviewerPacket);
-    expect(secretsAtGenerateCall).toContain(priorQuestion.referenceSolution);
-    expect(secretsAtGenerateCall).toContain(priorQuestion.interviewerPacket);
+    expect(secretsAtCall).toContain(priorQuestion.referenceSolution);
+    expect(secretsAtCall).toContain(priorQuestion.interviewerPacket);
 
-    // No identity pin at stage 1 — the fresh title/slug from the model wins.
+    // No identity pin on a regenerate — the fresh title/slug from the model wins.
     expect(result.question.title).toBe(freshQuestion.title);
     expect(result.question.slug).toBe(freshQuestion.slug);
   });
@@ -743,8 +1082,7 @@ describe('audit user message assembly (NEE-275)', () => {
     const { llm, calls } = makeLlm([CODING_STAGE1], [AUDIT_NOOP]);
     await generateVerifiedQuestion(PARAMS, { llm, verify: makeVerify([GREEN]) });
 
-    const auditCall = calls[1];
-    expect(auditCall.purpose).toBe('edge-audit');
+    const auditCall = callOn(calls, 'edge-audit');
     expect(auditCall.user).toBe(`Audit this freshly generated medium js-ts interview question.
 
 ## Question
@@ -827,8 +1165,7 @@ Concurrency realities.`);
     const { llm, calls } = makeLlm([designStage1], [AUDIT_NOOP]);
     await generateVerifiedQuestion({ ...PARAMS, category: 'design-fe' }, { llm, verify: makeVerify([]) });
 
-    const auditCall = calls[1];
-    expect(auditCall.purpose).toBe('edge-audit');
+    const auditCall = callOn(calls, 'edge-audit');
     expect(auditCall.user).toBe(`Audit this freshly generated medium design-fe interview question.
 
 ## Question
@@ -860,6 +1197,46 @@ Ambiguity resolved into invariants.`);
 });
 
 describe('masked prompt construction (NEE-265)', () => {
+  it('buildSolutionUserMessage carries only wire-safe content — prompt and masked twin are identical', () => {
+    const built = buildSolutionUserMessage(PARAMS, STAGE1);
+    expect(built.prompt).toBe(built.maskedPrompt);
+    expect(built.prompt).toContain(STAGE1.description!);
+    expect(built.prompt).not.toContain('return {} as never');
+    expect(built.prompt).not.toContain('Concurrency realities');
+  });
+
+  it('buildTestsUserMessage sends the reference solution but withholds it from the twin', () => {
+    const withSupport: GeneratedQuestion = { ...STAGE1, supportCode: 'export const fixtures = {};' };
+    const built = buildTestsUserMessage(PARAMS, withSupport);
+    expect(built.prompt).toContain('return {} as never');
+    expect(built.prompt).toContain('export const fixtures = {};');
+    expect(built.maskedPrompt).not.toContain('return {} as never');
+    expect(built.maskedPrompt).toContain(`## Reference Solution\n\n${WITHHELD_MARKER}`);
+    // The support module is candidate-visible (the live preview serves it).
+    expect(built.maskedPrompt).toContain('export const fixtures = {};');
+    // The packet does not exist yet at this stage — nothing to withhold.
+    expect(built.prompt).not.toContain('## Interviewer Packet');
+  });
+
+  it('buildPacketUserMessage withholds the reference solution and keeps the tests visible', () => {
+    const built = buildPacketUserMessage(PARAMS, STAGE1, false);
+    expect(built.prompt).toContain('return {} as never');
+    expect(built.maskedPrompt).not.toContain('return {} as never');
+    expect(built.maskedPrompt).toContain(`## Reference Solution\n\n${WITHHELD_MARKER}`);
+    expect(built.maskedPrompt).toContain(STAGE1.testCode!);
+  });
+
+  it('buildPacketUserMessage (design) carries the brief alone — no code sections exist', () => {
+    const built = buildPacketUserMessage(
+      { ...PARAMS, category: 'design-fe' },
+      { ...STAGE1, testCode: null, referenceSolution: null },
+      true,
+    );
+    expect(built.prompt).not.toContain('## Reference Solution');
+    expect(built.prompt).not.toContain('## Test File');
+    expect(built.prompt).toBe(built.maskedPrompt);
+  });
+
   it('buildAuditUserMessage returns the full prompt plus a constructed spoiler-free twin', () => {
     const built = buildAuditUserMessage(PARAMS, STAGE1, false);
     // The model-bound prompt still carries the spoilers…
@@ -906,6 +1283,8 @@ describe('masked prompt construction (NEE-265)', () => {
     // never wires the fenced spoiler bodies.
     const audit = maskPromptText(buildAuditUserMessage(PARAMS, STAGE1, false).prompt);
     expect(audit).not.toContain('return {} as never');
+    const tests = maskPromptText(buildTestsUserMessage(PARAMS, STAGE1).prompt);
+    expect(tests).not.toContain('return {} as never');
     const repair = maskPromptText(buildRepairUserMessage(STAGE1, RED.failureReport!).prompt);
     expect(repair).not.toContain('return {} as never');
     expect(repair).not.toContain('Concurrency realities');
@@ -1029,7 +1408,6 @@ describe('generateVerifiedQuestion no-output-progress timeout', () => {
   });
 
   interface StreamOpts {
-    purpose?: string;
     abortSignal?: AbortSignal;
     maxOutputTokens?: number;
     onPartial?: (partial: Record<string, unknown>) => void;
@@ -1045,7 +1423,7 @@ describe('generateVerifiedQuestion no-output-progress timeout', () => {
 
   it('aborts a stream that stays silent for the whole stall window', async () => {
     vi.useFakeTimers();
-    const chatObjectStream = vi.fn((_p: unknown, _m: unknown, _s: unknown, opts?: StreamOpts) =>
+    const chatObjectStream = vi.fn((_slot: unknown, _m: unknown, _s: unknown, opts?: StreamOpts) =>
       rejectOnAbort(opts),
     );
     let settled = false;
@@ -1073,11 +1451,12 @@ describe('generateVerifiedQuestion no-output-progress timeout', () => {
   it('keeps a slow-but-flowing stream alive past the old 300s wall clock — partials re-arm the stall clock', async () => {
     vi.useFakeTimers();
     const partialReturns: unknown[] = [];
-    const chatObjectStream = vi.fn((_p: unknown, _m: unknown, _s: unknown, opts?: StreamOpts) => {
-      // Audit and calibrate both resolve instantly so the fake-timer
-      // choreography only drives the stage-1 generate call.
-      if (opts?.purpose === 'edge-audit') return Promise.resolve(AUDIT_NOOP);
-      if (opts?.purpose === 'calibrate') return Promise.resolve(DEFAULT_CALIBRATION);
+    const chatObjectStream = vi.fn((slot: unknown, _m: unknown, schema: any, opts?: StreamOpts) => {
+      // Only the stage-1 draft call is driven by the fake-timer choreography;
+      // every later stage resolves instantly off the same fixture.
+      if (slot === 'edge-audit') return Promise.resolve(AUDIT_NOOP);
+      if (slot === 'calibrate') return Promise.resolve(DEFAULT_CALIBRATION);
+      if (slot !== 'draft-problem') return Promise.resolve(schema.parse(STAGE1));
       return new Promise((resolve, reject) => {
         opts?.abortSignal?.addEventListener('abort', () => reject(opts.abortSignal!.reason));
         let fired = 0;
@@ -1086,7 +1465,7 @@ describe('generateVerifiedQuestion no-output-progress timeout', () => {
           partialReturns.push(opts?.onPartial?.({ title: 'partial' }));
           if (fired === 3) {
             clearInterval(tick);
-            resolve(STAGE1);
+            resolve(schema.parse(STAGE1));
           }
         }, 250_000);
       });
@@ -1126,9 +1505,10 @@ describe('generateVerifiedQuestion no-output-progress timeout', () => {
       }),
       registerSecret() {},
     };
-    const chatObjectStream = vi.fn((_p: unknown, _m: unknown, _s: unknown, opts?: StreamOpts) => {
-      if (opts?.purpose === 'edge-audit') return Promise.resolve(AUDIT_NOOP);
-      if (opts?.purpose === 'calibrate') return Promise.resolve(DEFAULT_CALIBRATION);
+    const chatObjectStream = vi.fn((slot: unknown, _m: unknown, schema: any, opts?: StreamOpts) => {
+      if (slot === 'edge-audit') return Promise.resolve(AUDIT_NOOP);
+      if (slot === 'calibrate') return Promise.resolve(DEFAULT_CALIBRATION);
+      if (slot !== 'draft-problem') return Promise.resolve(schema.parse(STAGE1));
       return new Promise((resolve, reject) => {
         opts?.abortSignal?.addEventListener('abort', () => reject(opts.abortSignal!.reason));
         let fired = 0;
@@ -1137,7 +1517,7 @@ describe('generateVerifiedQuestion no-output-progress timeout', () => {
           activityReturns.push(opts?.onStreamActivity?.());
           if (fired === 3) {
             clearInterval(tick);
-            resolve(STAGE1);
+            resolve(schema.parse(STAGE1));
           }
         }, 250_000);
       });

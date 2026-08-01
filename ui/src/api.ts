@@ -13,6 +13,7 @@ import type {
   HistoryItem,
   ImportPreviewItem,
   ImportResult,
+  LLMSlot,
   PlaygroundCreateResult,
   PreviewStatus,
   ProbeSetRow,
@@ -492,6 +493,8 @@ export function putSettings(body: {
   openaiBaseUrl?: string | null;
   anthropicBaseUrl?: string | null;
   defaultProvider?: 'openai' | 'anthropic';
+  /** A model id sets an override for that slot, null clears it back to default. */
+  models?: Partial<Record<LLMSlot, string | null>>;
 }): Promise<SettingsInfo> {
   return request('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
 }

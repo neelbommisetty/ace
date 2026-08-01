@@ -13,15 +13,29 @@ function isActive(job: GenerationJobRow): boolean {
 }
 
 interface JobPhase {
-  phase: 'generating' | 'auditing' | 'calibrating' | 'verifying' | 'repairing';
+  phase:
+    | 'drafting'
+    | 'authoring-solution'
+    | 'authoring-tests'
+    | 'authoring-packet'
+    | 'auditing'
+    | 'calibrating'
+    | 'verifying'
+    | 'repairing';
   attempt: number;
 }
 
 function phaseLabel(p: JobPhase | undefined): string {
   if (!p) return 'generating…';
   switch (p.phase) {
-    case 'generating':
-      return 'writing question…';
+    case 'drafting':
+      return 'writing the problem…';
+    case 'authoring-solution':
+      return 'writing the reference solution…';
+    case 'authoring-tests':
+      return 'writing the tests…';
+    case 'authoring-packet':
+      return 'writing the interviewer packet…';
     case 'auditing':
       return 'auditing edge cases…';
     case 'calibrating':

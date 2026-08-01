@@ -122,7 +122,9 @@ function DescribeForm({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingJob, setPendingJob] = useState<GenerationJobRow | null>(null);
-  const generateModel = resolvedModelFor(settings, 'generate');
+  // The first stage of the pipeline stands in for the whole generation run —
+  // the later stages route their own slots and are not previewable here.
+  const generateModel = resolvedModelFor(settings, 'draft-problem');
 
   const trimmedTopic = topic.trim();
   const canSubmit = !disabled && !submitting && trimmedTopic.length > 0 && trimmedTopic.length <= TOPIC_MAX;
@@ -229,8 +231,8 @@ function DescribeForm({
       </div>
 
       <p className="dialog-note">
-        Runs a verified generate → edge-audit → verify → repair pipeline — costs several LLM calls
-        and can take a couple of minutes
+        Runs a verified problem → solution → tests → packet → edge-audit → verify → repair pipeline
+        — costs several LLM calls and can take a couple of minutes
         {generateModel != null ? ` · ${modelLabel(generateModel)}` : ''}.
       </p>
 

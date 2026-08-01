@@ -101,8 +101,8 @@ describe('createAiLog recorder', () => {
     expect(startedRun.data.run.status).toBe('running');
 
     const step = run.step({
-      slug: 'generate',
-      label: 'Writing the question',
+      slug: 'repair',
+      label: 'Revising the question',
       kind: 'llm',
       prompt: 'Generate a question about two sum.',
     });
@@ -112,9 +112,10 @@ describe('createAiLog recorder', () => {
     // Step- and run-level events repeat the run's refId — refId-filtered
     // feeds (the per-job drawer, NEE-272) drop foreign events on it.
     expect(startedStep.data.refId).toBe('job-1');
-    expect(summary.slug).toBe('generate');
+    expect(summary.slug).toBe('repair');
     expect(summary.promptWithheld).toBe(false);
-    // withheldKeys declared on STARTED: schema keys minus WIRE_SAFE_KEYS.
+    // withheldKeys declared on STARTED: schema keys minus WIRE_SAFE_KEYS —
+    // the `repair` slug streams the WHOLE question, so all four spoilers.
     // followUps (NEE-343, behavioral-only) joined SPOILER_KEYS alongside
     // interviewerPacket — see spoilers.ts for the reasoning.
     expect(summary.withheldKeys).toEqual([
@@ -178,7 +179,7 @@ describe('createAiLog recorder', () => {
   it('coalesces partials into one chunk event + one db snapshot per flush window, and always flushes on step end', () => {
     vi.useFakeTimers();
     const run = log.startRun({ kind: 'generation', refId: null, questionId: null, label: 't' });
-    const step = run.step({ slug: 'generate', label: 'Writing', kind: 'llm' });
+    const step = run.step({ slug: 'draft-problem', label: 'Writing', kind: 'llm' });
     const stepId = (events.find((e) => e.name === 'ai-step-started')!.data.step as AiStepSummary)
       .id;
 
@@ -209,7 +210,7 @@ describe('createAiLog recorder', () => {
   it('caps SSE emission per step (marking the cut) while the db still gets the full text', () => {
     vi.useFakeTimers();
     const run = log.startRun({ kind: 'generation', refId: null, questionId: null, label: 't' });
-    const step = run.step({ slug: 'generate', label: 'Writing', kind: 'llm' });
+    const step = run.step({ slug: 'draft-problem', label: 'Writing', kind: 'llm' });
     const stepId = (events.find((e) => e.name === 'ai-step-started')!.data.step as AiStepSummary)
       .id;
 
@@ -270,7 +271,7 @@ describe('createAiLog recorder', () => {
 
   it('closes still-running steps when the run ends so nothing pulses forever', () => {
     const run = log.startRun({ kind: 'generation', refId: null, questionId: null, label: 't' });
-    run.step({ slug: 'generate', label: 'Writing', kind: 'llm' });
+    run.step({ slug: 'draft-problem', label: 'Writing', kind: 'llm' });
     const stepId = (events.find((e) => e.name === 'ai-step-started')!.data.step as AiStepSummary)
       .id;
 
@@ -287,7 +288,7 @@ describe('createAiLog recorder', () => {
   it('swallows every db write after close — the log never turns a paid call into a crash', () => {
     vi.useFakeTimers();
     const run = log.startRun({ kind: 'generation', refId: null, questionId: null, label: 't' });
-    const step = run.step({ slug: 'generate', label: 'Writing', kind: 'llm' });
+    const step = run.step({ slug: 'draft-problem', label: 'Writing', kind: 'llm' });
     db.close();
 
     expect(() => {
@@ -302,7 +303,7 @@ describe('createAiLog recorder', () => {
     const dead = log.startRun({ kind: 'review', refId: null, questionId: null, label: 'x' });
     expect(dead.runId).toBe('');
     expect(() => {
-      dead.step({ slug: 'generate', label: 'x', kind: 'llm' }).done();
+      dead.step({ slug: 'draft-problem', label: 'x', kind: 'llm' }).done();
       dead.done();
     }).not.toThrow();
     expect(events.length).toBe(countBefore);
@@ -317,7 +318,7 @@ describe('createAiLog recorder', () => {
     });
     expect(run.runId).toBe('');
     expect(() => {
-      const step = run.step({ slug: 'generate', label: 'x', kind: 'llm' });
+      const step = run.step({ slug: 'draft-problem', label: 'x', kind: 'llm' });
       step.append('a');
       step.partial({ title: 'b' });
       step.done();

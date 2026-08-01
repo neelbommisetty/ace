@@ -126,3 +126,25 @@ describe('401 retry-once against the stored token (NEE-308)', () => {
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('putSettings models patch', () => {
+  it('sends a per-slot models patch verbatim, including null to clear an override', async () => {
+    localStorage.setItem('ace-token', 'tok');
+    const { putSettings } = await importApi();
+
+    let sentBody: unknown;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      sentBody = init?.body ? JSON.parse(init.body as string) : undefined;
+      return jsonResponse({ ok: true });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await putSettings({ models: { 'draft-problem': 'gpt-5.6-terra', calibrate: null } });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings',
+      expect.objectContaining({ method: 'PUT' }),
+    );
+    expect(sentBody).toEqual({ models: { 'draft-problem': 'gpt-5.6-terra', calibrate: null } });
+  });
+});

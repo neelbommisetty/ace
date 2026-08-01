@@ -5,7 +5,7 @@ import { chatObjectStream, type LLMMessage } from '../lib/llm.js';
 import { buildBrainstormPrompt } from '../lib/prompt-builder.js';
 import { NULL_AI_LOG, type AiLog } from './ai-log.js';
 import { createJobRegistry } from './job-engine.js';
-import { resolveProvider } from './settings.js';
+import { hasProvider } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, BrainstormTurn } from './types.js';
 
@@ -119,8 +119,7 @@ export function createBrainstormEngine(opts: {
     try {
       // Rebuilt per turn: prompt files are small and reads are cheap.
       const systemPrompt = buildBrainstormPrompt() + '\n' + STRUCTURED_OUTPUT_ADDENDUM;
-      const provider = resolveProvider();
-      if (!provider) throw new Error('no LLM API key configured — add one in Settings');
+      if (!hasProvider()) throw new Error('no LLM API key configured — add one in Settings');
 
       const session = db.getBrainstormSession(sessionId);
       if (!session) throw new Error(`brainstorm session ${sessionId} not found`);
@@ -143,9 +142,8 @@ export function createBrainstormEngine(opts: {
       });
       let result: z.infer<typeof IdeaListSchema>;
       try {
-        result = await llm.chatObjectStream(provider, messages, IdeaListSchema, {
+        result = await llm.chatObjectStream('brainstorm', messages, IdeaListSchema, {
           abortSignal: abort,
-          purpose: 'brainstorm',
           onPartial: (partial) => step.partial(partial),
         });
       } catch (err) {

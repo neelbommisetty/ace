@@ -10,7 +10,8 @@ import {
   type QuestionType,
 } from '../lib/categories.js';
 import { isPositiveVerdict } from '../../shared/verdicts.js';
-import { chatObject, chatStream, getModelId, type LLMMessage } from '../lib/llm.js';
+import { isEscalatedReview as isEscalatedReviewRule } from '../../shared/escalation.js';
+import { chatObject, chatStream, getModelId, resolveSlot, type LLMMessage } from '../lib/llm.js';
 import { readFileOr } from '../lib/read-file-or.js';
 import { buildQuestionSection, buildSystemPrompt } from '../lib/prompt-builder.js';
 import { getStubContent } from '../lib/scaffold.js';
@@ -20,7 +21,7 @@ import { saveBlob } from './blobs.js';
 import { sha1, toWorkspaceRelPath } from './files.js';
 import { uuidv7 } from './ids.js';
 import { createJobRegistry } from './job-engine.js';
-import { resolveProvider } from './settings.js';
+import { hasProvider } from './settings.js';
 import type { Bus } from './sse.js';
 import type {
   AceDb,
@@ -29,6 +30,7 @@ import type {
   QuestionRow,
   ReviewRow,
 } from './types.js';
+import type { LLMSlot } from '../../shared/wire-types.js';
 
 const CHUNK_FLUSH_MS = 50;
 // 180s: the charter-driven review prompt is beefier than its predecessor.
@@ -430,6 +432,44 @@ export function endProseAttemptOnReview(opts: {
 }
 
 // ---------------------------------------------------------------------------
+// Escalation rule (NEE-303 / plan ticket 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * The escalation rule against this db: whether the work being reviewed has
+ * already been reviewed once. The rule itself lives in shared/escalation.ts —
+ * AiPanel mirrors it to label the button, and a second copy here would be a
+ * second thing to drift.
+ *
+ * `config` is load-bearing, not decoration: prose categories end their attempt
+ * on review #1 above, so the attempt-scoped half of the rule can never fire
+ * for them (see the shared doc comment).
+ */
+export function isEscalatedReview(
+  db: AceDb,
+  config: CategoryConfig,
+  questionId: string,
+  attemptId: string | null,
+): boolean {
+  return isEscalatedReviewRule({ config, reviews: db.listReviews(questionId), attemptId });
+}
+
+/**
+ * The slot a review job should route through: 'review-escalated' when the
+ * rule above fires AND that slot actually resolves (anthropic-keyed) — an
+ * openai-only install has no escalation tier, so it collapses to 'review'.
+ */
+export function reviewSlotFor(
+  db: AceDb,
+  config: CategoryConfig,
+  questionId: string,
+  attemptId: string | null,
+): LLMSlot {
+  const escalated = isEscalatedReview(db, config, questionId, attemptId);
+  return escalated && resolveSlot('review-escalated') !== null ? 'review-escalated' : 'review';
+}
+
+// ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
 
@@ -499,8 +539,7 @@ export function createReviewEngine(opts: {
     };
 
     try {
-      const provider = resolveProvider();
-      if (!provider) throw new Error('no LLM API key configured — add one in Settings');
+      if (!hasProvider()) throw new Error('no LLM API key configured — add one in Settings');
 
       // Snapshot the primary solution file exactly as it goes to the reviewer.
       const primaryAbs = path.join(question.dirPath, config.solutionFiles[0]);
@@ -515,6 +554,14 @@ export function createReviewEngine(opts: {
       });
 
       const { messages, maskedPrompt } = buildReviewMessages(question, config, kindOf(config));
+      const slot = reviewSlotFor(db, config, question.id, attemptId);
+      // What the row records must be the model that actually WROTE the body,
+      // not a re-resolution afterwards: a Fable refusal retry is per-request
+      // and deliberately does not latch, so resolveSlot would still name
+      // claude-fable-5 for text Opus 5 produced. onRoute reports the route
+      // each attempt actually ran on; the pre-call resolution is the fallback
+      // for mock mode, where no route is ever taken.
+      let usedModel = getModelId(slot);
 
       // A silently-stalled provider connection would otherwise hold the
       // per-question in-flight slot (and its 409) until server restart.
@@ -537,17 +584,19 @@ export function createReviewEngine(opts: {
       // second line of defence).
       const reviewStep = run.step({
         slug: 'review',
-        label: 'Writing the review',
+        label: slot === 'review-escalated' ? 'Writing the review (escalated)' : 'Writing the review',
         kind: 'llm',
         prompt: maskedPrompt,
       });
 
       try {
-        const stream = await chatStream(provider, messages, {
+        const stream = await chatStream(slot, messages, {
           abortSignal: abort.signal,
-          purpose: 'review',
           onStreamActivity: () => {
             lastChunkAt = Date.now();
+          },
+          onRoute: (route) => {
+            usedModel = route.model;
           },
         });
         for await (const chunk of stream) {
@@ -589,13 +638,13 @@ export function createReviewEngine(opts: {
       let extractedDimensions: Record<string, number> | null = null;
       try {
         extracted = await chatObject(
-          provider,
+          'review-extract',
           [
             { role: 'system', content: EXTRACTION_PROMPT },
             { role: 'user', content: fullText },
           ],
           ReviewExtractionSchema,
-          { purpose: 'review-extract', abortSignal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS) },
+          { abortSignal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS) },
         );
         if (extracted.score !== null && (extracted.score < 0 || extracted.score > 5)) {
           extracted.score = null;
@@ -649,7 +698,7 @@ export function createReviewEngine(opts: {
           score: extracted?.score ?? parseReviewScore(fullText),
           dimensions: extractedDimensions ?? parseReviewDimensions(fullText),
           snapshotHash,
-          model: getModelId(provider, 'review'),
+          model: usedModel,
           source: 'user',
         });
       } catch (persistErr) {

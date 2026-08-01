@@ -16,14 +16,14 @@ import {
   type GeneratedQuestion,
 } from '../lib/gen-pipeline.js';
 import type { VerifyFn } from '../lib/gen-verify.js';
-import { chatObjectStream, type LLMProvider } from '../lib/llm.js';
+import { chatObjectStream } from '../lib/llm.js';
 import { formatReferenceSolutionMd, scaffoldQuestionAt } from '../lib/scaffold.js';
 import { maskPromptText, splitSpoilers } from '../lib/spoilers.js';
 import { extractCompetencyFromReadme, normalizeCompetency } from '../../shared/competencies.js';
 import { NULL_AI_LOG, type AiLog } from './ai-log.js';
 import { nowIso } from './ids.js';
 import { createJobRegistry, toEngineErrorMessage } from './job-engine.js';
-import { resolveProvider as resolveProviderFromSettings } from './settings.js';
+import { hasProvider as hasProviderFromSettings } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, Difficulty, GenerationJobRow, QuestionRow } from './types.js';
 
@@ -200,14 +200,14 @@ export function createGenerationEngine(opts: {
   llm?: GenerationLlm;
   /**
    * Injectable seam alongside `llm`: without it, a keyless test env would hit
-   * settings.ts's resolveProvider() (real API-key config) before ever
-   * reaching the injected `llm` fake, making the `llm` seam alone
-   * insufficient to drive the pipeline without an API key. Defaults to the
-   * real settings-backed resolver.
+   * settings.ts's hasProvider() (real API-key config) before ever reaching
+   * the injected `llm` fake, making the `llm` seam alone insufficient to
+   * drive the pipeline without an API key. Defaults to the real
+   * settings-backed gate.
    */
-  resolveProvider?: () => LLMProvider | null;
+  hasProvider?: () => boolean;
   /**
-   * Injectable seam alongside `llm`/`resolveProvider`: the sandbox verifier
+   * Injectable seam alongside `llm`/`hasProvider`: the sandbox verifier
    * needs a workspace vitest binary, which test envs don't have. Defaults to
    * the real sandbox verifier inside generateVerifiedQuestion.
    */
@@ -221,7 +221,7 @@ export function createGenerationEngine(opts: {
 }): GenerationEngine {
   const { db, bus, workspaceRoot } = opts;
   const llm = opts.llm ?? { chatObjectStream };
-  const resolveProvider = opts.resolveProvider ?? resolveProviderFromSettings;
+  const hasProvider = opts.hasProvider ?? hasProviderFromSettings;
   const aiLog = opts.aiLog ?? NULL_AI_LOG;
   const inFlight = createJobRegistry<string>({ name: 'generation' });
 
@@ -264,8 +264,7 @@ export function createGenerationEngine(opts: {
         title = job.title || parsed.title || job.topic;
         pipelineDone = true;
       } else {
-        const provider = resolveProvider();
-        if (!provider) throw new Error('no LLM API key configured — add one in Settings');
+        if (!hasProvider()) throw new Error('no LLM API key configured — add one in Settings');
 
         // Regenerate-with-feedback (NEE-386): both fields are write-once on
         // the job row, so this is re-derivable on every runJob call
@@ -305,16 +304,18 @@ export function createGenerationEngine(opts: {
 Category slug: ${category}
 Question type: ${config.type}${corpusNote}${timeBudget}`;
 
-        // Full verified pipeline: generate → edge-audit → sandbox verify with
-        // repair loop (design categories: critique pass, no sandbox). Each
+        // Full verified pipeline: four staged authoring calls (problem →
+        // reference solution → tests → interviewer packet, each on its own
+        // model slot) → edge-audit → calibrate → sandbox verify with repair
+        // loop (design/behavioral: no solution/test stages, no sandbox). Each
         // stage's paid output is persisted immediately via onStageResult; the
         // pipeline's per-call no-output-progress timeout (plus its absolute
         // ceiling) bounds a stalled provider without cutting a slow-but-
-        // streaming call (NEE-264). `regenerate`, when set, makes the
-        // pipeline's stage 1 a revision of the prior question via
-        // buildRegenerateUserMessage instead of sending userMessage verbatim.
+        // streaming call (NEE-264). `regenerate`, when set, replaces the
+        // authoring sequence with a single whole-object revision call built
+        // by buildRegenerateUserMessage.
         const outcome = await generateVerifiedQuestion(
-          { provider, category, difficulty, userMessage, workspaceRoot, regenerate },
+          { category, difficulty, userMessage, workspaceRoot, regenerate },
           {
             llm,
             verify: opts.verify,

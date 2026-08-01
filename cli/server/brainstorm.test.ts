@@ -10,7 +10,7 @@ import { openDb } from './db.js';
 import { createBus, type Bus } from './sse.js';
 import type { AceDb } from './types.js';
 
-// `resolveProvider` (called by the engine) transitively imports lib/llm.js,
+// `hasProvider` (called by the engine) transitively imports lib/llm.js,
 // whose mock-vs-real behavior is a module-level const read at import time —
 // same reason cli/lib/llm.test.ts and workspace-reset.test.ts set the env var
 // in beforeAll before a dynamic import, rather than a static top-level one.

@@ -30,11 +30,12 @@ question's own material claims:
    actually demands — the edge cases, the interacting concerns, the depth
    of reasoning — match what this difficulty promises, not more, not less?
 3. **Coding questions**: any honest estimate from 10 to 60 minutes is a
-   valid question size — a short question is not a defect. Judge against
-   the per-difficulty target in the band above; 60 is a hard cap regardless
-   of difficulty. Verdict `too-big` when your honest estimate exceeds the
-   60-minute cap, OR when the complexity overshoots the declared difficulty
-   band regardless of the minute count. Verdict `too-small` when the
+   valid question size — a short question is not a defect. The user message
+   restates this question's per-difficulty target under `## Time Budget`;
+   judge against that (it matches the band above). 60 is a hard cap
+   regardless of difficulty. Verdict `too-big` when your honest estimate
+   exceeds the 60-minute cap, OR when the complexity overshoots the declared
+   difficulty band regardless of the minute count. Verdict `too-small` when the
    question is trivially below its declared band — solvable with no real
    reasoning in a fraction of the time a candidate at that difficulty should
    spend.

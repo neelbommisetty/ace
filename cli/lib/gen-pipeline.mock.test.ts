@@ -23,7 +23,6 @@ const STAGE1 = {
 };
 
 const PARAMS = {
-  provider: 'openai' as const,
   category: 'js-ts' as const,
   difficulty: 'easy' as const,
   userMessage: 'topic',
@@ -31,8 +30,8 @@ const PARAMS = {
 };
 
 describe('generateVerifiedQuestion in mock mode', () => {
-  it('returns after stage 1 — no audit, no sandbox verification', async () => {
-    const chatObjectStream = vi.fn(async () => STAGE1);
+  it('authors the whole capsule in ONE call and returns — no staged authoring, no audit, no sandbox verification', async () => {
+    const chatObjectStream = vi.fn(async (_slot: string) => STAGE1);
     const verify = vi.fn();
 
     const result = await generateVerifiedQuestion(PARAMS, {
@@ -42,11 +41,14 @@ describe('generateVerifiedQuestion in mock mode', () => {
 
     expect(result.question.title).toBe('Two Sum');
     expect(result.edgeCases).toBeNull();
+    // ONE call, on the first stage's slot: the mock payload is whole-object,
+    // and keyless e2e must not pay four round trips to prove the plumbing.
     expect(chatObjectStream).toHaveBeenCalledTimes(1);
+    expect(chatObjectStream.mock.calls[0][0]).toBe('draft-problem');
     expect(verify).not.toHaveBeenCalled();
   });
 
-  it('records edge-audit, calibrate, and verify as skipped ("mock LLM mode") so keyless e2e renders a complete feed', async () => {
+  it('records the stages it stood in for — and edge-audit, calibrate, verify — as skipped ("mock LLM mode") so keyless e2e renders a complete feed', async () => {
     const events: Array<{ slug: string; status: string; reason?: string }> = [];
     const sink = {
       step(spec: { slug: string }) {
@@ -74,7 +76,10 @@ describe('generateVerifiedQuestion in mock mode', () => {
     });
 
     expect(events).toEqual([
-      { slug: 'generate', status: 'done' },
+      { slug: 'draft-problem', status: 'done' },
+      { slug: 'author-solution', status: 'skipped', reason: 'mock LLM mode' },
+      { slug: 'author-tests', status: 'skipped', reason: 'mock LLM mode' },
+      { slug: 'author-packet', status: 'skipped', reason: 'mock LLM mode' },
       { slug: 'edge-audit', status: 'skipped', reason: 'mock LLM mode' },
       { slug: 'calibrate', status: 'skipped', reason: 'mock LLM mode' },
       { slug: 'verify', status: 'skipped', reason: 'mock LLM mode' },

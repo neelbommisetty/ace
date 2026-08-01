@@ -685,6 +685,7 @@ function RoomInner({
                 <AiPanel
                   question={question}
                   reviews={review.reviews}
+                  attemptId={refAttempt?.id ?? null}
                   stream={review.reviewStream}
                   notice={review.reviewNotice}
                   justDoneId={review.justDoneId}

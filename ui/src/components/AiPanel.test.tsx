@@ -1,8 +1,9 @@
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AiPanel } from './AiPanel';
-import type { QuestionRow, SettingsInfo } from '../types';
+import { SLOT_ORDER } from '../lib/models';
+import type { LLMSlot, QuestionRow, ReviewRow, SettingsInfo } from '../types';
 
 const { getDebrief } = vi.hoisted(() => ({ getDebrief: vi.fn() }));
 
@@ -33,12 +34,35 @@ const BEHAVIORAL_QUESTION: QuestionRow = {
   title: 'A Conflict You Navigated',
 };
 
+/**
+ * A full per-slot routing map with the named slots pinned — SlotInfo's
+ * source/warning/override/defaultModel are noise for these tests, so they are
+ * uniform.
+ */
+function slotModels(
+  provider: 'openai' | 'anthropic',
+  base: string,
+  overrides: Partial<Record<LLMSlot, string>> = {},
+): NonNullable<SettingsInfo['models']> {
+  const map = {} as NonNullable<SettingsInfo['models']>;
+  for (const slot of SLOT_ORDER) {
+    const model = overrides[slot] ?? base;
+    map[slot] = {
+      route: { provider, model, source: 'default', defaultModel: model },
+      override: null,
+      warning: null,
+    };
+  }
+  return map;
+}
+
 const KEYLESS_SETTINGS: SettingsInfo = {
   openai: { configured: false, masked: null, baseUrl: null },
   anthropic: { configured: false, masked: null, baseUrl: null },
   defaultProvider: null,
   mockMode: false,
   models: null,
+  availableModels: [],
 };
 
 const KEYED_SETTINGS: SettingsInfo = {
@@ -46,17 +70,41 @@ const KEYED_SETTINGS: SettingsInfo = {
   anthropic: { configured: true, masked: '...abcd', baseUrl: null },
   defaultProvider: 'anthropic',
   mockMode: false,
-  models: {
-    generate: { provider: 'anthropic', model: 'claude-opus-5' },
-    'edge-audit': { provider: 'anthropic', model: 'claude-sonnet-5' },
-    calibrate: { provider: 'anthropic', model: 'claude-opus-5' },
-    review: { provider: 'anthropic', model: 'claude-opus-5' },
-    'review-extract': { provider: 'anthropic', model: 'claude-haiku-4-5' },
-    brainstorm: { provider: 'anthropic', model: 'claude-sonnet-5' },
-    dispute: { provider: 'anthropic', model: 'claude-opus-5' },
-    probe: { provider: 'anthropic', model: 'claude-sonnet-5' },
-  },
+  models: slotModels('anthropic', 'claude-sonnet-5', {
+    review: 'claude-opus-5',
+    dispute: 'claude-opus-5',
+    probe: 'claude-sonnet-5',
+  }),
+  availableModels: [{ provider: 'anthropic', model: 'claude-opus-5' }],
 };
+
+// A distinct model per slot, so the escalation tests below can tell which
+// slot's model actually rendered in the button label (NEE-303 client mirror).
+const ESCALATION_SETTINGS: SettingsInfo = {
+  ...KEYED_SETTINGS,
+  models: slotModels('anthropic', 'claude-sonnet-5', {
+    review: 'claude-sonnet-5',
+    'review-escalated': 'claude-opus-5',
+  }),
+};
+
+function reviewRow(overrides: Partial<ReviewRow> = {}): ReviewRow {
+  return {
+    id: 'r-1',
+    questionId: 'q-1',
+    attemptId: null,
+    version: 1,
+    at: new Date().toISOString(),
+    model: 'claude-sonnet-5',
+    verdict: 'Hire',
+    score: 4,
+    dimensions: null,
+    bodyMd: 'Solid solution.',
+    snapshotHash: null,
+    source: 'user',
+    ...overrides,
+  };
+}
 
 function renderPanel(props: Partial<Parameters<typeof AiPanel>[0]> = {}) {
   return render(
@@ -76,8 +124,15 @@ function renderPanel(props: Partial<Parameters<typeof AiPanel>[0]> = {}) {
   );
 }
 
+// Every escalation test below renders with a non-empty `reviews` list, which
+// triggers the (pre-existing) debrief fetch — give the mock a settled
+// promise so that effect has something to resolve/catch instead of throwing
+// on a bare vi.fn()'s undefined return.
 afterEach(() => {
   vi.clearAllMocks();
+});
+beforeEach(() => {
+  getDebrief.mockRejectedValue(new Error('debrief not under test here'));
 });
 
 describe('AiPanel — keyless gating (NEE-303)', () => {
@@ -124,6 +179,88 @@ describe('AiPanel — keyless gating (NEE-303)', () => {
     });
 
     expect(screen.getByRole('button', { name: /Reviewing…/ })).toBeDisabled();
+  });
+});
+
+describe('AiPanel — escalation label mirror (NEE-303)', () => {
+  it('shows the routine review model with no prior reviews', () => {
+    renderPanel({ settings: ESCALATION_SETTINGS, reviews: [], attemptId: 'attempt-1' });
+    expect(
+      screen.getByRole('button', { name: 'Request review · anthropic/claude-sonnet-5' }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the escalated model once the active attempt already has a persisted review', () => {
+    renderPanel({
+      settings: ESCALATION_SETTINGS,
+      reviews: [reviewRow({ attemptId: 'attempt-1' })],
+      attemptId: 'attempt-1',
+    });
+    expect(
+      screen.getByRole('button', { name: 'Request review · anthropic/claude-opus-5' }),
+    ).toBeInTheDocument();
+  });
+
+  it('de-escalates back to the routine model on a fresh attempt with no review of its own', () => {
+    renderPanel({
+      settings: ESCALATION_SETTINGS,
+      reviews: [reviewRow({ attemptId: 'attempt-1' })],
+      attemptId: 'attempt-2',
+    });
+    expect(
+      screen.getByRole('button', { name: 'Request review · anthropic/claude-sonnet-5' }),
+    ).toBeInTheDocument();
+  });
+
+  it('never escalates with a null attemptId (readonly room), even with reviews on record', () => {
+    renderPanel({
+      settings: ESCALATION_SETTINGS,
+      reviews: [reviewRow({ attemptId: 'attempt-1' })],
+      attemptId: null,
+    });
+    expect(
+      screen.getByRole('button', { name: 'Request review · anthropic/claude-sonnet-5' }),
+    ).toBeInTheDocument();
+  });
+
+  // A prose attempt ENDS the moment its review lands (endProseAttemptOnReview),
+  // so the two states below are the only ones a behavioral room is ever in
+  // after review #1 — and the server escalates in both. An attempt-scoped
+  // mirror labeled them routine while the escalated model actually ran.
+  it('escalates a behavioral re-review even though its prior review is on an ended attempt', () => {
+    renderPanel({
+      question: BEHAVIORAL_QUESTION,
+      settings: ESCALATION_SETTINGS,
+      reviews: [reviewRow({ attemptId: 'attempt-1' })],
+      attemptId: 'attempt-2',
+    });
+    expect(
+      screen.getByRole('button', { name: 'Request review · anthropic/claude-opus-5' }),
+    ).toBeInTheDocument();
+  });
+
+  it('escalates a behavioral re-review requested with no active attempt at all', () => {
+    renderPanel({
+      question: BEHAVIORAL_QUESTION,
+      settings: ESCALATION_SETTINGS,
+      reviews: [reviewRow({ attemptId: 'attempt-1' })],
+      attemptId: null,
+    });
+    expect(
+      screen.getByRole('button', { name: 'Request review · anthropic/claude-opus-5' }),
+    ).toBeInTheDocument();
+  });
+
+  it('stays routine for a behavioral question with no review yet', () => {
+    renderPanel({
+      question: BEHAVIORAL_QUESTION,
+      settings: ESCALATION_SETTINGS,
+      reviews: [],
+      attemptId: 'attempt-1',
+    });
+    expect(
+      screen.getByRole('button', { name: 'Request review · anthropic/claude-sonnet-5' }),
+    ).toBeInTheDocument();
   });
 });
 

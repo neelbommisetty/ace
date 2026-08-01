@@ -4,21 +4,21 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VerifyFn, VerifyResult } from '../lib/gen-verify.js';
-import type { LLMMessage, LLMProvider } from '../lib/llm.js';
+import type { LLMMessage, LLMSlot } from '../lib/llm.js';
 import { getSuggestedTime } from '../lib/categories.js';
 import { createGenerationEngine } from './generation.js';
 import { openDb } from './db.js';
 import { createBus, type Bus } from './sse.js';
 import type { AceDb } from './types.js';
 
-// The engine's `resolveProvider` option is the keyless-testable seam for
-// provider resolution — no real API key, no ACE_E2E_MOCK_LLM env var, and no
-// dependency on settings.ts/lib/llm.js's key-configured-in-~/.ace/config.json
-// state. Every test below injects both this and the `llm` fake, so the whole
+// The engine's `hasProvider` option is the keyless-testable seam for the
+// key gate — no real API key, no ACE_E2E_MOCK_LLM env var, and no dependency
+// on settings.ts/lib/llm.js's key-configured-in-~/.ace/config.json state.
+// Every test below injects both this and the `llm` fake, so the whole
 // pipeline runs deterministically off the fakes, keyless.
-const FAKE_PROVIDER: () => LLMProvider | null = () => 'openai';
+const FAKE_HAS_PROVIDER = () => true;
 
-// The verify seam mirrors llm/resolveProvider: temp workspaces have no vitest
+// The verify seam mirrors llm/hasProvider: temp workspaces have no vitest
 // binary, so every test injects a fake verifier. Green by default.
 const VERIFY_GREEN: VerifyResult = {
   green: true,
@@ -77,23 +77,26 @@ const VALID_GENERATED_PAYLOAD = {
 interface FakeLlmOpts {
   abortSignal?: AbortSignal;
   maxOutputTokens?: number;
-  purpose?: string;
   onPartial?: (partial: Record<string, unknown>) => void;
 }
 
 /**
  * Queue-based fake `chatObjectStream` (the pipeline's sole entry point since
- * NEE-264): each invocation pops the next handler. Handlers return a raw
- * payload — validated against the CALLER's own schema, mirroring what the
- * real call does — or throw directly.
+ * NEE-264): each WHOLE-OBJECT invocation pops the next handler. Handlers
+ * return a raw payload — validated against the CALLER's own schema, mirroring
+ * what the real call does — or throw directly.
+ *
+ * Since the capsule split, one authoring run is four calls: 'draft-problem'
+ * pops the handler, and the three 'author-*' stages replay THAT payload
+ * through the caller's stage schema, which slices it exactly as the real
+ * staged call does. So a handler still describes one whole generated
+ * question, `calls` still has one entry per authoring run (plus one per
+ * repair/regenerate), and a test that customizes a payload still drives every
+ * later stage from its own fixture.
  */
 function makeFakeLlm(
   handlers: Array<
-    (
-      provider: LLMProvider,
-      messages: LLMMessage[],
-      opts?: FakeLlmOpts,
-    ) => unknown | Promise<unknown>
+    (slot: LLMSlot, messages: LLMMessage[], opts?: FakeLlmOpts) => unknown | Promise<unknown>
   >,
   /**
    * The stage-2.5 calibrate call (coding AND design, never behavioral) also
@@ -106,13 +109,15 @@ function makeFakeLlm(
   calibration: { estimatedMinutes?: number | null } = {},
 ) {
   const calls: Array<{
-    provider: LLMProvider;
+    slot: LLMSlot;
     messages: LLMMessage[];
     opts?: FakeLlmOpts;
   }> = [];
   let i = 0;
+  /** The payload the current authoring run's draft-problem handler returned. */
+  let authored: unknown = null;
   const chatObjectStream = async (
-    provider: LLMProvider,
+    slot: LLMSlot,
     messages: LLMMessage[],
     schema: any,
     opts?: FakeLlmOpts,
@@ -120,7 +125,7 @@ function makeFakeLlm(
     // The pipeline's stage-2 edge-audit call is answered generically (no
     // changed artifacts) so handler queues — and the generate-call log —
     // stay exactly as before the pipeline landed.
-    if (opts?.purpose === 'edge-audit') {
+    if (slot === 'edge-audit') {
       return schema.parse({
         edgeCases: [],
         description: null,
@@ -130,17 +135,21 @@ function makeFakeLlm(
         interviewerPacket: null,
       });
     }
-    if (opts?.purpose === 'calibrate') {
+    if (slot === 'calibrate') {
       return schema.parse({
         verdict: 'fits',
         estimatedMinutes: calibration.estimatedMinutes ?? null,
         issues: null,
       });
     }
-    calls.push({ provider, messages, opts });
+    // Authoring stages 2-4 never consume a handler: they re-serve the slice
+    // of the payload this run's 'draft-problem' handler already returned.
+    if (slot !== 'draft-problem' && slot !== 'repair') return schema.parse(authored);
+    calls.push({ slot, messages, opts });
     const handler = handlers[i++];
     if (!handler) throw new Error('fake llm: no more handlers queued');
-    const payload = await handler(provider, messages, opts);
+    const payload = await handler(slot, messages, opts);
+    if (slot === 'draft-problem') authored = payload;
     return schema.parse(payload);
   };
   return {
@@ -204,7 +213,7 @@ describe('createGenerationEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     const done = waitFor('generation-done');
@@ -254,7 +263,7 @@ describe('createGenerationEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     const done = waitFor('generation-done');
@@ -286,7 +295,7 @@ describe('createGenerationEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     const done = waitFor('generation-done');
@@ -306,7 +315,7 @@ describe('createGenerationEngine', () => {
 
   it('lands on status error with a message when the llm call is aborted mid-stream (simulating the stall timeout)', async () => {
     const { llm, calls } = makeFakeLlm([
-      (provider, messages, opts) => {
+      (_slot, _messages, opts) => {
         // Real behavior: the pipeline passes its stall/ceiling controller's
         // signal as opts.abortSignal; simulate the stall abort landing
         // mid-stream — after partials already flowed — without waiting 300s.
@@ -325,7 +334,7 @@ describe('createGenerationEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     const errored = waitFor('generation-error');
@@ -363,7 +372,7 @@ describe('createGenerationEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
 
@@ -405,7 +414,7 @@ describe('createGenerationEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     const errored = waitFor('generation-error');
@@ -453,7 +462,7 @@ describe('createGenerationEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     const errored = waitFor('generation-error');
@@ -505,7 +514,7 @@ describe('createGenerationEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     const errored = waitFor('generation-error');
@@ -541,7 +550,7 @@ describe('createGenerationEngine', () => {
         bus,
         workspaceRoot: tempRoot,
         llm,
-        resolveProvider: FAKE_PROVIDER,
+        hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
       });
 
@@ -580,7 +589,7 @@ describe('createGenerationEngine', () => {
         bus,
         workspaceRoot: tempRoot,
         llm,
-        resolveProvider: FAKE_PROVIDER,
+        hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
       });
       const done = waitFor('generation-done');
@@ -625,7 +634,7 @@ describe('createGenerationEngine', () => {
         bus,
         workspaceRoot: tempRoot,
         llm,
-        resolveProvider: FAKE_PROVIDER,
+        hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
       });
       const done = waitFor('generation-done');
@@ -652,7 +661,7 @@ describe('createGenerationEngine', () => {
         bus,
         workspaceRoot: tempRoot,
         llm,
-        resolveProvider: FAKE_PROVIDER,
+        hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
       });
 
@@ -719,7 +728,7 @@ describe('createGenerationEngine', () => {
         bus,
         workspaceRoot: tempRoot,
         llm,
-        resolveProvider: FAKE_PROVIDER,
+        hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
       });
 
@@ -761,7 +770,7 @@ describe('createGenerationEngine', () => {
         bus,
         workspaceRoot: tempRoot,
         llm,
-        resolveProvider: FAKE_PROVIDER,
+        hasProvider: FAKE_HAS_PROVIDER,
         verify: FAKE_VERIFY_GREEN,
       });
 
@@ -807,7 +816,7 @@ describe('createGenerationEngine', () => {
         bus,
         workspaceRoot: tempRoot,
         llm,
-        resolveProvider: FAKE_PROVIDER,
+        hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
       });
 
@@ -867,7 +876,7 @@ describe('createGenerationEngine', () => {
         bus,
         workspaceRoot: tempRoot,
         llm,
-        resolveProvider: FAKE_PROVIDER,
+        hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
       });
 
@@ -949,7 +958,7 @@ describe('createGenerationEngine', () => {
         bus,
         workspaceRoot: tempRoot,
         llm,
-        resolveProvider: FAKE_PROVIDER,
+        hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
       });
 
@@ -981,13 +990,16 @@ describe('verified pipeline wiring', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engine.start({ category: 'js-ts', difficulty: 'easy', topic: 'progress phases' });
     await waitFor('generation-done');
     expect(phases).toEqual([
-      { phase: 'generating', attempt: 1 },
+      { phase: 'drafting', attempt: 1 },
+      { phase: 'authoring-solution', attempt: 1 },
+      { phase: 'authoring-tests', attempt: 1 },
+      { phase: 'authoring-packet', attempt: 1 },
       { phase: 'auditing', attempt: 1 },
       { phase: 'calibrating', attempt: 1 },
       { phase: 'verifying', attempt: 1 },
@@ -1006,7 +1018,7 @@ describe('verified pipeline wiring', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: async () => VERIFY_RED,
     });
     const { jobId } = engine.start({
@@ -1044,7 +1056,7 @@ describe('verified pipeline wiring', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: async () => verdicts.shift() ?? VERIFY_GREEN,
     });
     const { jobId } = engine.start({
@@ -1080,8 +1092,8 @@ describe('verified pipeline wiring', () => {
     let generateCalls = 0;
     let auditCalls = 0;
     const llm = {
-      chatObjectStream: (async (_p: unknown, _m: unknown, schema: any, opts?: { purpose?: string }) => {
-        if (opts?.purpose === 'edge-audit') {
+      chatObjectStream: (async (slot: LLMSlot, _m: unknown, schema: any) => {
+        if (slot === 'edge-audit') {
           auditCalls++;
           if (auditCalls === 1) throw new Error('provider 500 during audit');
           return schema.parse({
@@ -1093,10 +1105,12 @@ describe('verified pipeline wiring', () => {
             interviewerPacket: null,
           });
         }
-        if (opts?.purpose === 'calibrate') {
+        if (slot === 'calibrate') {
           return schema.parse({ verdict: 'fits', estimatedMinutes: null, issues: null });
         }
-        generateCalls++;
+        // Only the first authoring stage counts as a "generate call" — the
+        // three later stages are the same run's slices of this payload.
+        if (slot === 'draft-problem') generateCalls++;
         return schema.parse(VALID_GENERATED_PAYLOAD);
       }) as never,
     } as Parameters<typeof createGenerationEngine>[0]['llm'];
@@ -1105,7 +1119,7 @@ describe('verified pipeline wiring', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
 
@@ -1144,7 +1158,7 @@ describe('verified pipeline wiring', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engine.start({ category: 'js-ts', difficulty: 'easy', topic: 'dotfiles' });
@@ -1170,7 +1184,7 @@ describe('estimatedMinutes → suggestedMinutes resolution (resolveSuggestedMinu
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engine.start({ category: 'leetcode-ds', difficulty: 'medium', topic: 'two sum variant' });
@@ -1188,7 +1202,7 @@ describe('estimatedMinutes → suggestedMinutes resolution (resolveSuggestedMinu
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engine.start({ category: 'leetcode-ds', difficulty: 'medium', topic: 'two sum variant' });
@@ -1207,7 +1221,7 @@ describe('estimatedMinutes → suggestedMinutes resolution (resolveSuggestedMinu
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engine.start({ category: 'leetcode-ds', difficulty: 'medium', topic: 'two sum variant' });
@@ -1241,7 +1255,7 @@ describe('estimatedMinutes → suggestedMinutes resolution (resolveSuggestedMinu
       bus,
       workspaceRoot: tempRoot,
       llm: designLlm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     designEngine.start({ category: 'design-fe', difficulty: 'medium', topic: 'design a feed' });
@@ -1263,7 +1277,7 @@ describe('estimatedMinutes → suggestedMinutes resolution (resolveSuggestedMinu
       bus,
       workspaceRoot: tempRoot,
       llm: behavioralLlm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     behavioralEngine.start({ category: 'behavioral', difficulty: 'medium', topic: 'conflict' });
@@ -1289,7 +1303,7 @@ describe('estimatedMinutes → suggestedMinutes resolution (resolveSuggestedMinu
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engine.start({ category: 'react-apps', difficulty: 'medium', topic: 'sprint board' });
@@ -1346,7 +1360,7 @@ describe('behavioral generation (NEE-343)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engine.start({ category: 'behavioral', difficulty: 'medium', topic: 'mentoring' });
@@ -1368,7 +1382,7 @@ describe('behavioral generation (NEE-343)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm: llmCoding,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engineCoding.start({ category: 'js-ts', difficulty: 'medium', topic: 'irrelevant' });
@@ -1383,7 +1397,7 @@ describe('behavioral generation (NEE-343)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm: llmBehavioral,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engineBehavioral.start({ category: 'behavioral', difficulty: 'medium', topic: 'first one' });
@@ -1410,7 +1424,7 @@ describe('behavioral generation (NEE-343)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm: seedLlm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     const seeded = waitFor('generation-done');
@@ -1438,7 +1452,7 @@ describe('behavioral generation (NEE-343)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     const done = waitFor('generation-done');
@@ -1478,7 +1492,7 @@ describe('behavioral generation (NEE-343)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engine.start({ category: 'behavioral', difficulty: 'medium', topic: 'conflict' });
@@ -1516,7 +1530,7 @@ describe('behavioral generation (NEE-343)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engine.start({ category: 'behavioral', difficulty: 'medium', topic: 'influence' });
@@ -1541,7 +1555,7 @@ describe('behavioral generation (NEE-343)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engine.start({ category: 'behavioral', difficulty: 'medium', topic: 'odd' });
@@ -1561,7 +1575,7 @@ describe('behavioral generation (NEE-343)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       // A verifier that would fail loudly if ever invoked — behavioral must
       // never reach it.
       verify: (async () => {
@@ -1588,7 +1602,7 @@ describe('regenerate with feedback (NEE-386)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     const done = waitFor('generation-done');
@@ -1604,7 +1618,7 @@ describe('regenerate with feedback (NEE-386)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
 
@@ -1648,7 +1662,7 @@ describe('regenerate with feedback (NEE-386)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
 
@@ -1698,7 +1712,7 @@ describe('regenerate with feedback (NEE-386)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
 
@@ -1738,7 +1752,7 @@ describe('regenerate with feedback (NEE-386)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
 
@@ -1789,7 +1803,7 @@ describe('regenerate with feedback (NEE-386)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
 
@@ -1833,7 +1847,7 @@ describe('time budget line in the generate user message (NEE-406)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engine.start({ category: 'leetcode-ds', difficulty: 'hard', topic: 'two sum variant' });
@@ -1870,7 +1884,7 @@ describe('time budget line in the generate user message (NEE-406)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engine.start({ category: 'design-fe', difficulty: 'medium', topic: 'design a feed' });
@@ -1889,7 +1903,7 @@ describe('time budget line in the generate user message (NEE-406)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       verify: FAKE_VERIFY_GREEN,
     });
     engine.start({ category: 'behavioral', difficulty: 'medium', topic: 'conflict' });

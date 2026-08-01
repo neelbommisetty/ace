@@ -10,8 +10,21 @@ import { getImportMetaDirname } from './import-meta.js';
 
 const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
 
-/** Features whose system prompt is assembled per-category from a skeleton + capsule. */
-export type PromptFeature = 'generate' | 'edge-audit' | 'review' | 'calibrate';
+/**
+ * Features whose system prompt is assembled per-category from a skeleton +
+ * capsule. The four `author`/`draft` features are the split generation
+ * capsule (one per authoring stage); `repair` serves every whole-object
+ * revision — verify-repair, calibration rework, and regenerate-with-feedback.
+ */
+export type PromptFeature =
+  | 'draft-problem'
+  | 'author-solution'
+  | 'author-tests'
+  | 'author-packet'
+  | 'repair'
+  | 'edge-audit'
+  | 'review'
+  | 'calibrate';
 
 /**
  * The capsule heading that fills the `{{example}}` slot, per question type —

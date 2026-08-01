@@ -7,12 +7,17 @@ import {
 } from '../lib/config.js';
 import {
   clearConfigCache,
+  getAvailableModels,
   getDefaultProvider,
-  getModelMap,
+  getModelProvider,
+  getSlotDefault,
+  getSlotRoutes,
+  hasAnyProvider,
   isMockLlm,
   validateAnthropicKey,
   validateOpenAIKey,
   type LLMProvider,
+  type LLMSlot,
 } from '../lib/llm.js';
 import type { ProviderSettings, SettingsInfo } from './types.js';
 
@@ -25,14 +30,13 @@ export class SettingsValidationError extends Error {
 }
 
 /**
- * Provider for server-initiated LLM calls. In mock mode there is always a
- * provider (llm.ts short-circuits every call); otherwise the configured
- * default. Returns null rather than exiting: a keyless workspace is a normal
+ * Whether server-initiated LLM calls can run at all. Which model each step
+ * uses is per-slot routing's job (`resolveSlot`); this is only the keyless
+ * gate. Returns false rather than exiting: a keyless workspace is a normal
  * state the routes answer with a 503, never a reason to kill the server.
  */
-export function resolveProvider(): LLMProvider | null {
-  if (isMockLlm()) return 'openai';
-  return getDefaultProvider();
+export function hasProvider(): boolean {
+  return hasAnyProvider();
 }
 
 function toProviderSettings(key: string | undefined, baseUrl: string | undefined): ProviderSettings {
@@ -46,24 +50,33 @@ function toProviderSettings(key: string | undefined, baseUrl: string | undefined
 
 export function getSettingsInfo(): SettingsInfo {
   const config = loadAceConfig();
-  // Same resolution a real call would use (resolveProvider() above) — not
-  // getDefaultProvider() alone, which is null in mock mode even though every
-  // call there actually resolves to 'openai' and returns a mock response.
-  const provider = resolveProvider();
+  // Exactly what a real call would resolve, per slot — including mock mode,
+  // where every call short-circuits but the route is still the honest one.
+  const routes = getSlotRoutes();
+  const models = {} as NonNullable<SettingsInfo['models']>;
+  let anyRoute = false;
+  for (const slot of Object.keys(routes) as LLMSlot[]) {
+    const { route, override, warning } = routes[slot];
+    if (route != null) anyRoute = true;
+    models[slot] = {
+      // `warning` and `override` are dropped from the route itself — they are
+      // the row's, not the route's, and a slot with NO route still carries
+      // both (a rejected override must never be silent, and it must stay
+      // clearable).
+      route: route == null ? null : { provider: route.provider, model: route.model, source: route.source, defaultModel: getSlotDefault(slot) },
+      override,
+      warning,
+    };
+  }
   return {
     openai: toProviderSettings(config.OPENAI_API_KEY, config.OPENAI_BASE_URL),
     anthropic: toProviderSettings(config.ANTHROPIC_API_KEY, config.ANTHROPIC_BASE_URL),
     defaultProvider: getDefaultProvider(),
     mockMode: isMockLlm(),
-    models:
-      provider == null
-        ? null
-        : (Object.fromEntries(
-            Object.entries(getModelMap(provider)).map(([purpose, model]) => [
-              purpose,
-              { provider, model },
-            ]),
-          ) as SettingsInfo['models']),
+    // No slot resolving at all is the keyless state the UI gates paid
+    // actions on; a single null ENTRY only means that one slot has no route.
+    models: anyRoute ? models : null,
+    availableModels: getAvailableModels(),
   };
 }
 
@@ -73,7 +86,10 @@ export interface SettingsPatch {
   /** string sets, null clears, absent leaves unchanged. */
   openaiBaseUrl?: string | null;
   anthropicBaseUrl?: string | null;
+  /** @deprecated Routing is per-slot now; saved but never read. */
   defaultProvider?: 'openai' | 'anthropic';
+  /** Per-slot model override: a model id sets, null clears, absent leaves unchanged. */
+  models?: Partial<Record<LLMSlot, string | null>>;
 }
 
 /**
@@ -147,6 +163,35 @@ export async function updateSettings(patch: SettingsPatch): Promise<SettingsInfo
 
   if (patch.defaultProvider !== undefined) {
     updates.default_provider = patch.defaultProvider;
+  }
+
+  if (patch.models !== undefined) {
+    // Validated against the EFFECTIVE config — a key saved in this same
+    // patch counts, and llm.ts's cached config is still the pre-save one.
+    const effectiveKey = (provider: LLMProvider): string | undefined => {
+      const field = provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY';
+      const patched = updates[field];
+      return (typeof patched === 'string' ? patched : undefined) ?? config[field];
+    };
+    const overrides: Record<string, string> = { ...(config.model_overrides ?? {}) };
+    for (const [slot, model] of Object.entries(patch.models) as Array<[LLMSlot, string | null]>) {
+      if (model === null) {
+        delete overrides[slot];
+        continue;
+      }
+      const provider = getModelProvider(model);
+      if (!provider) {
+        throw new SettingsValidationError(`${slot}: "${model}" is not a model ace can route to`);
+      }
+      // Mock mode has every provider by construction (no call is ever made).
+      if (!isMockLlm() && !effectiveKey(provider)) {
+        throw new SettingsValidationError(
+          `${slot}: no ${provider} API key is configured — add one before selecting "${model}"`,
+        );
+      }
+      overrides[slot] = model;
+    }
+    updates.model_overrides = overrides;
   }
 
   if (Object.keys(updates).length > 0) {

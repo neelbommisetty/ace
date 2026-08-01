@@ -256,7 +256,7 @@ export interface AiStepRow {
   runId: string;
   seq: number; // 1-based, per run
   kind: AiStepKind;
-  slug: string; // 'generate' | 'edge-audit' | 'verify' | 'repair' | 'scaffold' | …
+  slug: string; // 'draft-problem' | 'author-tests' | 'edge-audit' | 'verify' | 'repair' | …
   label: string;
   status: AiStepStatus;
   attempt: number;
@@ -284,39 +284,91 @@ export interface ProviderSettings {
 }
 
 /**
- * What a given LLM call is for — mirrors cli/lib/llm.ts's `PURPOSE_TIERS`
+ * One routable step of the product — mirrors cli/lib/llm.ts's `SLOT_ROUTES`
  * keys one-for-one; that file imports this type rather than redeclaring it,
- * so the wire shape and the resolution policy can never drift apart.
+ * so the wire shape and the routing policy can never drift apart. Every slot
+ * carries its own cross-provider default and is independently user-editable
+ * in Settings, which is why this is a slot (a step) and no longer a purpose
+ * (a tier lookup within one provider).
  */
-export type LLMPurpose =
-  | 'generate'
+export type LLMSlot =
+  // Generation pipeline
+  | 'draft-problem'
+  | 'author-solution'
+  | 'author-tests'
+  | 'author-packet'
   | 'edge-audit'
+  | 'calibrate'
+  | 'repair'
+  // Practice room
   | 'review'
+  | 'review-escalated'
   | 'review-extract'
-  | 'brainstorm'
-  | 'dispute'
   | 'probe'
-  | 'calibrate';
+  | 'dispute'
+  // Creation
+  | 'brainstorm';
 
-/** The exact provider + model id a purpose resolves to right now (NEE-303). */
+/** A provider + model id pair — the unit `availableModels` is listed in. */
 export interface ResolvedModel {
   provider: 'openai' | 'anthropic';
   model: string;
 }
 
+/**
+ * How a slot resolves right now: which model would actually run and why that
+ * one.
+ *
+ * `source` — 'default' is the hardcoded route; 'override' is the user's
+ * saved choice; 'provider-fallback' is the alternate taken because the
+ * default's provider has no key; 'fable-fallback' is the session-latched
+ * swap off claude-fable-5 (see cli/lib/llm.ts).
+ */
+export interface SlotRouteInfo extends ResolvedModel {
+  source: 'default' | 'override' | 'provider-fallback' | 'fable-fallback';
+  /** The hardcoded default for this slot — what "reset to default" restores. */
+  defaultModel: string;
+}
+
+/**
+ * One row of the Settings routing table.
+ *
+ * `override` and `warning` sit BESIDE `route`, not inside it, because both
+ * outlive it: a saved override still has to be clearable when the route it
+ * produced is a fallback (or a session-latched swap off claude-fable-5), and
+ * a rejected override still has to say so when the slot resolves to nothing
+ * at all and `route` is null.
+ */
+export interface SlotInfo {
+  /** null when nothing can run this slot right now. */
+  route: SlotRouteInfo | null;
+  /** The saved per-slot override model id, honored or not. */
+  override: string | null;
+  /** Why a saved override could not be honored — a downgrade is never silent. */
+  warning: string | null;
+}
+
 export interface SettingsInfo {
   openai: ProviderSettings;
   anthropic: ProviderSettings;
+  /**
+   * @deprecated Routing is per-slot now and ignores this field; it stays on
+   * the wire one release so an older SPA build keeps rendering.
+   */
   defaultProvider: 'openai' | 'anthropic' | null;
   mockMode: boolean;
   /**
-   * Per-purpose resolved provider/model (NEE-303), using the same resolution
-   * a real call would (mock mode always resolves to 'openai', matching
-   * `resolveProvider()` in cli/server/settings.ts) — what the UI shows
-   * *before* invoking a paid action. Null when no provider can be resolved
-   * (keyless, non-mock): no model would actually run.
+   * Per-slot resolution (NEE-303), using exactly what a real call would use —
+   * what the UI shows *before* invoking a paid action. Null when nothing
+   * resolves at all (keyless, non-mock): no model would run for any slot. A
+   * single entry's null `route` is narrower: that one slot has no route,
+   * which today only happens for 'review-escalated' (no alternate — an
+   * anthropic-keyless user simply has no escalation tier and reviews stay on
+   * the 'review' slot).
    */
-  models: Record<LLMPurpose, ResolvedModel> | null;
+  models: Record<LLMSlot, SlotInfo> | null;
+  /** Every model selectable right now — key-present providers only. */
+  availableModels: ResolvedModel[];
 }
 
 /**
@@ -595,10 +647,20 @@ export interface SseEventMap {
   /**
    * Ephemeral pipeline-phase progress for active generation cards. Not
    * persisted anywhere — a reload falls back to the generic running label.
+   * Mirrors cli/lib/gen-pipeline.ts's GenerationPhase: the four authoring
+   * phases are the split generation capsule, one paid call each.
    */
   'generation-progress': {
     jobId: string;
-    phase: 'generating' | 'auditing' | 'calibrating' | 'verifying' | 'repairing';
+    phase:
+      | 'drafting'
+      | 'authoring-solution'
+      | 'authoring-tests'
+      | 'authoring-packet'
+      | 'auditing'
+      | 'calibrating'
+      | 'verifying'
+      | 'repairing';
     attempt: number;
   };
   'generation-done': { jobId: string; question: QuestionRow };

@@ -16,7 +16,16 @@ import {
   type PromptFeature,
 } from './prompt-builder.js';
 
-const FEATURES: PromptFeature[] = ['generate', 'edge-audit', 'review', 'calibrate'];
+const FEATURES: PromptFeature[] = [
+  'draft-problem',
+  'author-solution',
+  'author-tests',
+  'author-packet',
+  'repair',
+  'edge-audit',
+  'review',
+  'calibrate',
+];
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -34,12 +43,12 @@ describe('buildSystemPrompt', () => {
   );
 
   it('puts the charter first', () => {
-    const prompt = buildSystemPrompt('generate', 'js-ts');
+    const prompt = buildSystemPrompt('draft-problem', 'js-ts');
     expect(prompt.startsWith('# Interviewer Charter')).toBe(true);
   });
 
   it('splices category-specific capsule content into the skeleton', () => {
-    const prompt = buildSystemPrompt('generate', 'js-ts');
+    const prompt = buildSystemPrompt('draft-problem', 'js-ts');
     expect(prompt).toContain('`js-ts`');
     expect(prompt).toContain('solution.test.ts');
   });
@@ -63,7 +72,7 @@ describe('buildSystemPrompt', () => {
       return real(file, options);
     }) as typeof fs.readFileSync;
     vi.spyOn(fs, 'readFileSync').mockImplementation(fake);
-    expect(() => buildSystemPrompt('generate', 'js-ts')).toThrow(
+    expect(() => buildSystemPrompt('draft-problem', 'js-ts')).toThrow(
       /missing required section "## Difficulty Calibration" in cli\/prompts\/categories\/js-ts\.md/,
     );
   });
@@ -81,7 +90,7 @@ describe('buildSystemPrompt', () => {
       return real(file, options);
     }) as typeof fs.readFileSync;
     vi.spyOn(fs, 'readFileSync').mockImplementation(fake);
-    expect(() => buildSystemPrompt('generate', 'js-ts')).toThrow(
+    expect(() => buildSystemPrompt('draft-problem', 'js-ts')).toThrow(
       /missing required section "## Identity"/,
     );
   });

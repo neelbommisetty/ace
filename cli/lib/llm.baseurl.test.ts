@@ -13,7 +13,10 @@ vi.mock('@ai-sdk/openai', () => ({
 vi.mock('@ai-sdk/anthropic', () => ({
   createAnthropic: vi.fn(() => vi.fn(() => ({ id: 'anthropic-model' }))),
 }));
-vi.mock('ai', () => ({
+// The error classes stay REAL (importOriginal): the Fable fallback branches
+// call APICallError/NoObjectGeneratedError.isInstance on every failure path.
+vi.mock('ai', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ai')>()),
   streamText: vi.fn(() => ({ textStream: (async function* () {})() })),
   generateObject: vi.fn(async () => ({ object: {} })),
   Output: { object: vi.fn((spec: unknown) => spec) },
@@ -70,7 +73,7 @@ describe('getModel baseURL passthrough', () => {
     writeConfig({ OPENAI_API_KEY: 'k1', OPENAI_BASE_URL: 'http://localhost:4242/v1' });
     const { llm, createOpenAI } = await load();
 
-    await llm.chatStream('openai', MESSAGES);
+    await llm.chatStream('draft-problem', MESSAGES);
 
     expect(createOpenAI).toHaveBeenCalledWith(
       expect.objectContaining({ apiKey: 'k1', baseURL: 'http://localhost:4242/v1' }),
@@ -81,7 +84,7 @@ describe('getModel baseURL passthrough', () => {
     writeConfig({ OPENAI_API_KEY: 'k1' });
     const { llm, createOpenAI } = await load();
 
-    await llm.chatStream('openai', MESSAGES);
+    await llm.chatStream('draft-problem', MESSAGES);
 
     expect(createOpenAI).toHaveBeenCalledTimes(1);
     expect('baseURL' in createOpenAI.mock.calls[0][0]!).toBe(false);
@@ -91,7 +94,7 @@ describe('getModel baseURL passthrough', () => {
     writeConfig({ ANTHROPIC_API_KEY: 'k2', ANTHROPIC_BASE_URL: 'http://localhost:4242/v1' });
     const { llm, createAnthropic } = await load();
 
-    await llm.chatStream('anthropic', MESSAGES);
+    await llm.chatStream('review', MESSAGES);
 
     expect(createAnthropic).toHaveBeenCalledWith(
       expect.objectContaining({ apiKey: 'k2', baseURL: 'http://localhost:4242/v1' }),
@@ -102,7 +105,7 @@ describe('getModel baseURL passthrough', () => {
     writeConfig({ ANTHROPIC_API_KEY: 'k2' });
     const { llm, createAnthropic } = await load();
 
-    await llm.chatStream('anthropic', MESSAGES);
+    await llm.chatStream('review', MESSAGES);
 
     expect(createAnthropic).toHaveBeenCalledTimes(1);
     expect('baseURL' in createAnthropic.mock.calls[0][0]!).toBe(false);
@@ -128,8 +131,8 @@ describe('getModel fetch-tap threading (NEE-322)', () => {
     writeConfig({ OPENAI_API_KEY: 'k1', ANTHROPIC_API_KEY: 'k2' });
     const { llm, createOpenAI, createAnthropic } = await loadWithStreamResult();
 
-    await llm.chatObjectStream('openai', MESSAGES, SCHEMA, { onStreamActivity: () => {} });
-    await llm.chatObjectStream('anthropic', MESSAGES, SCHEMA, { onStreamActivity: () => {} });
+    await llm.chatObjectStream('draft-problem', MESSAGES, SCHEMA, { onStreamActivity: () => {} });
+    await llm.chatObjectStream('review', MESSAGES, SCHEMA, { onStreamActivity: () => {} });
 
     expect(typeof createOpenAI.mock.calls[0][0]!.fetch).toBe('function');
     expect(typeof createAnthropic.mock.calls[0][0]!.fetch).toBe('function');
@@ -139,8 +142,8 @@ describe('getModel fetch-tap threading (NEE-322)', () => {
     writeConfig({ OPENAI_API_KEY: 'k1', ANTHROPIC_API_KEY: 'k2' });
     const { llm, createOpenAI, createAnthropic } = await loadWithStreamResult();
 
-    await llm.chatObjectStream('openai', MESSAGES, SCHEMA);
-    await llm.chatObjectStream('anthropic', MESSAGES, SCHEMA);
+    await llm.chatObjectStream('draft-problem', MESSAGES, SCHEMA);
+    await llm.chatObjectStream('review', MESSAGES, SCHEMA);
 
     expect('fetch' in createOpenAI.mock.calls[0][0]!).toBe(false);
     expect('fetch' in createAnthropic.mock.calls[0][0]!).toBe(false);
@@ -167,7 +170,7 @@ describe('getModel fetch-tap threading (NEE-322)', () => {
     const { llm, createAnthropic } = await loadWithStreamResult();
 
     const onStreamActivity = vi.fn();
-    await llm.chatObjectStream('anthropic', MESSAGES, SCHEMA, { onStreamActivity });
+    await llm.chatObjectStream('review', MESSAGES, SCHEMA, { onStreamActivity });
     const tapped = createAnthropic.mock.calls[0][0]!.fetch as typeof fetch;
     const response = await tapped('http://localhost:4242/v1/messages');
     await response.text();
@@ -186,8 +189,8 @@ describe('chatStream fetch-tap threading (NEE-361)', () => {
     writeConfig({ OPENAI_API_KEY: 'k1', ANTHROPIC_API_KEY: 'k2' });
     const { llm, createOpenAI, createAnthropic } = await load();
 
-    await llm.chatStream('openai', MESSAGES, { onStreamActivity: () => {} });
-    await llm.chatStream('anthropic', MESSAGES, { onStreamActivity: () => {} });
+    await llm.chatStream('draft-problem', MESSAGES, { onStreamActivity: () => {} });
+    await llm.chatStream('review', MESSAGES, { onStreamActivity: () => {} });
 
     expect(typeof createOpenAI.mock.calls[0][0]!.fetch).toBe('function');
     expect(typeof createAnthropic.mock.calls[0][0]!.fetch).toBe('function');
@@ -197,8 +200,8 @@ describe('chatStream fetch-tap threading (NEE-361)', () => {
     writeConfig({ OPENAI_API_KEY: 'k1', ANTHROPIC_API_KEY: 'k2' });
     const { llm, createOpenAI, createAnthropic } = await load();
 
-    await llm.chatStream('openai', MESSAGES);
-    await llm.chatStream('anthropic', MESSAGES);
+    await llm.chatStream('draft-problem', MESSAGES);
+    await llm.chatStream('review', MESSAGES);
 
     expect('fetch' in createOpenAI.mock.calls[0][0]!).toBe(false);
     expect('fetch' in createAnthropic.mock.calls[0][0]!).toBe(false);
@@ -225,7 +228,7 @@ describe('chatStream fetch-tap threading (NEE-361)', () => {
     const { llm, createAnthropic } = await load();
 
     const onStreamActivity = vi.fn();
-    await llm.chatStream('anthropic', MESSAGES, { onStreamActivity });
+    await llm.chatStream('review', MESSAGES, { onStreamActivity });
     const tapped = createAnthropic.mock.calls[0][0]!.fetch as typeof fetch;
     const response = await tapped('http://localhost:4280/v1/messages');
     await response.text();

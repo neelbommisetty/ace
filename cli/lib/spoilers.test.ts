@@ -54,13 +54,39 @@ describe('splitSpoilers', () => {
 });
 
 describe('drift guard', () => {
-  it('GeneratedQuestionSchema keys partition exactly into WIRE_SAFE_KEYS.generate ∪ SPOILER_KEYS', () => {
-    // Adding a schema field must force a decision: wire-safe or spoiler.
+  // The four authoring stages, in the order gen-pipeline runs them. Their
+  // wire-safe sets are disjoint by construction (each stage authors its own
+  // slice of the question), so the union below is a partition check, not a
+  // merge.
+  const AUTHORING_SLUGS = ['draft-problem', 'author-solution', 'author-tests', 'author-packet'];
+
+  it('GeneratedQuestionSchema keys partition exactly into the authoring stages\' WIRE_SAFE_KEYS ∪ SPOILER_KEYS', () => {
+    // Adding a schema field must force a decision: wire-safe (and in WHICH
+    // stage) or spoiler.
     const schemaKeys = Object.keys(GeneratedQuestionSchema.shape).sort();
-    const safeKeys = [...WIRE_SAFE_KEYS.generate];
+    const safeKeys = AUTHORING_SLUGS.flatMap((slug) => [...WIRE_SAFE_KEYS[slug]]);
     const spoilerKeys: string[] = [...SPOILER_KEYS];
+    expect(new Set(safeKeys).size).toBe(safeKeys.length); // no key wire-safe in two stages
     expect(safeKeys.filter((k) => spoilerKeys.includes(k))).toEqual([]);
     expect([...safeKeys, ...spoilerKeys].sort()).toEqual(schemaKeys);
+  });
+
+  it('every authoring stage has an entry — a missing one fails CLOSED and would blank that step', () => {
+    // WIRE_SAFE_KEYS lookups fall back to the empty set, so an omitted stage
+    // is silent in production: its live stream renders as nothing at all.
+    for (const slug of AUTHORING_SLUGS) {
+      expect(WIRE_SAFE_KEYS[slug], `WIRE_SAFE_KEYS.${slug}`).toBeDefined();
+    }
+    // author-packet's set is deliberately EMPTY: both of its fields
+    // (interviewerPacket, followUps) are spoilers.
+    expect([...WIRE_SAFE_KEYS['author-packet']]).toEqual([]);
+  });
+
+  it('the repair slug stays whole-object: every wire-safe key of every stage at once', () => {
+    // Verify-repair, calibration rework, and regenerate all return the whole
+    // question on this one slug.
+    const staged = AUTHORING_SLUGS.flatMap((slug) => [...WIRE_SAFE_KEYS[slug]]).sort();
+    expect([...WIRE_SAFE_KEYS.repair].sort()).toEqual(staged);
   });
 });
 

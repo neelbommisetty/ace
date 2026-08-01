@@ -170,37 +170,12 @@ export async function run(args: string[]): Promise<void> {
     anthropicError = result.error;
   }
 
-  // Select default provider if both are valid
-  if (openaiValid && anthropicValid) {
-    let defaultProvider = parsed['default-provider'];
-    
-    if (!defaultProvider) {
-      const currentDefault = final.default_provider || 'openai';
-      const { selected } = await prompts({
-        type: 'select',
-        name: 'selected',
-        message: 'Default LLM provider:',
-        choices: [
-          { title: 'OpenAI', value: 'openai' },
-          { title: 'Anthropic', value: 'anthropic' },
-        ],
-        initial: currentDefault === 'anthropic' ? 1 : 0,
-      });
-      defaultProvider = selected;
-    }
-    
-    if (defaultProvider === 'openai' || defaultProvider === 'anthropic') {
-      saveGlobalAceConfig({ default_provider: defaultProvider });
-    }
-  } else if (openaiValid) {
-    // Only OpenAI is valid, set as default
-    saveGlobalAceConfig({ default_provider: 'openai' });
-  } else if (anthropicValid) {
-    // Only Anthropic is valid, set as default
-    saveGlobalAceConfig({ default_provider: 'anthropic' });
-  }
-
-  // Reload config to get the updated default_provider
+  // No default-provider question: routing is per-slot (cli/lib/llm.ts's
+  // SLOT_ROUTES, editable per step in Settings) and nothing reads
+  // `default_provider` anymore, so asking for it — and then reporting it as
+  // configured — would state a routing fact that is not true. A
+  // `--default-provider` flag is still accepted and ignored so existing
+  // scripts do not break.
   const updated = loadAceConfig();
 
   // Display status dashboard
@@ -229,11 +204,6 @@ export async function run(args: string[]): Promise<void> {
 
   const ready = (openaiValid === true || anthropicValid === true);
   printStatusLine('Ready', ready, ready ? 'at least one provider configured' : 'no valid API keys');
-
-  if (updated.default_provider) {
-    const providerName = updated.default_provider === 'openai' ? 'OpenAI' : 'Anthropic';
-    printStatusLine('Default provider', true, providerName.toLowerCase());
-  }
 
   console.log(chalk.cyan('╰─────────────────────────────────────────╯\n'));
 

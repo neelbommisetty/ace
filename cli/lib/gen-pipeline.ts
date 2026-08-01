@@ -8,13 +8,7 @@ import {
   type QuestionType,
 } from './categories.js';
 import { verifyGeneratedQuestion, type VerifyFn } from './gen-verify.js';
-import {
-  chatObjectStream,
-  isMockLlm,
-  type LLMMessage,
-  type LLMProvider,
-  type LLMPurpose,
-} from './llm.js';
+import { chatObjectStream, isMockLlm, type LLMMessage, type LLMSlot } from './llm.js';
 import { buildQuestionSection, buildSystemPrompt } from './prompt-builder.js';
 import { renderSolutionStub } from './scaffold.js';
 import { maskSpoilerValues, SPOILER_KEYS, WITHHELD_MARKER } from './spoilers.js';
@@ -61,6 +55,143 @@ export const GeneratedQuestionSchema = z.object({
 
 export type GeneratedQuestion = z.infer<typeof GeneratedQuestionSchema>;
 
+// --- The authoring stages (the split generation capsule) ------------------
+// One schema per stage, each a disjoint slice of GeneratedQuestionSchema:
+// the four together partition it exactly (spoilers.test.ts's drift guard
+// pins that against WIRE_SAFE_KEYS ∪ SPOILER_KEYS). Same
+// `.nullable()`-not-`.nullish()` rule as everything else here — strict
+// structured outputs require every property key in `required` (NEE-263).
+//
+// Splitting the capsule is what lets each stage run on the model that is
+// actually best at it (cli/lib/llm.ts's SLOT_ROUTES), and it is why no later
+// stage can retitle the question: `title`/`slug` exist only on stage 1.
+
+/** Stage 1 — the problem itself. Every category runs it. */
+export const DraftProblemSchema = z.object({
+  title: z.string(),
+  slug: z.string().nullable(),
+  description: z.string().nullable(),
+  signature: z.string().nullable(),
+  estimatedMinutes: z.number().nullable(),
+  competency: z.string().nullable(),
+});
+
+/**
+ * Stage 2 — the answer key (coding categories only). `solutionCode` is
+ * asked for and always discarded (the starter file is rendered from the
+ * signature); it stays in the schema so the model has a named place to put
+ * `null` instead of smuggling a candidate-facing solution into
+ * `referenceSolution`.
+ */
+export const AuthorSolutionSchema = z.object({
+  referenceSolution: z.string().nullable(),
+  supportCode: z.string().nullable(),
+  solutionCode: z.string().nullable(),
+});
+
+/** Stage 3 — the whole test file, authored against stage 2 (coding only). */
+export const AuthorTestsSchema = z.object({
+  testCode: z.string().nullable(),
+});
+
+/** Stage 4 — the hidden interviewer packet (+ behavioral probes). All categories. */
+export const AuthorPacketSchema = z.object({
+  interviewerPacket: z.string().nullable(),
+  followUps: z.array(z.string()).nullable(),
+});
+
+/** The authoring stages, in run order. Also their step slugs and their LLM slots. */
+export type AuthoringStage =
+  | 'draft-problem'
+  | 'author-solution'
+  | 'author-tests'
+  | 'author-packet';
+
+export const AUTHORING_ORDER: readonly AuthoringStage[] = [
+  'draft-problem',
+  'author-solution',
+  'author-tests',
+  'author-packet',
+];
+
+/**
+ * Per-stage schema + activity-log label + progress phase. Keyed as a Record
+ * over AuthoringStage so a new stage cannot be added without deciding all
+ * three. Every schema's output is a slice of GeneratedQuestion, which is what
+ * makes the merge in generateVerifiedQuestion a plain spread.
+ */
+const AUTHORING_STAGES: Record<
+  AuthoringStage,
+  { schema: z.ZodType<Partial<GeneratedQuestion>>; label: string; phase: GenerationPhase }
+> = {
+  'draft-problem': {
+    schema: DraftProblemSchema,
+    label: 'Writing the problem',
+    phase: 'drafting',
+  },
+  'author-solution': {
+    schema: AuthorSolutionSchema,
+    label: 'Writing the reference solution',
+    phase: 'authoring-solution',
+  },
+  'author-tests': {
+    schema: AuthorTestsSchema,
+    label: 'Writing the tests',
+    phase: 'authoring-tests',
+  },
+  'author-packet': {
+    schema: AuthorPacketSchema,
+    label: 'Writing the interviewer packet',
+    phase: 'authoring-packet',
+  },
+};
+
+/**
+ * Which authoring stages each question type RUNS — a Record so widening
+ * QuestionType breaks the build here instead of silently authoring a
+ * solution for a category that has none. Design and behavioral have no
+ * solution file and no test suite; both stages are recorded as SKIPPED steps
+ * rather than dropped, so the activity feed still explains itself.
+ */
+const AUTHORING_MATRIX: Record<QuestionType, ReadonlySet<AuthoringStage>> = {
+  coding: new Set(AUTHORING_ORDER),
+  design: new Set<AuthoringStage>(['draft-problem', 'author-packet']),
+  behavioral: new Set<AuthoringStage>(['draft-problem', 'author-packet']),
+};
+
+/**
+ * What stage 1 must have produced for the three authoring stages after it to
+ * be worth paying for. Every later prompt renders the drafted description
+ * (`buildQuestionSection`), so an empty one buys a solution, a test file, a
+ * packet, an audit and a calibration written against `## Question\n\n` —
+ * and the first structural check today is the verify loop's static-check,
+ * five paid calls later, which never inspects `description` at all (and
+ * design/behavioral skip that loop entirely, so it would reach disk).
+ */
+function draftGaps(question: GeneratedQuestion, type: QuestionType): string[] {
+  const gaps: string[] = [];
+  if (!question.title.trim()) gaps.push('title');
+  if (!question.description?.trim()) gaps.push('description');
+  if (type === 'coding' && !question.signature?.trim()) gaps.push('signature');
+  return gaps;
+}
+
+/** The all-null starting point the authoring stages merge into. */
+const EMPTY_QUESTION: GeneratedQuestion = {
+  title: '',
+  slug: null,
+  description: null,
+  signature: null,
+  testCode: null,
+  supportCode: null,
+  solutionCode: null,
+  referenceSolution: null,
+  interviewerPacket: null,
+  estimatedMinutes: null,
+  competency: null,
+  followUps: null,
+};
+
 // Stage-2 output: only changed artifacts come back; non-null fields are
 // merged over the stage-1 result. `edgeCases` is kept for debuggability.
 // Same `.nullable()`-not-`.nullish()` rule as GeneratedQuestionSchema above:
@@ -101,7 +232,21 @@ export const CalibrationSchema = z.object({
 
 export type CalibrationResult = z.infer<typeof CalibrationSchema>;
 
-export type GenerationPhase = 'generating' | 'auditing' | 'calibrating' | 'verifying' | 'repairing';
+/**
+ * Coarse pipeline progress for the job strip. The four authoring phases
+ * mirror AUTHORING_ORDER: four paid calls replace the old single capsule
+ * call, so a wall clock that used to be one long "generating…" is now
+ * narrated stage by stage.
+ */
+export type GenerationPhase =
+  | 'drafting'
+  | 'authoring-solution'
+  | 'authoring-tests'
+  | 'authoring-packet'
+  | 'auditing'
+  | 'calibrating'
+  | 'verifying'
+  | 'repairing';
 
 // Per-call timeout budget (NEE-264): the old 300s wall clock was smaller
 // than a full MAX_OUTPUT_TOKENS answer at the ~60 tok/s measured through the
@@ -248,19 +393,20 @@ const AUDIT_LABEL: Record<QuestionType, string> = {
 };
 
 /**
- * Sandbox-verify skip reason, per question type, for categories with no test
- * suite. `coding` is never read (coding always hasTests) but the entry is
+ * Skip reason for any stage a question type does not run: the code-authoring
+ * stages (design/behavioral have no solution and no test file) and the
+ * sandbox verify (same categories), plus calibrate for behavioral. `coding`
+ * is never read — a coding question runs every stage — but the entry is
  * required so the map stays exhaustive over QuestionType. The `design`
  * string is asserted verbatim in gen-pipeline.test.ts — never reword it.
  */
-const VERIFY_SKIP_REASON: Record<QuestionType, string> = {
-  coding: 'not applicable — this category is sandbox-verified above',
+const SKIP_REASON: Record<QuestionType, string> = {
+  coding: 'not applicable to coding questions',
   design: 'not applicable to design questions',
   behavioral: 'not applicable to behavioral questions',
 };
 
 export interface GenerateParams {
-  provider: LLMProvider;
   category: CategorySlug;
   difficulty: Difficulty;
   /** Complete user message (topic brief or brainstorm summary) — caller-built. */
@@ -378,6 +524,96 @@ function supportModuleSection(supportCode: string): TaggedSection {
   };
 }
 
+/**
+ * The answer key, withheld wholesale in the masked twin. No sibling
+ * `## Signature` section anywhere: the description's own `## Signature`
+ * already carries it, and repeating it doubled the heading (NEE-275).
+ */
+function referenceSolutionSection(referenceSolution: string | null): TaggedSection {
+  return {
+    text: `## Reference Solution\n\n\`\`\`\n${referenceSolution ?? ''}\n\`\`\``,
+    masked: `## Reference Solution\n\n${WITHHELD_MARKER}`,
+  };
+}
+
+/** Wire-safe: the test file ships to the candidate. */
+function testFileSection(testCode: string | null): TaggedSection {
+  return { text: `## Test File\n\n\`\`\`\n${testCode ?? ''}\n\`\`\`` };
+}
+
+function interviewerPacketSection(interviewerPacket: string | null): TaggedSection {
+  return {
+    text: `## Interviewer Packet\n\n${interviewerPacket ?? '(none provided)'}`,
+    masked: `## Interviewer Packet\n\n${WITHHELD_MARKER}`,
+  };
+}
+
+/**
+ * Stage 2's prompt: the drafted problem, nothing else. Entirely wire-safe —
+ * no spoiler exists yet — so prompt and masked twin are identical.
+ * Exported for tests, not for callers (same for the two builders below).
+ */
+export function buildSolutionUserMessage(
+  params: GenerateParams,
+  question: GeneratedQuestion,
+): BuiltPrompt {
+  return renderSections([
+    {
+      text: `Write the reference solution for this freshly drafted ${params.difficulty} ${params.category} interview question.`,
+    },
+    { text: buildQuestionSection(question.description ?? '') },
+  ]);
+}
+
+/** Stage 3's prompt: the drafted problem + the stage-2 answer key (masked twin withholds it). */
+export function buildTestsUserMessage(
+  params: GenerateParams,
+  question: GeneratedQuestion,
+): BuiltPrompt {
+  const sections: TaggedSection[] = [
+    {
+      text: `Write the test file for this ${params.difficulty} ${params.category} interview question. It must pass against the reference solution below and fail against an unimplemented stub.`,
+    },
+    { text: buildQuestionSection(question.description ?? '') },
+    referenceSolutionSection(question.referenceSolution),
+  ];
+  if (question.supportCode) sections.push(supportModuleSection(question.supportCode));
+  return renderSections(sections);
+}
+
+/**
+ * Stage 4's prompt: everything authored so far. The packet is this stage's
+ * OUTPUT, so only the reference solution is withheld from the masked twin.
+ *
+ * The stage-1 competency rides along (behavioral only, wire-safe) because the
+ * packet's `## Capability Tested` section and the README's `**Competency:**`
+ * line describe the same question: without it this stage would re-derive a
+ * label from the prompt text alone and could name a different one than the
+ * README — which `shared/competencies.ts` treats as the source of truth.
+ */
+export function buildPacketUserMessage(
+  params: GenerateParams,
+  question: GeneratedQuestion,
+  design: boolean,
+): BuiltPrompt {
+  const sections: TaggedSection[] = [
+    {
+      text: `Write the interviewer packet for this ${params.difficulty} ${params.category} interview question.`,
+    },
+    { text: buildQuestionSection(question.description ?? '') },
+  ];
+  if (question.competency) {
+    sections.push({
+      text: `## Assigned Competency\n\nThis question was drafted to probe **${question.competency}** — describe that same competency, do not pick another.`,
+    });
+  }
+  if (!design) {
+    sections.push(referenceSolutionSection(question.referenceSolution), testFileSection(question.testCode));
+    if (question.supportCode) sections.push(supportModuleSection(question.supportCode));
+  }
+  return renderSections(sections);
+}
+
 /** Exported for tests (masked-variant assertions), not for callers. */
 export function buildAuditUserMessage(
   params: GenerateParams,
@@ -391,37 +627,34 @@ export function buildAuditUserMessage(
     { text: buildQuestionSection(question.description ?? '') },
   ];
   if (!design) {
-    // No sibling `## Signature` section: the description's own `## Signature`
-    // already carries it, and repeating it doubled the heading (NEE-275).
-    sections.push(
-      {
-        text: `## Reference Solution\n\n\`\`\`\n${question.referenceSolution ?? ''}\n\`\`\``,
-        masked: `## Reference Solution\n\n${WITHHELD_MARKER}`,
-      },
-      { text: `## Test File\n\n\`\`\`\n${question.testCode ?? ''}\n\`\`\`` },
-    );
+    sections.push(referenceSolutionSection(question.referenceSolution), testFileSection(question.testCode));
     if (question.supportCode) sections.push(supportModuleSection(question.supportCode));
   }
-  sections.push({
-    text: `## Interviewer Packet\n\n${question.interviewerPacket ?? '(none provided)'}`,
-    masked: `## Interviewer Packet\n\n${WITHHELD_MARKER}`,
-  });
+  sections.push(interviewerPacketSection(question.interviewerPacket));
   return renderSections(sections);
 }
 
 /**
  * Exported for tests (masked-variant assertions), not for callers. Coding:
  * description + reference solution + tests (+ support module when present).
- * Design: description + the static per-category/difficulty time budget in
- * place of code sections — the calibrator judges design scope against that
- * number, never the coding hard cap. Both variants carry the
- * interviewer packet, masked, same as buildAuditUserMessage.
+ * Design: description in place of the code sections. BOTH branches state the
+ * static per-category/difficulty time budget (NEE-407) — the calibrator
+ * judges scope against that number; the coding branch also carries the
+ * 60-minute hard cap. Both variants carry the interviewer packet, masked,
+ * same as buildAuditUserMessage.
+ *
+ * BLIND BY CONTRACT: this message NEVER renders `question.estimatedMinutes`.
+ * The calibrator's whole value is an independent re-derivation, so showing it
+ * the draft's own guess would anchor it (gen-pipeline.test.ts pins this with
+ * a sentinel estimate). The two numbers meet only afterwards, in the
+ * calibrate step's outcome line.
  */
 export function buildCalibrationUserMessage(
   params: GenerateParams,
   question: GeneratedQuestion,
   design: boolean,
 ): BuiltPrompt {
+  const budget = getSuggestedTime(params.category, params.difficulty);
   const sections: TaggedSection[] = [
     {
       text: `Calibrate the time and complexity of this freshly generated ${params.difficulty} ${params.category} interview question.`,
@@ -429,23 +662,15 @@ export function buildCalibrationUserMessage(
     { text: buildQuestionSection(question.description ?? '') },
   ];
   if (!design) {
-    sections.push(
-      {
-        text: `## Reference Solution\n\n\`\`\`\n${question.referenceSolution ?? ''}\n\`\`\``,
-        masked: `## Reference Solution\n\n${WITHHELD_MARKER}`,
-      },
-      { text: `## Test File\n\n\`\`\`\n${question.testCode ?? ''}\n\`\`\`` },
-    );
+    sections.push(referenceSolutionSection(question.referenceSolution), testFileSection(question.testCode));
     if (question.supportCode) sections.push(supportModuleSection(question.supportCode));
-  } else {
-    sections.push({
-      text: `## Time Budget\n\nThe stated time budget for a ${params.difficulty} ${params.category} question is ${getSuggestedTime(params.category, params.difficulty)} minutes — judge this question's scope against that budget, not the coding hard cap.`,
-    });
   }
   sections.push({
-    text: `## Interviewer Packet\n\n${question.interviewerPacket ?? '(none provided)'}`,
-    masked: `## Interviewer Packet\n\n${WITHHELD_MARKER}`,
+    text: design
+      ? `## Time Budget\n\nThe stated time budget for a ${params.difficulty} ${params.category} question is ${budget} minutes — judge this question's scope against that budget, not the coding hard cap.`
+      : `## Time Budget\n\nThe stated time budget for a ${params.difficulty} ${params.category} question is ${budget} minutes — derive your own estimate independently, then judge this question's scope against that budget. 60 minutes is the hard cap regardless of the target.`,
   });
+  sections.push(interviewerPacketSection(question.interviewerPacket));
   return renderSections(sections);
 }
 
@@ -560,13 +785,19 @@ function mergeAudit(question: GeneratedQuestion, audit: EdgeAuditResult): Genera
 }
 
 /**
- * The verified-generation pipeline: (1) generate a question + hidden
- * reference solution + interviewer packet, (2) run an adversarial edge-case
- * audit (design categories: a requirements critique — the pipeline ends
- * there), (3) execute the tests in a sandbox — pass-vs-reference AND
- * fail-vs-stub — repairing on red, at most ${MAX_VERIFY_ATTEMPTS} verify
- * attempts. Mock mode (ACE_E2E_MOCK_LLM) returns after stage 1 so keyless
- * e2e runs never need a vitest binary.
+ * The verified-generation pipeline: (1) author the question in the four
+ * staged calls of AUTHORING_ORDER — problem, reference solution, tests,
+ * interviewer packet — each on its own model slot, merged and persisted as
+ * it lands; (2) run an adversarial edge-case audit (design categories: a
+ * requirements critique); (2.5) calibrate time & complexity blind; (3)
+ * execute the tests in a sandbox — pass-vs-reference AND fail-vs-stub —
+ * repairing on red, at most ${MAX_VERIFY_ATTEMPTS} verify attempts.
+ *
+ * Two paths skip the staged authoring and produce the whole object in one
+ * call: mock mode (ACE_E2E_MOCK_LLM, which also returns right after stage 1
+ * so keyless e2e never needs a vitest binary) and regenerate-with-feedback
+ * (NEE-386), which is a revision of an existing question and therefore a
+ * repair-class call.
  *
  * Throws GenerationVerifyError (carrying the last result + failure report)
  * when verification is exhausted; other errors propagate as-is.
@@ -612,7 +843,7 @@ export async function generateVerifiedQuestion(
   const callStream = async <T>(
     messages: LLMMessage[],
     schema: z.ZodType<T>,
-    purpose: LLMPurpose,
+    slot: LLMSlot,
     step?: GenerationStepHandle,
   ): Promise<T> => {
     const controller = new AbortController();
@@ -632,8 +863,7 @@ export async function generateVerifiedQuestion(
       GENERATE_MAX_TIMEOUT_MS,
     );
     try {
-      return await llm.chatObjectStream(params.provider, messages, schema, {
-        purpose,
+      return await llm.chatObjectStream(slot, messages, schema, {
         maxOutputTokens: MAX_OUTPUT_TOKENS,
         abortSignal: controller.signal,
         // Both callbacks MUST stay synchronous (NEE-267): an async
@@ -659,54 +889,198 @@ export async function generateVerifiedQuestion(
     }
   };
 
-  const generateSystemPrompt = buildSystemPrompt('generate', params.category);
-  const callGenerate = (
+  // Every whole-object revision — verify-repair, calibration rework, and
+  // regenerate-with-feedback — is the same call: the `repair` slot, the whole
+  // question schema, the repair prompt. The three differ only in the user
+  // message they build and the step label they record under.
+  const repairSystemPrompt = buildSystemPrompt('repair', params.category);
+  const callRepair = (
     userContent: string,
     step?: GenerationStepHandle,
   ): Promise<GeneratedQuestion> =>
     callStream(
       [
-        { role: 'system', content: generateSystemPrompt },
+        { role: 'system', content: repairSystemPrompt },
         { role: 'user', content: userContent },
       ],
       GeneratedQuestionSchema,
-      'generate',
+      'repair',
       step,
     );
 
-  // Stage 1 — generate. Ordinarily the prompt is the caller's topic brief —
-  // no spoilers exist yet, so the recorder gets it as-is (the taxonomy's one
-  // shown prompt). When regenerating (NEE-386), the prompt instead wraps the
-  // prior question + user feedback via buildRegenerateUserMessage — the
-  // recorder gets the constructed masked twin, on the SAME 'generate' slug
-  // (WIRE_SAFE_KEYS.generate needs no new entry), and the prior question's
-  // spoiler values are registered as secrets before the call. For a
-  // non-regenerate run, prompt === maskedPrompt === userMessage, byte-
-  // identical to before this refactor.
-  onProgress('generating', 1);
-  const initialPrompt: BuiltPrompt = params.regenerate
-    ? buildRegenerateUserMessage(params, params.regenerate.priorQuestion, params.regenerate.feedback)
-    : { prompt: params.userMessage, maskedPrompt: params.userMessage };
-  if (params.regenerate) registerSpoilers(params.regenerate.priorQuestion);
-  const generateStep = steps.step({
-    slug: 'generate',
-    label: 'Writing the question',
-    kind: 'llm',
-    prompt: initialPrompt.maskedPrompt,
+  /**
+   * Fields a whole-object revision may not move, pinned back after every
+   * repair-class call:
+   *
+   * - title/slug: identity is frozen once stage 1 lands (the later authoring
+   *   stages have no such field at all) — a repair must never drift the
+   *   question's identity out from under the slug already reserved on the job
+   *   row. Regenerate is the one exception (it MAY retitle) and never goes
+   *   through this.
+   * - estimatedMinutes: the calibrate stage owns time (see EdgeAuditSchema's
+   *   comment). Repair returns the whole question, so an unpinned field lets
+   *   the last repair round's guess overwrite the calibrator's re-derived
+   *   number — and nothing re-calibrates afterwards, so that guess is what
+   *   ships to the README and questions.suggestedMinutes.
+   */
+  const pinStagedFields = (
+    fresh: GeneratedQuestion,
+    prior: GeneratedQuestion,
+  ): GeneratedQuestion => ({
+    ...fresh,
+    title: prior.title,
+    slug: prior.slug,
+    estimatedMinutes: prior.estimatedMinutes,
   });
-  let question = await callGenerate(initialPrompt.prompt, generateStep).catch((err: unknown) => {
-    // Raw model text is never stored on a parse failure (it is the unparsed
-    // answer key) — only the error's own message, masked by the recorder.
-    generateStep.fail(errorText(err));
-    throw err;
-  });
-  generateStep.done();
-  registerSpoilers(question);
-  onStageResult(question);
 
-  // Mock mode: no audit, no sandbox — e2e workspaces have no vitest binary
-  // and the mock payload already matches the schema. Recorded as skipped
-  // steps so keyless e2e renders a complete, self-explaining feed.
+  /** step → paid call → done, failing the step (and rethrowing) on any error. */
+  const recordedCall = async <T>(
+    spec: Parameters<GenerationStepsSink['step']>[0],
+    schema: z.ZodType<T>,
+    slot: LLMSlot,
+    systemPrompt: string,
+    prompt: BuiltPrompt,
+  ): Promise<{ value: T; step: GenerationStepHandle }> => {
+    const step = steps.step({ ...spec, prompt: prompt.maskedPrompt });
+    const value = await callStream(
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: prompt.prompt },
+      ],
+      schema,
+      slot,
+      step,
+    ).catch((err: unknown) => {
+      // Raw model text is never stored on a parse failure (it is the unparsed
+      // answer key) — only the error's own message, masked by the recorder.
+      step.fail(errorText(err));
+      throw err;
+    });
+    return { value, step };
+  };
+
+  let question: GeneratedQuestion = { ...EMPTY_QUESTION };
+
+  /**
+   * Each stage's user message, built from what the earlier stages produced.
+   * A switch with no default, so adding an AuthoringStage breaks the build
+   * here rather than silently sending a stage the topic brief.
+   */
+  const buildStagePrompt = (stage: AuthoringStage): BuiltPrompt => {
+    switch (stage) {
+      case 'draft-problem':
+        return { prompt: params.userMessage, maskedPrompt: params.userMessage };
+      case 'author-solution':
+        return buildSolutionUserMessage(params, question);
+      case 'author-tests':
+        return buildTestsUserMessage(params, question);
+      case 'author-packet':
+        return buildPacketUserMessage(params, question, design);
+    }
+  };
+
+  if (params.regenerate) {
+    // Regenerate-with-feedback (NEE-386): a revision of an existing question,
+    // so it stays a single whole-object call on the repair slot — re-running
+    // the four authoring stages would author a NEW question, not revise this
+    // one. The prompt embeds the prior question's answer key, so the recorder
+    // gets the constructed masked twin and the prior spoilers are registered
+    // as scrub secrets BEFORE the call fires (a provider error can echo the
+    // prompt back verbatim).
+    registerSpoilers(params.regenerate.priorQuestion);
+    onProgress('drafting', 1);
+    const prompt = buildRegenerateUserMessage(
+      params,
+      params.regenerate.priorQuestion,
+      params.regenerate.feedback,
+    );
+    const { value, step } = await recordedCall(
+      { slug: 'repair', label: 'Revising the question', kind: 'llm' },
+      GeneratedQuestionSchema,
+      'repair',
+      repairSystemPrompt,
+      prompt,
+    );
+    step.done();
+    // No identity pin: a regenerated question may legitimately retitle.
+    question = value;
+    registerSpoilers(question);
+    onStageResult(question);
+  } else if (isMockLlm()) {
+    // Mock mode authors the whole capsule in ONE call (the payload is
+    // whole-object and dispatch is by schema), on the first stage's slot. The
+    // stages it stands in for are recorded as skipped so keyless e2e still
+    // renders a complete, self-explaining feed.
+    onProgress('drafting', 1);
+    const prompt: BuiltPrompt = {
+      prompt: params.userMessage,
+      maskedPrompt: params.userMessage,
+    };
+    const { value, step } = await recordedCall(
+      {
+        slug: 'draft-problem',
+        label: AUTHORING_STAGES['draft-problem'].label,
+        kind: 'llm',
+      },
+      GeneratedQuestionSchema,
+      'draft-problem',
+      buildSystemPrompt('draft-problem', params.category),
+      prompt,
+    );
+    step.done();
+    question = value;
+    registerSpoilers(question);
+    onStageResult(question);
+    // The three stages this one call stood in for.
+    for (const stage of AUTHORING_ORDER) {
+      if (stage === 'draft-problem') continue;
+      steps
+        .step({ slug: stage, label: AUTHORING_STAGES[stage].label, kind: 'llm' })
+        .skip('mock LLM mode');
+    }
+  } else {
+    // Stage 1 — the four-call authoring sequence. Each stage merges into the
+    // question, registers whatever spoilers it produced, and reports the
+    // partial result so the job row carries paid output the moment it lands
+    // (generation.ts's salvage/retry semantics are per-stage, unchanged).
+    // Stage 1's prompt is the caller's topic brief, shown as-is — no spoiler
+    // exists yet; every later stage's prompt is a constructed masked twin.
+    for (const stage of AUTHORING_ORDER) {
+      const { schema, label, phase } = AUTHORING_STAGES[stage];
+      if (!AUTHORING_MATRIX[config.type].has(stage)) {
+        steps.step({ slug: stage, label, kind: 'llm' }).skip(SKIP_REASON[config.type]);
+        continue;
+      }
+      onProgress(phase, 1);
+      const prompt = buildStagePrompt(stage);
+      const { value, step } = await recordedCall(
+        { slug: stage, label, kind: 'llm' },
+        schema,
+        stage,
+        buildSystemPrompt(stage, params.category),
+        prompt,
+      );
+      const merged = { ...question, ...value };
+      // Fail at the point the defect is knowable, not five paid calls later.
+      if (stage === 'draft-problem') {
+        const gaps = draftGaps(merged, config.type);
+        if (gaps.length > 0) {
+          step.fail(`missing: ${gaps.join(', ')}`);
+          throw new Error(
+            `the drafted question is missing required field(s): ${gaps.join(', ')} — there is nothing for the later stages to author from`,
+          );
+        }
+      }
+      step.done();
+      question = merged;
+      registerSpoilers(question);
+      onStageResult(question);
+    }
+  }
+
+  // Mock mode: no audit, no calibration, no sandbox — e2e workspaces have no
+  // vitest binary and the mock payload already matches the schema. Recorded
+  // as skipped steps so keyless e2e renders a complete, self-explaining feed.
   if (isMockLlm()) {
     steps
       .step({ slug: 'edge-audit', label: 'Auditing edge cases', kind: 'llm' })
@@ -757,7 +1131,7 @@ export async function generateVerifiedQuestion(
   if (config.type === 'behavioral') {
     steps
       .step({ slug: 'calibrate', label: 'Checking time & complexity', kind: 'llm' })
-      .skip(VERIFY_SKIP_REASON.behavioral);
+      .skip(SKIP_REASON.behavioral);
   } else {
     const calibrateSystemPrompt = buildSystemPrompt('calibrate', params.category);
     const callCalibrate = (
@@ -773,6 +1147,14 @@ export async function generateVerifiedQuestion(
         'calibrate',
         step,
       );
+
+    // Captured ONCE, before any attempt: the calibrator never SAW this number
+    // (the prompt is blind by contract), so the outcome line is the one place
+    // the two estimates meet — an auditable "~25m (draft guessed 35m)" is how
+    // a systematically optimistic DRAFTER becomes visible at all. Re-reading
+    // it per attempt would attribute the calibration rework's own guess to
+    // the drafter on round 2, which is the opposite of that.
+    const draftEstimate = question.estimatedMinutes;
 
     for (let attempt = 1; attempt <= MAX_CALIBRATE_ATTEMPTS; attempt++) {
       onProgress('calibrating', attempt);
@@ -791,7 +1173,9 @@ export async function generateVerifiedQuestion(
         },
       );
       const estimateDetail =
-        calibration.estimatedMinutes != null ? ` · ~${calibration.estimatedMinutes}m` : '';
+        calibration.estimatedMinutes != null
+          ? ` · ~${calibration.estimatedMinutes}m${draftEstimate != null ? ` (draft guessed ${draftEstimate}m)` : ''}`
+          : '';
 
       if (calibration.verdict === 'fits') {
         calibStep.done(`fits${estimateDetail}`);
@@ -817,9 +1201,10 @@ export async function generateVerifiedQuestion(
 
       calibStep.done(`${calibration.verdict}${estimateDetail}`);
 
-      // Rework: reuse the generate purpose/schema and the repair loop's own
-      // step slug so the response inherits WIRE_SAFE_KEYS.repair's
-      // redaction — a fresh slug here would fail-closed to an empty allowlist.
+      // Rework: a whole-object revision, so it is a repair-class call — same
+      // slot, same schema, same step slug, which is also what makes its
+      // response inherit WIRE_SAFE_KEYS.repair's redaction (a fresh slug here
+      // would fail-closed to an empty allowlist).
       const reworkPrompt = buildCalibrationReworkUserMessage(params, question, calibration);
       const reworkStep = steps.step({
         slug: 'repair',
@@ -828,13 +1213,12 @@ export async function generateVerifiedQuestion(
         attempt,
         prompt: reworkPrompt.maskedPrompt,
       });
-      const reworked = await callGenerate(reworkPrompt.prompt, reworkStep).catch((err: unknown) => {
+      const reworked = await callRepair(reworkPrompt.prompt, reworkStep).catch((err: unknown) => {
         reworkStep.fail(errorText(err));
         throw err;
       });
       reworkStep.done();
-      // A rework must never drift the question's identity.
-      question = { ...reworked, title: question.title, slug: question.slug };
+      question = pinStagedFields(reworked, question);
       registerSpoilers(question);
       onStageResult(question);
     }
@@ -843,7 +1227,7 @@ export async function generateVerifiedQuestion(
   if (design) {
     steps
       .step({ slug: 'verify', label: 'Sandbox verification', kind: 'sandbox' })
-      .skip(VERIFY_SKIP_REASON[config.type]);
+      .skip(SKIP_REASON[config.type]);
     return { question, edgeCases: audit.edgeCases };
   }
 
@@ -950,13 +1334,12 @@ export async function generateVerifiedQuestion(
       attempt: attempt + 1,
       prompt: repairPrompt.maskedPrompt,
     });
-    const repaired = await callGenerate(repairPrompt.prompt, repairStep).catch((err: unknown) => {
+    const repaired = await callRepair(repairPrompt.prompt, repairStep).catch((err: unknown) => {
       repairStep.fail(errorText(err));
       throw err;
     });
     repairStep.done();
-    // A repair must never drift the question's identity.
-    question = { ...repaired, title: question.title, slug: question.slug };
+    question = pinStagedFields(repaired, question);
     registerSpoilers(question);
     onStageResult(question);
   }

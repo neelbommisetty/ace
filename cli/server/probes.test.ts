@@ -1,5 +1,5 @@
 // Engine-level tests for follow-up probes (NEE-345) — driven entirely
-// through the injected `llm`/`resolveProvider` seams (the generation.test.ts
+// through the injected `llm`/`hasProvider` seams (the generation.test.ts
 // pattern), never ACE_E2E_MOCK_LLM: deterministic, keyless, no real vitest
 // or API key touched.
 import fs from 'node:fs';
@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getProbeBankMd, scaffoldQuestionAt } from '../lib/scaffold.js';
-import type { LLMMessage, LLMProvider } from '../lib/llm.js';
+import type { LLMMessage, LLMSlot } from '../lib/llm.js';
 import { createAiLog } from './ai-log.js';
 import { readBlob } from './blobs.js';
 import { openDb } from './db.js';
@@ -22,9 +22,9 @@ import {
 import { createBus, type Bus } from './sse.js';
 import type { AceDb, Probe, QuestionRow } from './types.js';
 
-// The engine's `resolveProvider` option is the keyless-testable seam for
-// provider resolution — mirrors generation.test.ts's FAKE_PROVIDER exactly.
-const FAKE_PROVIDER: () => LLMProvider | null = () => 'openai';
+// The engine's `hasProvider` option is the keyless-testable seam for the key
+// gate — mirrors generation.test.ts's FAKE_HAS_PROVIDER exactly.
+const FAKE_HAS_PROVIDER = () => true;
 
 const REAL_STORY =
   '## Situation\nA teammate and I disagreed about the caching strategy for a shared service.\n\n## Action\nI proposed a two-day spike to compare both approaches with real data.\n';
@@ -97,28 +97,34 @@ function writeDesignQuestion(slug: string, opts: { notes?: string } = {}): Quest
 
 interface FakeLlmOpts {
   abortSignal?: AbortSignal;
-  purpose?: string;
   onPartial?: (partial: Record<string, unknown>) => void;
+  onRoute?: (route: { provider: 'openai' | 'anthropic'; model: string }) => void;
 }
+
+/** What the fake reports as the route it actually ran on — deliberately not
+ *  any slot's configured model, so an assertion on the persisted id cannot
+ *  pass by coincidence (two slots share claude-sonnet-5). */
+const FAKE_ROUTE = { provider: 'anthropic' as const, model: 'claude-probe-actual' };
 
 /** Queue-based fake chatObjectStream, mirroring generation.test.ts's makeFakeLlm. */
 function makeFakeLlm(
-  handlers: Array<
-    (provider: LLMProvider, messages: LLMMessage[], opts?: FakeLlmOpts) => unknown
-  >,
-): { llm: ProbeLlm; calls: Array<{ provider: LLMProvider; messages: LLMMessage[]; opts?: FakeLlmOpts }> } {
-  const calls: Array<{ provider: LLMProvider; messages: LLMMessage[]; opts?: FakeLlmOpts }> = [];
+  handlers: Array<(slot: LLMSlot, messages: LLMMessage[], opts?: FakeLlmOpts) => unknown>,
+): { llm: ProbeLlm; calls: Array<{ slot: LLMSlot; messages: LLMMessage[]; opts?: FakeLlmOpts }> } {
+  const calls: Array<{ slot: LLMSlot; messages: LLMMessage[]; opts?: FakeLlmOpts }> = [];
   let i = 0;
   const chatObjectStream = async (
-    provider: LLMProvider,
+    slot: LLMSlot,
     messages: LLMMessage[],
     schema: any,
     opts?: FakeLlmOpts,
   ) => {
-    calls.push({ provider, messages, opts });
+    calls.push({ slot, messages, opts });
     const handler = handlers[i++];
     if (!handler) throw new Error('fake llm: no more handlers queued');
-    const payload = handler(provider, messages, opts);
+    const payload = handler(slot, messages, opts);
+    // Real chatObjectStream reports the route every attempt runs on — a
+    // Fable refusal retry means that is NOT what the slot re-resolves to.
+    opts?.onRoute?.(FAKE_ROUTE);
     opts?.onPartial?.(payload as Record<string, unknown>);
     return schema.parse(payload);
   };
@@ -271,13 +277,13 @@ describe('hasProbeSetForAttempt', () => {
 describe('createProbeEngine', () => {
   it('happy path: started -> done, persists a probe set, and appends additively to story.md with a snapshot', async () => {
     const question = writeQuestion('conflict-happy', { story: REAL_STORY });
-    const { llm } = makeFakeLlm([() => TWO_PROBES]);
+    const { llm, calls } = makeFakeLlm([() => TWO_PROBES]);
     const engine = createProbeEngine({
       db,
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
     });
 
     const started = waitFor('probes-started');
@@ -290,7 +296,13 @@ describe('createProbeEngine', () => {
     const { probeSet } = await done;
     expect(probeSet.questionId).toBe(question.id);
     expect(probeSet.attemptId).toBe('attempt-1');
-    expect(probeSet.model).toBe('gpt-5.6-sol'); // probe purpose resolves to the 'top' tier (NEE-364)
+    // The model the CALL reported, not a re-resolution of the slot after it:
+    // a Fable refusal retry does not latch, so re-resolving would name the
+    // model that refused. (getModelId('probe') would also be wrong-slot-proof
+    // only by accident — 'probe', 'review', 'brainstorm' and 'author-packet'
+    // all default to claude-sonnet-5.)
+    expect(probeSet.model).toBe('claude-probe-actual');
+    expect(calls[0].slot).toBe('probe');
     expect(probeSet.appliedAt).not.toBeNull();
     expect(probeSet.probes).toEqual(TWO_PROBES.probes);
 
@@ -334,7 +346,7 @@ describe('createProbeEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
     });
 
     const done = waitFor('probes-done');
@@ -369,7 +381,7 @@ describe('createProbeEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
     });
 
     // writeWorkspaceFile writes tmp + rename (NEE-358), so the byte-writing
@@ -414,7 +426,7 @@ describe('createProbeEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm: llm2,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
     });
     const done = waitFor('probes-done');
     engine2.start(question, 'attempt-1');
@@ -433,7 +445,7 @@ describe('createProbeEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
     });
 
     const done = waitFor('probes-done');
@@ -461,7 +473,7 @@ describe('createProbeEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
     });
 
     const done = waitFor('probes-done');
@@ -486,7 +498,7 @@ describe('createProbeEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
     });
 
     const firstDone = waitFor('probes-done');
@@ -514,7 +526,7 @@ describe('createProbeEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: () => null,
+      hasProvider: () => false,
     });
 
     const errored = waitFor('probes-error');
@@ -536,7 +548,7 @@ describe('createProbeEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
     });
 
     const errored = waitFor('probes-error');
@@ -554,7 +566,7 @@ describe('createProbeEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
     });
 
     engine.start(question, null);
@@ -579,7 +591,7 @@ describe('createProbeEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
     });
 
     let sawDoneOrError = false;
@@ -607,7 +619,7 @@ describe('createProbeEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
     });
     engine.dispose();
     expect(() => engine.start(question, null)).toThrow(/disposed/);
@@ -622,7 +634,7 @@ describe('createProbeEngine', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
     });
     expect(engine.isAnyRunning()).toBe(false);
     engine.start(q1, null);
@@ -651,7 +663,7 @@ describe('probe framing by question type (NEE-362)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
     });
 
     const done = waitFor('probes-done');
@@ -683,7 +695,7 @@ describe('probe framing by question type (NEE-362)', () => {
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
     });
 
     const done = waitFor('probes-done');
@@ -714,7 +726,7 @@ describe('createProbeEngine activity log integration (NEE-268/spoilers)', () => 
       bus,
       workspaceRoot: tempRoot,
       llm,
-      resolveProvider: FAKE_PROVIDER,
+      hasProvider: FAKE_HAS_PROVIDER,
       aiLog,
     });
 

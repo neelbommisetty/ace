@@ -17,6 +17,7 @@ import type { AceDb, QuestionRow, TestRunRow } from './types.js';
 
 vi.mock('../lib/llm.js', () => ({
   isMockLlm: vi.fn(() => true),
+  hasAnyProvider: vi.fn(() => true),
   chatStream: vi.fn(),
   chatObject: vi.fn(async () => ({ score: null, verdict: null, dimensions: null })),
   chatObjectStream: vi.fn(),

@@ -221,6 +221,7 @@ function settings(overrides: Partial<SettingsInfo> = {}): SettingsInfo {
     defaultProvider: 'openai',
     mockMode: false,
     models: null,
+    availableModels: [],
     ...overrides,
   };
 }

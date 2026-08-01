@@ -3,22 +3,55 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getSettingsInfo, SettingsValidationError, updateSettings } from './settings.js';
-import { getDefaultProvider, getModelMap, isMockLlm, validateAnthropicKey, validateOpenAIKey } from '../lib/llm.js';
+import {
+  ALL_SLOTS,
+  getAvailableModels,
+  getDefaultProvider,
+  getSlotRoutes,
+  isMockLlm,
+  validateAnthropicKey,
+  validateOpenAIKey,
+  type LLMSlot,
+  type ResolvedRoute,
+  type SlotResolution,
+} from '../lib/llm.js';
 
-vi.mock('../lib/llm.js', () => ({
-  clearConfigCache: vi.fn(),
-  getDefaultProvider: vi.fn(() => null),
-  getModelMap: vi.fn(() => ({})),
-  isMockLlm: vi.fn(() => false),
-  validateAnthropicKey: vi.fn(),
-  validateOpenAIKey: vi.fn(),
-}));
+// Only the environment-reading half is faked; the pure table lookups
+// (ALL_SLOTS, getSlotDefault, getModelProvider) stay real, so a slot added to
+// SLOT_ROUTES shows up here instead of needing a second hand-kept list.
+vi.mock('../lib/llm.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/llm.js')>();
+  return {
+    ...actual,
+    clearConfigCache: vi.fn(),
+    getDefaultProvider: vi.fn(() => null),
+    getSlotRoutes: vi.fn(() => ({})),
+    getAvailableModels: vi.fn(() => []),
+    isMockLlm: vi.fn(() => false),
+    validateAnthropicKey: vi.fn(),
+    validateOpenAIKey: vi.fn(),
+  };
+});
 
 const mockValidateOpenAI = vi.mocked(validateOpenAIKey);
 const mockValidateAnthropic = vi.mocked(validateAnthropicKey);
 const mockGetDefaultProvider = vi.mocked(getDefaultProvider);
-const mockGetModelMap = vi.mocked(getModelMap);
+const mockGetSlotRoutes = vi.mocked(getSlotRoutes);
+const mockGetAvailableModels = vi.mocked(getAvailableModels);
 const mockIsMockLlm = vi.mocked(isMockLlm);
+
+/** A full slot->resolution map: `base` everywhere, with the named slots replaced. */
+function routes(
+  base: ResolvedRoute | null,
+  overrides: Partial<Record<LLMSlot, ResolvedRoute | null>> = {},
+): Record<LLMSlot, SlotResolution> {
+  const map = {} as Record<LLMSlot, SlotResolution>;
+  for (const slot of ALL_SLOTS) {
+    const route = slot in overrides ? overrides[slot]! : base;
+    map[slot] = { route, override: null, warning: route?.warning ?? null };
+  }
+  return map;
+}
 
 let tempHome = '';
 const originalEnv = { ...process.env };
@@ -27,12 +60,12 @@ function configPath(): string {
   return path.join(tempHome, '.ace', 'config.json');
 }
 
-function writeConfig(config: Record<string, string>): void {
+function writeConfig(config: Record<string, unknown>): void {
   fs.mkdirSync(path.dirname(configPath()), { recursive: true });
   fs.writeFileSync(configPath(), JSON.stringify(config), 'utf-8');
 }
 
-function readConfig(): Record<string, string> {
+function readConfig(): Record<string, any> {
   return JSON.parse(fs.readFileSync(configPath(), 'utf-8'));
 }
 
@@ -134,61 +167,106 @@ describe('updateSettings base URLs', () => {
   });
 });
 
-describe('getSettingsInfo models (NEE-303)', () => {
-  it('is null when no provider resolves (keyless, non-mock)', () => {
+describe('getSettingsInfo models', () => {
+  it('is null when no slot resolves at all (keyless, non-mock)', () => {
     mockIsMockLlm.mockReturnValue(false);
-    mockGetDefaultProvider.mockReturnValue(null);
+    mockGetSlotRoutes.mockReturnValue(routes(null));
 
     expect(getSettingsInfo().models).toBeNull();
-    expect(mockGetModelMap).not.toHaveBeenCalled();
   });
 
-  it("wraps getModelMap's ids with the resolved provider for every purpose", () => {
+  it('adds each slot its hardcoded default, and keeps a single unroutable slot as null', () => {
     mockIsMockLlm.mockReturnValue(false);
     mockGetDefaultProvider.mockReturnValue('anthropic');
-    mockGetModelMap.mockReturnValue({
-      generate: 'claude-opus-5',
-      'edge-audit': 'claude-sonnet-5',
-      calibrate: 'claude-opus-5',
-      review: 'claude-opus-5',
-      'review-extract': 'claude-haiku-4-5',
-      brainstorm: 'claude-sonnet-5',
-      dispute: 'claude-opus-5',
-      probe: 'claude-sonnet-5',
-    });
+    mockGetSlotRoutes.mockReturnValue(
+      routes(
+        { provider: 'anthropic', model: 'claude-sonnet-5', source: 'default', warning: null },
+        {
+          // An openai-only install has no escalation tier at all.
+          'review-escalated': null,
+          repair: {
+            provider: 'openai',
+            model: 'gpt-5.6-sol',
+            source: 'provider-fallback',
+            warning: null,
+          },
+        },
+      ),
+    );
 
     const { models } = getSettingsInfo();
 
-    expect(mockGetModelMap).toHaveBeenCalledWith('anthropic');
-    expect(models).toEqual({
-      generate: { provider: 'anthropic', model: 'claude-opus-5' },
-      'edge-audit': { provider: 'anthropic', model: 'claude-sonnet-5' },
-      calibrate: { provider: 'anthropic', model: 'claude-opus-5' },
-      review: { provider: 'anthropic', model: 'claude-opus-5' },
-      'review-extract': { provider: 'anthropic', model: 'claude-haiku-4-5' },
-      brainstorm: { provider: 'anthropic', model: 'claude-sonnet-5' },
-      dispute: { provider: 'anthropic', model: 'claude-opus-5' },
-      probe: { provider: 'anthropic', model: 'claude-sonnet-5' },
+    expect(models?.review).toEqual({
+      route: {
+        provider: 'anthropic',
+        model: 'claude-sonnet-5',
+        source: 'default',
+        // The default is the slot's own, not the model that resolved.
+        defaultModel: 'claude-sonnet-5',
+      },
+      override: null,
+      warning: null,
     });
+    expect(models?.repair).toEqual({
+      route: {
+        provider: 'openai',
+        model: 'gpt-5.6-sol',
+        source: 'provider-fallback',
+        defaultModel: 'claude-fable-5',
+      },
+      override: null,
+      warning: null,
+    });
+    expect(models?.['review-escalated'].route).toBeNull();
+    expect(Object.keys(models!)).toHaveLength(ALL_SLOTS.length);
   });
 
-  it('resolves to openai in mock mode even with getDefaultProvider() null', () => {
-    mockIsMockLlm.mockReturnValue(true);
-    mockGetDefaultProvider.mockReturnValue(null);
-    mockGetModelMap.mockReturnValue({
-      generate: 'mock-top',
-      'edge-audit': 'mock-mid',
-      calibrate: 'mock-top',
-      review: 'mock-top',
-      'review-extract': 'mock-basic',
-      brainstorm: 'mock-mid',
-      dispute: 'mock-top',
-      probe: 'mock-mid',
+  it('passes the selectable-model list straight through', () => {
+    mockGetSlotRoutes.mockReturnValue(routes(null));
+    mockGetAvailableModels.mockReturnValue([{ provider: 'openai', model: 'gpt-5.6-sol' }]);
+
+    expect(getSettingsInfo().availableModels).toEqual([
+      { provider: 'openai', model: 'gpt-5.6-sol' },
+    ]);
+  });
+});
+
+describe('updateSettings model overrides', () => {
+  it('merges an override into config.json and clears one back to the default with null', async () => {
+    writeConfig({ ANTHROPIC_API_KEY: 'k', model_overrides: { review: 'claude-opus-5' } });
+
+    await updateSettings({ models: { probe: 'claude-haiku-4-5' } });
+    expect(readConfig().model_overrides).toEqual({
+      review: 'claude-opus-5',
+      probe: 'claude-haiku-4-5',
     });
 
-    const { models } = getSettingsInfo();
+    await updateSettings({ models: { review: null } });
+    expect(readConfig().model_overrides).toEqual({ probe: 'claude-haiku-4-5' });
+  });
 
-    expect(mockGetModelMap).toHaveBeenCalledWith('openai');
-    expect(models?.review).toEqual({ provider: 'openai', model: 'mock-top' });
+  it('rejects an unknown model, naming the slot, and saves nothing', async () => {
+    writeConfig({ ANTHROPIC_API_KEY: 'k' });
+
+    await expect(updateSettings({ models: { review: 'gpt-9-imaginary' } })).rejects.toThrow(
+      /review/,
+    );
+    expect(readConfig().model_overrides).toBeUndefined();
+  });
+
+  it('rejects a model whose provider has no key', async () => {
+    writeConfig({ ANTHROPIC_API_KEY: 'k' });
+
+    await expect(updateSettings({ models: { review: 'gpt-5.6-sol' } })).rejects.toThrow(
+      /no openai API key/,
+    );
+  });
+
+  it('accepts a model whose key lands in the SAME patch', async () => {
+    writeConfig({});
+
+    await updateSettings({ openaiKey: 'sk-new', models: { review: 'gpt-5.6-sol' } });
+
+    expect(readConfig().model_overrides).toEqual({ review: 'gpt-5.6-sol' });
   });
 });

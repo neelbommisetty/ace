@@ -9,8 +9,17 @@ export interface AceConfig {
   /** Overrides the vendor API host, e.g. a local proxy. Includes the /v1 path. */
   OPENAI_BASE_URL?: string;
   ANTHROPIC_BASE_URL?: string;
+  /** @deprecated Routing is per-slot (model_overrides); nothing reads this. */
   default_provider?: string;
-  [key: string]: string | undefined;
+  /**
+   * Per-slot model choices, `LLMSlot` → model id (cli/lib/llm.ts resolves
+   * them). Only slots the user actually changed appear; everything else
+   * follows the hardcoded route. The index signature below is widened for
+   * this one nested value — every other config entry is a flat string, and
+   * the .env/process.env fallbacks below only ever write strings.
+   */
+  model_overrides?: Record<string, string>;
+  [key: string]: string | Record<string, string> | undefined;
 }
 
 /**

@@ -1,9 +1,16 @@
-import { generateObject, streamText, Output, type LanguageModel } from 'ai';
+import {
+  APICallError,
+  generateObject,
+  NoObjectGeneratedError,
+  Output,
+  streamText,
+  type LanguageModel,
+} from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import type { z } from 'zod';
 import { loadAceConfig, type AceConfig } from './config.js';
-import type { LLMPurpose } from '../../shared/wire-types.js';
+import type { LLMSlot } from '../../shared/wire-types.js';
 
 export type LLMProvider = 'openai' | 'anthropic';
 
@@ -169,6 +176,9 @@ function getConfig(): AceConfig {
 /** Long-running processes (ace ui) must call this after writing ~/.ace/config.json. */
 export function clearConfigCache(): void {
   cachedConfig = null;
+  // A settings save is also the one moment a Fable retry is worth paying
+  // again: the org's data-retention posture (or its key) may have changed.
+  fableSessionFallback = false;
 }
 
 export function isMockLlm(): boolean {
@@ -199,38 +209,51 @@ export function getDefaultProvider(): LLMProvider | null {
 }
 
 /**
- * What a given LLM call is for — selects the model via PURPOSE_TIERS +
- * TIER_MODELS below. Declared in shared/wire-types.ts (GET /api/settings
- * exposes the resolved map, NEE-303) and re-exported here so the existing
- * `./llm.js` importers are untouched.
+ * True when this provider can be called at all right now. Mock mode has every
+ * provider by construction — no call is ever made — and updateSettings accepts
+ * per-slot overrides on exactly that rule, so resolution and the selectable
+ * catalog must agree with it or Settings offers rows it cannot serve.
  */
-export type { LLMPurpose };
+function hasKey(provider: LLMProvider): boolean {
+  return mockLlm || getAvailableProviders().includes(provider);
+}
 
-/** Capability tier a purpose resolves to — the policy half of the model map. */
-type ModelTier = 'top' | 'mid' | 'basic';
+/**
+ * Whether ANY server-initiated LLM call can run: mock mode short-circuits
+ * every call below, otherwise at least one provider key must exist. Which
+ * MODEL runs is `resolveSlot`'s job — this is only the keyless gate.
+ */
+export function hasAnyProvider(): boolean {
+  return mockLlm || getAvailableProviders().length > 0;
+}
 
-// Per-purpose model policy (NEE-274), expressed as purpose → tier plus
-// provider × tier → model id, so a policy change is one edit and the two
-// provider halves cannot silently diverge (twelve hand-maintained literals
-// is how the openai half lost its review-extract carve-out).
-//
-// Tier rationale:
-// - top:   'generate' and 'review' produce the artifacts the product is
-//   judged on; 'dispute' is rare, high-stakes adjudication where the cost
-//   delta is negligible.
-// - mid:   'edge-audit' critiques a bounded artifact and the sandbox
-//   verify/repair loop backstops it; 'brainstorm' is idea turns, not the
-//   verified artifact; 'probe' selects/derives follow-up questions from a
-//   story already on the page — selection and derivation, not the graded
-//   review itself (NEE-345).
-// - basic: 'review-extract' mechanically extracts scores from already-
-//   written review prose — quality lives in the review call itself.
-//
-// The anthropic top tier is deliberately Opus 5, NOT Fable 5: Fable is 2x
-// the cost, unavailable under zero data retention (every request 400s),
-// runs always-on thinking, and its safety classifiers can return
-// stop_reason "refusal" on an HTTP 200 — operational risks with no measured
-// quality delta for this workload.
+/**
+ * One routable step of the product. Declared in shared/wire-types.ts (GET
+ * /api/settings exposes the resolved routes) and re-exported here so the
+ * existing `./llm.js` importers are untouched.
+ */
+export type { LLMSlot };
+
+/** Where a slot's model came from — surfaced per row in Settings. */
+export type RouteSource = 'default' | 'override' | 'provider-fallback' | 'fable-fallback';
+
+/**
+ * The provider + model THIS call will use, plus how it got there. `warning`
+ * is non-null only when a saved override could not be honored: an override
+ * naming an unknown model, or one whose provider has no key, falls back —
+ * but never silently.
+ */
+export interface ResolvedRoute {
+  provider: LLMProvider;
+  model: string;
+  source: RouteSource;
+  warning: string | null;
+}
+
+// Every model a slot may route to, by the provider that serves it. A model
+// outside this catalog is not selectable: an override naming one resolves to
+// a warning, never to a call. Keyed as Record<LLMProvider, …> so adding a
+// provider breaks the build here instead of silently offering nothing.
 //
 // gpt-5.6-terra / gpt-5.6-luna verified against the OpenAI model docs on
 // 2026-07-27: both exist (1.05M context, 128K max output, $2.50/$15 and
@@ -239,77 +262,237 @@ type ModelTier = 'top' | 'mid' | 'basic';
 // 'review-extract'. claude-haiku-4-5 (200K context, 64K output) likewise
 // still fits review-extract inputs.
 //
-// NOTE: the Claude 5-series (claude-opus-5, claude-sonnet-5) rejects
-// temperature/top_p/top_k with a 400, exactly like claude-opus-4-8 before
-// it — never add sampling params to these calls (none are set anywhere
-// today). Adaptive thinking is also ON by default on Opus 5 / Sonnet 5 and
-// counts against maxOutputTokens — see toCallInput below for the sizing.
-const PURPOSE_TIERS: Record<LLMPurpose, ModelTier> = {
-  generate: 'top',
-  review: 'top',
-  dispute: 'top',
-  'edge-audit': 'mid',
-  brainstorm: 'mid',
-  probe: 'top',
-  // calibrate is a structured-output call like probe — the same NEE-364
-  // reliability problem (the mid tier's proxy double-emitted a JSON object,
-  // breaking structured parse) applies here, so it takes the same top-tier fix.
-  calibrate: 'top',
-  'review-extract': 'basic',
+// NOTE: the Claude 5-series (claude-opus-5, claude-sonnet-5, claude-fable-5)
+// rejects temperature/top_p/top_k with a 400, exactly like claude-opus-4-8
+// and claude-opus-4-6 — never add sampling params to these calls (none are
+// set anywhere today). Adaptive thinking is also ON by default across the
+// Opus/Sonnet 5 family and counts against maxOutputTokens — see toCallInput
+// below for the sizing.
+const KNOWN_MODELS: Record<LLMProvider, readonly string[]> = {
+  anthropic: [
+    'claude-opus-5',
+    'claude-sonnet-5',
+    'claude-haiku-4-5',
+    'claude-fable-5',
+    'claude-opus-4-8',
+    'claude-opus-4-6',
+  ],
+  openai: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
 };
 
-const TIER_MODELS: Record<LLMProvider, Record<ModelTier, string>> = {
-  openai: {
-    top: 'gpt-5.6-sol',
-    mid: 'gpt-5.6-terra',
-    basic: 'gpt-5.6-luna',
-  },
-  anthropic: {
-    top: 'claude-opus-5',
-    mid: 'claude-sonnet-5',
-    basic: 'claude-haiku-4-5',
-  },
-};
+const PROVIDERS: readonly LLMProvider[] = ['openai', 'anthropic'];
 
-/**
- * The model id a provider/purpose pair resolves to — for callers that persist
- * which model produced an output (e.g. review rows) without re-stating ids.
- */
-export function getModelId(provider: LLMProvider, purpose: LLMPurpose): string {
-  return TIER_MODELS[provider][PURPOSE_TIERS[purpose]];
+/** The provider that serves a model id, or null when it is outside the catalog. */
+export function getModelProvider(model: string): LLMProvider | null {
+  for (const provider of PROVIDERS) {
+    if (KNOWN_MODELS[provider].includes(model)) return provider;
+  }
+  return null;
 }
 
-/** Every purpose PURPOSE_TIERS resolves — iterated to build the full model map below. */
-const ALL_PURPOSES = Object.keys(PURPOSE_TIERS) as LLMPurpose[];
+// Every SLOT_ROUTES entry is in KNOWN_MODELS — pinned by llm.test.ts's drift
+// guard, so this never returns null for a table model.
+function providerOf(model: string): LLMProvider {
+  return getModelProvider(model) as LLMProvider;
+}
+
+/** Every model selectable right now — key-present providers only. */
+export function getAvailableModels(): Array<{ provider: LLMProvider; model: string }> {
+  const models: Array<{ provider: LLMProvider; model: string }> = [];
+  for (const provider of PROVIDERS) {
+    if (!hasKey(provider)) continue;
+    for (const model of KNOWN_MODELS[provider]) models.push({ provider, model });
+  }
+  return models;
+}
+
+// Per-slot routing policy: each step of the product picks the model that is
+// actually best at it, across providers, instead of a tier lookup inside one
+// vendor. `alternate` is what a user who lacks the default's provider key
+// gets — the same step, served by the other vendor — so a single-key install
+// still runs every step.
+//
+// Slot rationale:
+// - draft-problem / author-tests: GPT-5.6 writes tighter problem statements
+//   and stricter test suites; author-solution / edge-audit sit on the
+//   Opus 4.x line, which is the stronger code author and the more consistent
+//   critic (consistency > cost on an audit that gates the verify loop).
+// - calibrate is a small, blind, structured judgement — luna's basic tier is
+//   sized for it (NEE-364 is why it is structured-output-only, not chat).
+// - repair leads with claude-fable-5 (see the Fable notes below) and falls
+//   back automatically; review-escalated is deliberately anthropic-only.
+//
+// review-escalated is the ONE slot with no alternate: it exists to re-judge
+// revised work with a stronger model than `review`, and an openai-only
+// install has no such tier to escalate to — reviews.ts then keeps using the
+// `review` slot (resolveSlot returns null here, which IS the signal).
+const SLOT_ROUTES: Record<LLMSlot, { default: string; alternate: string | null }> = {
+  'draft-problem': { default: 'gpt-5.6-terra', alternate: 'claude-sonnet-5' },
+  'author-solution': { default: 'claude-opus-4-8', alternate: 'gpt-5.6-sol' },
+  'author-tests': { default: 'gpt-5.6-sol', alternate: 'claude-opus-5' },
+  'author-packet': { default: 'claude-sonnet-5', alternate: 'gpt-5.6-terra' },
+  'edge-audit': { default: 'claude-opus-4-6', alternate: 'gpt-5.6-sol' },
+  calibrate: { default: 'gpt-5.6-luna', alternate: 'claude-haiku-4-5' },
+  repair: { default: 'claude-fable-5', alternate: 'gpt-5.6-sol' },
+  review: { default: 'claude-sonnet-5', alternate: 'gpt-5.6-sol' },
+  'review-escalated': { default: 'claude-opus-5', alternate: null },
+  'review-extract': { default: 'claude-haiku-4-5', alternate: 'gpt-5.6-luna' },
+  probe: { default: 'claude-sonnet-5', alternate: 'gpt-5.6-terra' },
+  dispute: { default: 'claude-opus-5', alternate: 'gpt-5.6-sol' },
+  brainstorm: { default: 'claude-sonnet-5', alternate: 'gpt-5.6-terra' },
+};
+
+/** Every slot SLOT_ROUTES routes — the iteration order Settings persists against. */
+export const ALL_SLOTS = Object.keys(SLOT_ROUTES) as LLMSlot[];
+
+export function isLLMSlot(value: string): value is LLMSlot {
+  return Object.prototype.hasOwnProperty.call(SLOT_ROUTES, value);
+}
+
+/** The hardcoded default for a slot — what "reset to default" restores. */
+export function getSlotDefault(slot: LLMSlot): string {
+  return SLOT_ROUTES[slot].default;
+}
+
+// Fable is 2x the cost of Opus 5, unavailable under zero data retention
+// (every request 400s), runs always-on thinking, and its safety classifiers
+// can end a turn with stop_reason "refusal" on an HTTP 200. It leads the
+// `repair` slot anyway — repair is where its editing strength pays — but
+// only because both failure modes fall back to Opus 5 automatically below.
+const FABLE_MODEL = 'claude-fable-5';
+const FABLE_FALLBACK_MODEL = 'claude-opus-5';
+
+// A ZDR org 400s EVERY Fable request, so the first 400 latches the swap for
+// the process instead of paying the same failure once per call. Cleared by
+// clearConfigCache() — a settings save is the one moment it's worth retrying.
+let fableSessionFallback = false;
+
+function fableFallbackRoute(route: ResolvedRoute): ResolvedRoute {
+  return { ...route, model: FABLE_FALLBACK_MODEL, source: 'fable-fallback' };
+}
+
+function applyFableLatch(route: ResolvedRoute): ResolvedRoute {
+  return fableSessionFallback && route.model === FABLE_MODEL ? fableFallbackRoute(route) : route;
+}
 
 /**
- * The full per-purpose model map for one provider — what GET /api/settings
- * exposes (NEE-303) so paid actions can state their model before invocation
- * instead of only recording it after the fact.
+ * A slot's resolution together with the saved override that produced it —
+ * everything one Settings row needs. `warning` rides HERE as well as on
+ * `route` because a rejected override must never be silent (plan: "invalid →
+ * warning, never silent") and a slot that resolves to NOTHING has `route`
+ * null, with nowhere else to say so. `override` is the saved model id whether
+ * or not it was honored — it is what "reset to default" clears, so the UI
+ * must know about it even when the route it produced is a fallback.
  */
-export function getModelMap(provider: LLMProvider): Record<LLMPurpose, string> {
-  const map = {} as Record<LLMPurpose, string>;
-  for (const purpose of ALL_PURPOSES) {
-    map[purpose] = getModelId(provider, purpose);
+export interface SlotResolution {
+  route: ResolvedRoute | null;
+  override: string | null;
+  warning: string | null;
+}
+
+/**
+ * How a slot resolves right now. Resolution order, highest first:
+ *
+ * 1. a saved override, if the model is known AND its provider has a key;
+ *    an override that fails either test falls through carrying a warning.
+ * 2. the slot's default, if its provider has a key.
+ * 3. the slot's keyless-provider alternate, if it has one and has a key.
+ * 4. nothing — this slot cannot run.
+ *
+ * Mock mode is not a step of its own: `hasKey` reports every provider there,
+ * so a mock run resolves the same way a fully-keyed one does — including
+ * honoring a saved override, which updateSettings accepts in mock mode and
+ * which reporting the bare default would have silently discarded.
+ */
+export function resolveSlotDetail(slot: LLMSlot): SlotResolution {
+  const route = SLOT_ROUTES[slot];
+  const saved = getConfig().model_overrides?.[slot];
+  const override = typeof saved === 'string' && saved.length > 0 ? saved : null;
+
+  let warning: string | null = null;
+  if (override !== null) {
+    const provider = getModelProvider(override);
+    if (!provider) {
+      warning = `"${override}" is not a model ace can route to — using the default instead.`;
+    } else if (!hasKey(provider)) {
+      warning = `no ${provider} API key — the saved "${override}" choice cannot run.`;
+    } else {
+      return {
+        route: applyFableLatch({ provider, model: override, source: 'override', warning: null }),
+        override,
+        warning: null,
+      };
+    }
   }
-  return map;
+
+  const defaultProvider = providerOf(route.default);
+  if (hasKey(defaultProvider)) {
+    return {
+      route: applyFableLatch({
+        provider: defaultProvider,
+        model: route.default,
+        source: 'default',
+        warning,
+      }),
+      override,
+      warning,
+    };
+  }
+  if (route.alternate) {
+    const altProvider = providerOf(route.alternate);
+    if (hasKey(altProvider)) {
+      return {
+        route: applyFableLatch({
+          provider: altProvider,
+          model: route.alternate,
+          source: 'provider-fallback',
+          warning,
+        }),
+        override,
+        warning,
+      };
+    }
+  }
+  return { route: null, override, warning };
+}
+
+/** The provider/model a slot resolves to right now, or null when nothing can serve it. */
+export function resolveSlot(slot: LLMSlot): ResolvedRoute | null {
+  return resolveSlotDetail(slot).route;
+}
+
+/**
+ * The model id a slot resolves to — for callers that persist which model
+ * produced an output (review rows, probe sets) without re-stating ids. Falls
+ * back to the slot's default when nothing resolves, so a persisted row is
+ * never blank: callers only reach this after a call actually ran.
+ */
+export function getModelId(slot: LLMSlot): string {
+  return resolveSlot(slot)?.model ?? SLOT_ROUTES[slot].default;
+}
+
+/**
+ * Every slot's current resolution — what GET /api/settings exposes so the UI
+ * can state which model a paid action will invoke *before* the user commits
+ * to it, and so Settings can render (and edit) the whole routing table.
+ */
+export function getSlotRoutes(): Record<LLMSlot, SlotResolution> {
+  const routes = {} as Record<LLMSlot, SlotResolution>;
+  for (const slot of ALL_SLOTS) routes[slot] = resolveSlotDetail(slot);
+  return routes;
 }
 
 // When no fetchImpl is given the factories must receive no `fetch` key at
 // all — default construction stays exactly as before NEE-322.
-function getModel(
-  provider: LLMProvider,
-  purpose: LLMPurpose,
-  fetchImpl?: typeof fetch,
-): LanguageModel {
+export function getModelFor(route: ResolvedRoute, fetchImpl?: typeof fetch): LanguageModel {
   const config = getConfig();
-  if (provider === 'openai') {
+  if (route.provider === 'openai') {
     // .chat() pins the Chat Completions API rather than the Responses API.
     return createOpenAI({
       apiKey: config.OPENAI_API_KEY,
       ...(config.OPENAI_BASE_URL ? { baseURL: config.OPENAI_BASE_URL } : {}),
       ...(fetchImpl ? { fetch: fetchImpl } : {}),
-    }).chat(getModelId('openai', purpose));
+    }).chat(route.model);
   }
   // A base URL (e.g. a local proxy exposing /v1/messages) still speaks the
   // native Anthropic wire protocol, so the same SDK client is used either way.
@@ -317,7 +500,54 @@ function getModel(
     apiKey: config.ANTHROPIC_API_KEY,
     ...(config.ANTHROPIC_BASE_URL ? { baseURL: config.ANTHROPIC_BASE_URL } : {}),
     ...(fetchImpl ? { fetch: fetchImpl } : {}),
-  })(getModelId('anthropic', purpose));
+  })(route.model);
+}
+
+function requireRoute(slot: LLMSlot): ResolvedRoute {
+  const route = resolveSlot(slot);
+  if (!route) {
+    throw new Error(`no model can run the "${slot}" step — add an API key in Settings`);
+  }
+  return route;
+}
+
+type RefusalMetadata = { anthropic?: { stopDetails?: { type?: unknown } } } | undefined;
+
+/**
+ * @ai-sdk/anthropic maps stop_reason "refusal" to finishReason
+ * 'content-filter' on an HTTP 200 (verified against the pinned provider
+ * package). `stopDetails` rides along on providerMetadata but the SDK's own
+ * docs say to branch on the finish reason — a refusal may carry no details
+ * at all — so that is the primary test and the metadata only a backstop.
+ */
+function isRefusalFinish(finishReason: unknown, providerMetadata?: unknown): boolean {
+  if (finishReason === 'content-filter') return true;
+  return (providerMetadata as RefusalMetadata)?.anthropic?.stopDetails?.type === 'refusal';
+}
+
+async function isRefusedStream(result: {
+  finishReason?: PromiseLike<unknown>;
+  providerMetadata?: PromiseLike<unknown>;
+}): Promise<boolean> {
+  return isRefusalFinish(await result.finishReason, await result.providerMetadata);
+}
+
+/**
+ * The route to retry a failed Fable call on, or null to let the error stand.
+ * A 400 means the org runs zero data retention, where EVERY Fable request
+ * fails — so it latches for the session; a refusal is per-request and never
+ * latches. Any other model, or any other error, is not ours to retry.
+ */
+function fableRetryRoute(route: ResolvedRoute, err: unknown): ResolvedRoute | null {
+  if (route.model !== FABLE_MODEL) return null;
+  if (APICallError.isInstance(err) && err.statusCode === 400) {
+    fableSessionFallback = true;
+    return fableFallbackRoute(route);
+  }
+  if (NoObjectGeneratedError.isInstance(err) && isRefusalFinish(err.finishReason)) {
+    return fableFallbackRoute(route);
+  }
+  return null;
 }
 
 // Statuses whose Response constructor rejects a body outright — those (and
@@ -384,11 +614,10 @@ function toCallInput(
 }
 
 export async function chatStream(
-  provider: LLMProvider,
+  slot: LLMSlot,
   messages: LLMMessage[],
   opts?: {
     abortSignal?: AbortSignal;
-    purpose?: LLMPurpose;
     /** Same contract as chatObjectStream's onStreamActivity (NEE-322):
      *  fired on every raw chunk of the underlying HTTP response body,
      *  including frames that never materialise a text delta — the only
@@ -396,11 +625,25 @@ export async function chatStream(
      *  adaptive-thinking pause (NEE-361). Swallow contract identical to
      *  onPartial elsewhere: a logging bug must never kill a paid call. */
     onStreamActivity?: () => void;
+    /** The route this call is actually running on, fired again for a Fable
+     *  fallback retry. Callers that PERSIST which model produced an output
+     *  must record THIS, not a re-resolution: a refusal retry is per-request
+     *  and deliberately does not latch, so the slot still resolves to Fable
+     *  afterwards. Never fired in mock mode (no route is taken). Same swallow
+     *  contract as onStreamActivity. */
+    onRoute?: (route: ResolvedRoute) => void;
   },
 ): Promise<AsyncIterable<string>> {
   const fireActivity = (): void => {
     try {
       opts?.onStreamActivity?.();
+    } catch {
+      // Swallowed by contract — a logging bug must never kill a paid call.
+    }
+  };
+  const fireRoute = (route: ResolvedRoute): void => {
+    try {
+      opts?.onRoute?.(route);
     } catch {
       // Swallowed by contract — a logging bug must never kill a paid call.
     }
@@ -416,26 +659,62 @@ export async function chatStream(
     };
   }
 
-  const result = streamText({
-    // The tapped fetch is scoped to THIS call's model — same threading as
-    // chatObjectStream; without the callback getModel receives no fetch at
-    // all and construction is unchanged.
-    model: getModel(
-      provider,
-      opts?.purpose ?? 'generate',
-      opts?.onStreamActivity ? withResponseActivityTap(fireActivity) : undefined,
-    ),
-    ...toCallInput(messages),
-    abortSignal: opts?.abortSignal,
-  });
-  return result.textStream;
+  // Every request this call issues goes through here, retries included, so
+  // this is the one place onRoute can report the route actually used.
+  const start = (route: ResolvedRoute) => {
+    fireRoute(route);
+    return streamText({
+      // The tapped fetch is scoped to THIS call's model — same threading as
+      // chatObjectStream; without the callback getModelFor receives no fetch
+      // at all and construction is unchanged.
+      model: getModelFor(
+        route,
+        opts?.onStreamActivity ? withResponseActivityTap(fireActivity) : undefined,
+      ),
+      ...toCallInput(messages),
+      abortSignal: opts?.abortSignal,
+    });
+  };
+
+  // The call is started HERE, not inside the generator: a lazy generator
+  // would defer the request until the caller's first read, which is a
+  // different (and unannounced) contract than every other wrapper here.
+  async function* stream(
+    result: ReturnType<typeof start>,
+    route: ResolvedRoute,
+    retried: boolean,
+  ): AsyncGenerator<string> {
+    let emitted = false;
+    try {
+      for await (const chunk of result.textStream) {
+        if (chunk.length > 0) emitted = true;
+        yield chunk;
+      }
+    } catch (err) {
+      const retry = retried ? null : fableRetryRoute(route, err);
+      if (!retry) throw err;
+      yield* stream(start(retry), retry, true);
+      return;
+    }
+    // A refusal ends the turn on an HTTP 200, before any answer text — so
+    // retrying costs the caller nothing it already consumed. `emitted` is
+    // the guard for the pathological case: a caller that already has bytes
+    // keeps them rather than receiving two concatenated bodies.
+    if (!retried && !emitted && route.model === FABLE_MODEL && (await isRefusedStream(result))) {
+      const retry = fableFallbackRoute(route);
+      yield* stream(start(retry), retry, true);
+    }
+  }
+
+  const route = requireRoute(slot);
+  return stream(start(route), route, false);
 }
 
 export async function chatObject<T>(
-  provider: LLMProvider,
+  slot: LLMSlot,
   messages: LLMMessage[],
   schema: z.ZodType<T>,
-  opts?: { abortSignal?: AbortSignal; maxOutputTokens?: number; purpose?: LLMPurpose },
+  opts?: { abortSignal?: AbortSignal; maxOutputTokens?: number },
 ): Promise<T> {
   if (mockLlm) {
     if (process.env.ACE_MOCK_LLM_MODE) {
@@ -454,19 +733,35 @@ export async function chatObject<T>(
     return schema.parse('OK');
   }
 
-  const result = await generateObject({
-    model: getModel(provider, opts?.purpose ?? 'generate'),
-    ...toCallInput(messages, opts?.maxOutputTokens),
-    schema,
-    abortSignal: opts?.abortSignal,
-    // Opt out of OpenAI strict mode: several caller schemas still carry
-    // optional properties, which strict mode rejects. Do NOT rely on this
-    // flag for correctness — the codex backend enforces strict mode
-    // regardless (NEE-263), so schemas used on the openai path must be
-    // strict-compatible by construction: every property required, with
-    // optionality expressed as `.nullable()` (see GeneratedQuestionSchema).
-    providerOptions: { openai: { strictJsonSchema: false } },
-  });
+  const route = requireRoute(slot);
+  const call = (r: ResolvedRoute) =>
+    generateObject({
+      model: getModelFor(r),
+      ...toCallInput(messages, opts?.maxOutputTokens),
+      schema,
+      abortSignal: opts?.abortSignal,
+      // Opt out of OpenAI strict mode: several caller schemas still carry
+      // optional properties, which strict mode rejects. Do NOT rely on this
+      // flag for correctness — the codex backend enforces strict mode
+      // regardless (NEE-263), so schemas used on the openai path must be
+      // strict-compatible by construction: every property required, with
+      // optionality expressed as `.nullable()` (see GeneratedQuestionSchema).
+      providerOptions: { openai: { strictJsonSchema: false } },
+    });
+
+  let result;
+  try {
+    result = await call(route);
+  } catch (err) {
+    const retry = fableRetryRoute(route, err);
+    if (!retry) throw err;
+    return (await call(retry)).object;
+  }
+  // A refusal arrives on an HTTP 200 with no usable object — retry it on
+  // Opus 5 exactly once, without latching (it is per-request, not per-org).
+  if (route.model === FABLE_MODEL && isRefusalFinish(result.finishReason, result.providerMetadata)) {
+    return (await call(fableFallbackRoute(route))).object;
+  }
   return result.object;
 }
 
@@ -477,13 +772,12 @@ export async function chatObject<T>(
  * review-extract and the CLI commands stay on the non-streaming call.
  */
 export async function chatObjectStream<T>(
-  provider: LLMProvider,
+  slot: LLMSlot,
   messages: LLMMessage[],
   schema: z.ZodType<T>,
   opts?: {
     abortSignal?: AbortSignal;
     maxOutputTokens?: number;
-    purpose?: LLMPurpose;
     /** Each partial as the JSON materialises. NOT schema-validated —
      *  every field may be truncated mid-string. Throws are swallowed:
      *  a logging bug must never kill a paid call. */
@@ -494,6 +788,10 @@ export async function chatObjectStream<T>(
      *  liveness signal that never goes silent on a healthy call. Same
      *  swallow contract as onPartial. */
     onStreamActivity?: () => void;
+    /** The route this call is actually running on, fired again for a Fable
+     *  fallback retry — see chatStream's onRoute for why a caller that
+     *  persists the model must record this instead of re-resolving. */
+    onRoute?: (route: ResolvedRoute) => void;
   },
 ): Promise<T> {
   const firePartial = (partial: unknown): void => {
@@ -506,6 +804,13 @@ export async function chatObjectStream<T>(
   const fireActivity = (): void => {
     try {
       opts?.onStreamActivity?.();
+    } catch {
+      // Swallowed by contract — a logging bug must never kill a paid call.
+    }
+  };
+  const fireRoute = (route: ResolvedRoute): void => {
+    try {
+      opts?.onRoute?.(route);
     } catch {
       // Swallowed by contract — a logging bug must never kill a paid call.
     }
@@ -534,33 +839,52 @@ export async function chatObjectStream<T>(
     return schema.parse('OK');
   }
 
-  const result = streamText({
-    // The tapped fetch is scoped to THIS call's model; without the callback
-    // getModel receives no fetch at all and construction is unchanged.
-    model: getModel(
-      provider,
-      opts?.purpose ?? 'generate',
-      opts?.onStreamActivity ? withResponseActivityTap(fireActivity) : undefined,
-    ),
-    ...toCallInput(messages, opts?.maxOutputTokens),
-    output: Output.object({ schema }),
-    abortSignal: opts?.abortSignal,
-    // Same strict-mode opt-out as chatObject — see the comment there.
-    providerOptions: { openai: { strictJsonSchema: false } },
-  });
+  const runOnce = async (route: ResolvedRoute): Promise<{ value: T; refused: boolean }> => {
+    // Every request this call issues starts here, retries included — the one
+    // place onRoute can report the route actually used.
+    fireRoute(route);
+    const result = streamText({
+      // The tapped fetch is scoped to THIS call's model; without the callback
+      // getModelFor receives no fetch at all and construction is unchanged.
+      model: getModelFor(
+        route,
+        opts?.onStreamActivity ? withResponseActivityTap(fireActivity) : undefined,
+      ),
+      ...toCallInput(messages, opts?.maxOutputTokens),
+      output: Output.object({ schema }),
+      abortSignal: opts?.abortSignal,
+      // Same strict-mode opt-out as chatObject — see the comment there.
+      providerOptions: { openai: { strictJsonSchema: false } },
+    });
 
-  // The partial stream must be FULLY drained or `result.output` below never
-  // settles. Never read result.textStream here — that is the raw JSON
-  // including referenceSolution; only the partial-object stream may be
-  // surfaced, filtered downstream.
-  for await (const partial of result.partialOutputStream) {
-    firePartial(partial);
+    // The partial stream must be FULLY drained or `result.output` below never
+    // settles. Never read result.textStream here — that is the raw JSON
+    // including referenceSolution; only the partial-object stream may be
+    // surfaced, filtered downstream.
+    for await (const partial of result.partialOutputStream) {
+      firePartial(partial);
+    }
+
+    // The schema-validated final object. Parse/validation failure rejects with
+    // NoObjectGeneratedError carrying .text — the same contract chatObject's
+    // callers already match on.
+    const value = await result.output;
+    return { value, refused: route.model === FABLE_MODEL && (await isRefusedStream(result)) };
+  };
+
+  const route = requireRoute(slot);
+  let attempt;
+  try {
+    attempt = await runOnce(route);
+  } catch (err) {
+    // A Fable retry replays the whole streaming call, so onPartial fires
+    // again from the start — callers overwrite per partial, never append.
+    const retry = fableRetryRoute(route, err);
+    if (!retry) throw err;
+    return (await runOnce(retry)).value;
   }
-
-  // The schema-validated final object. Parse/validation failure rejects with
-  // NoObjectGeneratedError carrying .text — the same contract chatObject's
-  // callers already match on.
-  return await result.output;
+  if (attempt.refused) return (await runOnce(fableFallbackRoute(route))).value;
+  return attempt.value;
 }
 
 /**

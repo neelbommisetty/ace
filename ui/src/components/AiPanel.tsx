@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Link } from 'react-router';
 import { isProseAnswer, lookupCategoryConfig } from '@shared/categories';
+import { isEscalatedReview } from '@shared/escalation';
 import { getDebrief, type DebriefResponse } from '../api';
 import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { relTime } from '../lib/format';
@@ -24,6 +25,7 @@ export interface ReviewNotice {
 export function AiPanel({
   question,
   reviews,
+  attemptId = null,
   stream,
   notice,
   justDoneId,
@@ -37,6 +39,15 @@ export function AiPanel({
 }: {
   question: QuestionRow;
   reviews: ReviewRow[] | null;
+  /**
+   * The attempt a "Request review" click would target — the room's active
+   * (or readonly reference) attempt. Mirrors reviews.ts's escalation rule
+   * client-side (NEE-303) so the pre-invocation label already names the
+   * model that will actually run, not always the routine one. Optional/null
+   * for call sites (and existing tests) that predate the escalation tier —
+   * never escalates, same as the server rule's own null-attemptId case.
+   */
+  attemptId?: string | null;
   stream: ReviewStream | null;
   notice: ReviewNotice | null;
   /** id of a review that finished streaming this session — its body opens expanded */
@@ -67,12 +78,21 @@ export function AiPanel({
   const settingsLoaded = settings != null;
   const keyless = isKeyless(settings);
   const canRequest = settingsLoaded && !keyless;
-  const reviewModel = resolvedModelFor(settings, 'review');
 
   // Follow-up probes (NEE-345): gated identically to Review, PLUS a
   // category-capability check — the feature only makes sense for prose
   // answers (story.md/notes.md), never a coding question's solution file.
   const config = lookupCategoryConfig(question.category);
+
+  // The SAME rule reviews.ts routes on (shared/escalation.ts), collapsing back
+  // to 'review' when the escalated slot has no route (openai-only install).
+  // Category-aware for the same reason the server is: a prose attempt ends the
+  // instant its review lands, so an attempt-scoped test could never fire there.
+  const willEscalate =
+    config != null && isEscalatedReview({ config, reviews: reviews ?? [], attemptId });
+  const reviewModel = willEscalate
+    ? (resolvedModelFor(settings, 'review-escalated') ?? resolvedModelFor(settings, 'review'))
+    : resolvedModelFor(settings, 'review');
   const proseCategory = config != null && isProseAnswer(config);
   const probeModel = resolvedModelFor(settings, 'probe');
   const canRequestProbes = proseCategory && settingsLoaded && !keyless;

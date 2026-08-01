@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { getSettings, getWorkspace, putSettings } from '../api';
 import { useCancellableEffect } from '../hooks/useCancellableEffect';
 import { WorkspaceResetDialog } from '../components/WorkspaceResetDialog';
-import { modelLabel, PURPOSE_LABELS, PURPOSE_ORDER } from '../lib/models';
-import type { SettingsInfo, WorkspaceResetMode } from '../types';
+import { SLOT_GROUPS, SLOT_LABELS } from '../lib/models';
+import type { LLMSlot, ResolvedModel, SettingsInfo, SlotInfo, WorkspaceResetMode } from '../types';
 
 type ProviderKey = 'openai' | 'anthropic';
 
@@ -13,15 +13,14 @@ const PROVIDER_LABELS: Record<ProviderKey, string> = {
 };
 
 /**
- * /settings — API keys and default provider. Keys are write-only: the server
- * only ever returns a masked suffix, and saves are validated against the
- * provider before anything is written.
+ * /settings — API keys and the per-slot model map. Keys are write-only: the
+ * server only ever returns a masked suffix, and saves are validated against
+ * the provider before anything is written. The old single "Default
+ * provider" picker is gone — routing is per-slot now (see ModelsSection).
  */
 export function Settings() {
   const [info, setInfo] = useState<SettingsInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [defaultSaving, setDefaultSaving] = useState(false);
-  const [defaultError, setDefaultError] = useState<string | null>(null);
   const [folderName, setFolderName] = useState<string | null>(null);
   const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
   const [resetMode, setResetMode] = useState<WorkspaceResetMode | null>(null);
@@ -54,20 +53,6 @@ export function Settings() {
 
   const dangerDisabled = folderName == null;
 
-  const setDefaultProvider = (value: ProviderKey) => {
-    setDefaultSaving(true);
-    setDefaultError(null);
-    putSettings({ defaultProvider: value })
-      .then((next) => {
-        setInfo(next);
-        setDefaultSaving(false);
-      })
-      .catch((e: unknown) => {
-        setDefaultSaving(false);
-        setDefaultError(e instanceof Error ? e.message : 'Failed to save');
-      });
-  };
-
   return (
     <div className="settings">
       <header className="topbar">
@@ -91,37 +76,7 @@ export function Settings() {
               )}
               <ProviderCard provider="openai" info={info} onSaved={setInfo} />
               <ProviderCard provider="anthropic" info={info} onSaved={setInfo} />
-              <section className="settings-card">
-                <h2 className="settings-card-title">Default provider</h2>
-                <p className="settings-hint">Used for reviews and disputes.</p>
-                <div className="settings-row">
-                  <select
-                    className="status-select"
-                    value={info.defaultProvider ?? ''}
-                    disabled={defaultSaving}
-                    onChange={(e) => {
-                      if (e.target.value === 'openai' || e.target.value === 'anthropic') {
-                        setDefaultProvider(e.target.value);
-                      }
-                    }}
-                  >
-                    <option value="" disabled>
-                      {info.openai.configured || info.anthropic.configured
-                        ? 'Pick a provider…'
-                        : 'Add a key first'}
-                    </option>
-                    {(['openai', 'anthropic'] as ProviderKey[]).map((p) => (
-                      <option key={p} value={p} disabled={!info[p].configured}>
-                        {PROVIDER_LABELS[p]}
-                        {!info[p].configured ? ' (no key)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                  {defaultSaving && <span className="cell-dim">saving…</span>}
-                </div>
-                {defaultError != null && <div className="error-note">{defaultError}</div>}
-              </section>
-              <ModelsSection info={info} />
+              <ModelsSection info={info} onSaved={setInfo} />
             </>
           )}
           <section className="settings-danger-zone">
@@ -190,34 +145,161 @@ export function Settings() {
 }
 
 /**
- * Read-only per-purpose model map (NEE-303) — what GET /api/settings resolves
- * each paid action to right now. Full editability (NEE-274) can follow later;
- * this just answers "what will actually run" before the user commits to it
- * on Request review / Dispute / Generate / Brainstorm.
+ * Editable per-slot routing table — what each step resolves to right now,
+ * and a `<select>` to override it. Grouped Generation pipeline / Practice
+ * room / Creation via SLOT_GROUPS, which is SLOT_ORDER split at the same
+ * boundaries `shared/wire-types.ts`'s `LLMSlot` comments use.
  */
-function ModelsSection({ info }: { info: SettingsInfo }) {
+function ModelsSection({
+  info,
+  onSaved,
+}: {
+  info: SettingsInfo;
+  onSaved: (next: SettingsInfo) => void;
+}) {
   const models = info.models;
   return (
     <section className="settings-card">
       <h2 className="settings-card-title">Models</h2>
-      <p className="settings-hint">Which provider and model each paid action resolves to.</p>
+      <p className="settings-hint">Which provider and model each step uses — pick one per step.</p>
       {models == null ? (
-        <p className="settings-hint">
-          {info.openai.configured || info.anthropic.configured
-            ? 'Pick a default provider above to resolve models.'
-            : 'Add an API key above to resolve models.'}
-        </p>
+        <p className="settings-hint">Add an API key above to resolve models.</p>
       ) : (
-        <ul className="activity-list">
-          {PURPOSE_ORDER.map((purpose) => (
-            <li key={purpose} className="activity-item">
-              <span>{PURPOSE_LABELS[purpose]}</span>
-              <span className="mono cell-dim">{modelLabel(models[purpose])}</span>
-            </li>
-          ))}
-        </ul>
+        SLOT_GROUPS.map((group) => (
+          <div key={group.heading}>
+            <h3 className="activity-heading">{group.heading}</h3>
+            <ul className="activity-list">
+              {group.slots.map((slot) => (
+                <SlotRow
+                  key={slot}
+                  slot={slot}
+                  info={models[slot]}
+                  availableModels={info.availableModels}
+                  onSaved={onSaved}
+                />
+              ))}
+            </ul>
+          </div>
+        ))
       )}
     </section>
+  );
+}
+
+/** One editable slot row — a `<select>` over `availableModels` plus a
+ * source-driven annotation (override/provider-fallback/fable-fallback/warning). */
+function SlotRow({
+  slot,
+  info,
+  availableModels,
+  onSaved,
+}: {
+  slot: LLMSlot;
+  info: SlotInfo;
+  availableModels: ResolvedModel[];
+  onSaved: (next: SettingsInfo) => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const route = info.route;
+
+  const setModel = (model: string | null) => {
+    setSaving(true);
+    setError(null);
+    putSettings({ models: { [slot]: model } })
+      .then((next) => {
+        onSaved(next);
+        setSaving(false);
+      })
+      .catch((e: unknown) => {
+        setSaving(false);
+        setError(e instanceof Error ? e.message : 'Failed to save');
+      });
+  };
+
+  /** Clearing a saved override is offered whenever one EXISTS — not only when
+   *  it was honored. An override that lost its key, or that latched off
+   *  claude-fable-5, resolves with some other `source` and would otherwise be
+   *  stuck on disk with no way to remove it from here. */
+  const clearOverride =
+    !saving && info.override != null ? (
+      <button type="button" className="link-button" onClick={() => setModel(null)}>
+        reset to default
+      </button>
+    ) : null;
+  const notes = (
+    <>
+      {info.warning != null && <div className="error-note">{info.warning}</div>}
+      {error != null && <div className="error-note">{error}</div>}
+    </>
+  );
+
+  if (route == null) {
+    return (
+      <li className="settings-slot-item">
+        <div className="settings-slot-row">
+          <span>{SLOT_LABELS[slot]}</span>
+          <div className="settings-slot-controls">
+            <span className="mono cell-dim">not available</span>
+            {clearOverride}
+          </div>
+        </div>
+        {notes}
+      </li>
+    );
+  }
+
+  // The alternate is always the OTHER provider from the default (per-slot
+  // routing's whole point is cross-provider fallback) — so when the route we
+  // are actually running on is the fallback, the provider that's MISSING a
+  // key is simply the one this route isn't using.
+  const missingProvider: ProviderKey = route.provider === 'openai' ? 'anthropic' : 'openai';
+  // The model the fable latch swapped OUT — the saved override when there is
+  // one, otherwise the slot's own default.
+  const latchedOut = info.override ?? route.defaultModel;
+
+  return (
+    <li className="settings-slot-item">
+      <div className="settings-slot-row">
+        <span>{SLOT_LABELS[slot]}</span>
+        <div className="settings-slot-controls">
+          <select
+            className="status-select mono"
+            value={route.model}
+            disabled={saving}
+            onChange={(e) => setModel(e.target.value)}
+          >
+            {(['openai', 'anthropic'] as ProviderKey[]).map((provider) => {
+              const options = availableModels.filter((m) => m.provider === provider);
+              if (options.length === 0) return null;
+              return (
+                <optgroup key={provider} label={PROVIDER_LABELS[provider]}>
+                  {options.map((m) => (
+                    <option key={m.model} value={m.model}>
+                      {m.model}
+                    </option>
+                  ))}
+                </optgroup>
+              );
+            })}
+          </select>
+          {saving && <span className="cell-dim">saving…</span>}
+          {clearOverride}
+        </div>
+      </div>
+      {route.source === 'provider-fallback' && (
+        <p className="settings-hint settings-slot-note">
+          no {PROVIDER_LABELS[missingProvider]} key — using {route.model}
+        </p>
+      )}
+      {route.source === 'fable-fallback' && (
+        <p className="settings-hint settings-slot-note">
+          {latchedOut} could not run for this account — using {route.model} for the rest of this
+          session
+        </p>
+      )}
+      {notes}
+    </li>
   );
 }
 

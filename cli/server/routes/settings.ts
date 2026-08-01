@@ -1,5 +1,6 @@
 import type { Hono } from 'hono';
 import { normalizeBaseUrl } from '../../lib/config.js';
+import { isLLMSlot, type LLMSlot } from '../../lib/llm.js';
 import { readJsonBody } from '../route-helpers.js';
 import {
   getSettingsInfo,
@@ -50,6 +51,28 @@ export function registerSettingsRoutes(app: Hono, _ctx: RouteContext): void {
         return c.json({ error: 'defaultProvider must be "openai" or "anthropic"' }, 400);
       }
       patch.defaultProvider = body.defaultProvider;
+    }
+    // Per-slot model overrides: null clears one back to its default. Shape
+    // only here — whether the model exists and its provider has a key is
+    // decided against the effective config in updateSettings (400 either way).
+    if (body.models !== undefined) {
+      const models = body.models;
+      if (typeof models !== 'object' || models === null || Array.isArray(models)) {
+        return c.json({ error: 'models must be an object of slot -> model id or null' }, 400);
+      }
+      const parsed: Partial<Record<LLMSlot, string | null>> = {};
+      for (const [slot, value] of Object.entries(models)) {
+        if (!isLLMSlot(slot)) return c.json({ error: `unknown model slot "${slot}"` }, 400);
+        if (value === null) {
+          parsed[slot] = null;
+          continue;
+        }
+        if (typeof value !== 'string' || value.trim().length === 0) {
+          return c.json({ error: `models.${slot} must be a non-empty string or null` }, 400);
+        }
+        parsed[slot] = value.trim();
+      }
+      patch.models = parsed;
     }
 
     try {

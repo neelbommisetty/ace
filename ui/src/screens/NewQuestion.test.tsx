@@ -4,7 +4,8 @@ import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NewQuestion } from './NewQuestion';
 import { GENERATABLE_CATEGORY_SLUGS } from '../lib/categories';
-import type { SettingsInfo } from '../types';
+import { SLOT_ORDER } from '../lib/models';
+import type { LLMSlot, SettingsInfo } from '../types';
 
 // Same seam as GenerationJobStrip.test.tsx: `useSseEvent` registers into a
 // module-level handler registry. NewQuestion mounts GenerationJobStrip, which
@@ -29,21 +30,35 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, getSettings, startGenerationJob, getGenerationJobs };
 });
 
+/**
+ * A full per-slot routing map with the named slots pinned — SlotInfo's
+ * source/warning/override/defaultModel are noise for these tests, so they are
+ * uniform.
+ */
+function slotModels(
+  provider: 'openai' | 'anthropic',
+  base: string,
+  overrides: Partial<Record<LLMSlot, string>> = {},
+): NonNullable<SettingsInfo['models']> {
+  const map = {} as NonNullable<SettingsInfo['models']>;
+  for (const slot of SLOT_ORDER) {
+    const model = overrides[slot] ?? base;
+    map[slot] = {
+      route: { provider, model, source: 'default', defaultModel: model },
+      override: null,
+      warning: null,
+    };
+  }
+  return map;
+}
+
 const CONFIGURED_SETTINGS: SettingsInfo = {
   openai: { configured: true, masked: 'sk-...abcd', baseUrl: null },
   anthropic: { configured: false, masked: null, baseUrl: null },
   defaultProvider: 'openai',
   mockMode: false,
-  models: {
-    generate: { provider: 'openai', model: 'gpt-5.6-sol' },
-    'edge-audit': { provider: 'openai', model: 'gpt-5.6-terra' },
-    calibrate: { provider: 'openai', model: 'gpt-5.6-sol' },
-    review: { provider: 'openai', model: 'gpt-5.6-sol' },
-    'review-extract': { provider: 'openai', model: 'gpt-5.6-luna' },
-    brainstorm: { provider: 'openai', model: 'gpt-5.6-terra' },
-    dispute: { provider: 'openai', model: 'gpt-5.6-sol' },
-    probe: { provider: 'openai', model: 'gpt-5.6-terra' },
-  },
+  models: slotModels('openai', 'gpt-5.6-terra', { 'draft-problem': 'gpt-5.6-sol' }),
+  availableModels: [{ provider: 'openai', model: 'gpt-5.6-sol' }],
 };
 
 const KEYLESS_SETTINGS: SettingsInfo = {
@@ -52,6 +67,7 @@ const KEYLESS_SETTINGS: SettingsInfo = {
   defaultProvider: null,
   mockMode: false,
   models: null,
+  availableModels: [],
 };
 
 const MOCK_MODE_KEYLESS_SETTINGS: SettingsInfo = {

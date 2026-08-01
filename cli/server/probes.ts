@@ -8,7 +8,7 @@ import {
   type QuestionType,
 } from '../lib/categories.js';
 import { getImportMetaDirname } from '../lib/import-meta.js';
-import { chatObjectStream, getModelId, type LLMMessage, type LLMProvider } from '../lib/llm.js';
+import { chatObjectStream, getModelId, type LLMMessage } from '../lib/llm.js';
 import { readFileOr } from '../lib/read-file-or.js';
 import { buildQuestionSection } from '../lib/prompt-builder.js';
 import { maskPromptText } from '../lib/spoilers.js';
@@ -18,7 +18,7 @@ import { saveBlob } from './blobs.js';
 import { toWorkspaceRelPath, writeWorkspaceFile } from './files.js';
 import { uuidv7 } from './ids.js';
 import { createJobRegistry, toEngineErrorMessage } from './job-engine.js';
-import { resolveProvider as resolveProviderFromSettings } from './settings.js';
+import { hasProvider as hasProviderFromSettings } from './settings.js';
 import type { Bus } from './sse.js';
 import type { AceDb, Probe, ProbeSetRow, QuestionRow } from './types.js';
 
@@ -183,9 +183,9 @@ export function createProbeEngine(opts: {
   workspaceRoot: string;
   llm?: ProbeLlm;
   /** Injectable seam alongside `llm` — without it, a keyless test env would
-   *  hit settings.ts's real resolveProvider() before ever reaching the
-   *  injected `llm` fake. Defaults to the real settings-backed resolver. */
-  resolveProvider?: () => LLMProvider | null;
+   *  hit settings.ts's real hasProvider() before ever reaching the injected
+   *  `llm` fake. Defaults to the real settings-backed gate. */
+  hasProvider?: () => boolean;
   /**
    * AI activity recorder (NEE-268). Defaults to the zero-behaviour
    * NULL_AI_LOG, so every pre-existing test runs unchanged; the server
@@ -195,7 +195,7 @@ export function createProbeEngine(opts: {
 }): ProbeEngine {
   const { db, bus, workspaceRoot } = opts;
   const llm = opts.llm ?? { chatObjectStream };
-  const resolveProvider = opts.resolveProvider ?? resolveProviderFromSettings;
+  const hasProvider = opts.hasProvider ?? hasProviderFromSettings;
   const aiLog = opts.aiLog ?? NULL_AI_LOG;
   // questionId -> probeJobId
   const inFlight = createJobRegistry<string, string>({ name: 'probe' });
@@ -213,8 +213,7 @@ export function createProbeEngine(opts: {
       label: question.title,
     });
     try {
-      const provider = resolveProvider();
-      if (!provider) throw new Error('no LLM API key configured — add one in Settings');
+      if (!hasProvider()) throw new Error('no LLM API key configured — add one in Settings');
 
       // Follow-up probes are prose-only (getProbeGuardError rejects
       // non-prose categories at the route before start() is ever reached),
@@ -267,11 +266,19 @@ ${bankSection}`;
           .join('\n\n'),
       });
       let result: ProbeResult;
+      // The row must record the model that actually WROTE these probes, not a
+      // re-resolution afterwards: a Fable refusal retry is per-request and
+      // deliberately does not latch, so the slot can still resolve to the
+      // model that refused. The pre-call resolution is the fallback for mock
+      // mode and the injected test seam, where no route is ever taken.
+      let usedModel = getModelId('probe');
       try {
-        result = await llm.chatObjectStream(provider, messages, ProbeResultSchema, {
+        result = await llm.chatObjectStream('probe', messages, ProbeResultSchema, {
           abortSignal: abort,
-          purpose: 'probe',
           onPartial: (partial) => step.partial(partial),
+          onRoute: (route) => {
+            usedModel = route.model;
+          },
         });
       } catch (err) {
         step.fail(err instanceof Error ? err.message : String(err));
@@ -290,7 +297,7 @@ ${bankSection}`;
         questionId: question.id,
         attemptId,
         probes: result.probes,
-        model: getModelId(provider, 'probe'),
+        model: usedModel,
       });
 
       // Re-read the answer file now, right before computing the append

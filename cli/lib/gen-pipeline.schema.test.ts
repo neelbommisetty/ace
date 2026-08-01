@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { zodSchema } from 'ai';
-import { CalibrationSchema, EdgeAuditSchema, GeneratedQuestionSchema } from './gen-pipeline.js';
+import type { z } from 'zod';
+import {
+  AuthorPacketSchema,
+  AuthorSolutionSchema,
+  AuthorTestsSchema,
+  CalibrationSchema,
+  DraftProblemSchema,
+  EdgeAuditSchema,
+  GeneratedQuestionSchema,
+} from './gen-pipeline.js';
 
 // Regression tests for NEE-263: the codex backend enforces OpenAI strict
 // structured-output mode regardless of `strictJsonSchema: false`, and strict
@@ -121,6 +130,47 @@ describe('generation schemas are strict-structured-output compatible', () => {
       interviewerPacket: null,
     });
     expect(audit.testCode ?? undefined).toBeUndefined();
+  });
+});
+
+describe('the four authoring-stage schemas', () => {
+  const STAGE_SCHEMAS: Array<[string, z.ZodObject]> = [
+    ['draft-problem', DraftProblemSchema],
+    ['author-solution', AuthorSolutionSchema],
+    ['author-tests', AuthorTestsSchema],
+    ['author-packet', AuthorPacketSchema],
+  ];
+
+  it.each(STAGE_SCHEMAS)(
+    '%s lists every property in required and keeps optionality as nullability',
+    (stage, schema) => {
+      const emitted = zodSchema(schema).jsonSchema as JsonSchemaObjectNode;
+      assertEveryPropertyRequired(emitted);
+      for (const key of Object.keys(emitted.properties ?? {})) {
+        if (key === 'title') continue; // the one genuinely mandatory field
+        expect(acceptsNull(emitted.properties?.[key]), `${stage}.${key}`).toBe(true);
+      }
+    },
+  );
+
+  it('partition GeneratedQuestionSchema exactly — every field is authored by exactly one stage', () => {
+    const staged = STAGE_SCHEMAS.flatMap(([, schema]) => Object.keys(schema.shape));
+    expect(new Set(staged).size).toBe(staged.length); // no field authored twice
+    expect([...staged].sort()).toEqual(Object.keys(GeneratedQuestionSchema.shape).sort());
+  });
+
+  it('parses explicit-null optional fields the same way the whole-object schema does', () => {
+    expect(
+      AuthorSolutionSchema.parse({
+        referenceSolution: null,
+        supportCode: null,
+        solutionCode: null,
+      }).referenceSolution,
+    ).toBeNull();
+    expect(AuthorTestsSchema.parse({ testCode: null }).testCode).toBeNull();
+    expect(
+      AuthorPacketSchema.parse({ interviewerPacket: 'packet', followUps: null }).followUps,
+    ).toBeNull();
   });
 });
 

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VerifyFn, VerifyResult } from '../lib/gen-verify.js';
-import type { LLMProvider } from '../lib/llm.js';
+import type { LLMSlot } from '../lib/llm.js';
 import { createAiLog } from './ai-log.js';
 import { openDb } from './db.js';
 import { createGenerationEngine } from './generation.js';
@@ -79,29 +79,33 @@ const GREEN: VerifyResult = {
 };
 
 /**
- * chatObjectStream fake: audit calls get AUDIT, generate/repair calls get
- * PAYLOAD — each streaming canary-laden partials first, exactly like the
- * real SDK re-emitting the whole object on every delta.
+ * chatObjectStream fake: audit calls get AUDIT, calibrate gets CALIBRATION,
+ * every authoring stage and every whole-object repair gets PAYLOAD (sliced by
+ * the caller's own stage schema) — each streaming canary-laden partials
+ * first, exactly like the real SDK re-emitting the whole object on every
+ * delta. The staged authoring calls matter here: two of their PROMPTS embed
+ * the canary-laden reference solution, so this canary now guards the
+ * per-stage masked twins too.
  */
 function makeCanaryLlm() {
   const chatObjectStream = async (
-    _provider: LLMProvider,
+    slot: LLMSlot,
     _messages: unknown,
     schema: any,
-    opts?: { purpose?: string; onPartial?: (p: Record<string, unknown>) => void },
+    opts?: { onPartial?: (p: Record<string, unknown>) => void },
   ) => {
-    if (opts?.purpose === 'edge-audit') {
-      opts.onPartial?.({ edgeCases: AUDIT.edgeCases });
-      opts.onPartial?.(AUDIT);
+    if (slot === 'edge-audit') {
+      opts?.onPartial?.({ edgeCases: AUDIT.edgeCases });
+      opts?.onPartial?.(AUDIT);
       return schema.parse(AUDIT);
     }
-    if (opts?.purpose === 'calibrate') {
+    if (slot === 'calibrate') {
       // A partial smuggling a spoiler under a non-wire-safe key: the differ
       // must drop it (WIRE_SAFE_KEYS.calibrate is verdict/estimatedMinutes).
       // CALIBRATION itself carries a canary-laden `issues` — also not
       // wire-safe — so both leak vectors are exercised by the same partial.
-      opts.onPartial?.({ verdict: 'fits', referenceSolution: `${CANARY} calibrate leak attempt` });
-      opts.onPartial?.(CALIBRATION);
+      opts?.onPartial?.({ verdict: 'fits', referenceSolution: `${CANARY} calibrate leak attempt` });
+      opts?.onPartial?.(CALIBRATION);
       return schema.parse(CALIBRATION);
     }
     opts?.onPartial?.({ title: 'Canary', referenceSolution: `${CANARY} partial leak attempt` });
@@ -142,7 +146,7 @@ function makeEngine(verify: VerifyFn) {
     bus,
     workspaceRoot: tempRoot,
     llm: makeCanaryLlm(),
-    resolveProvider: () => 'openai',
+    hasProvider: () => true,
     verify,
     aiLog: createAiLog({ db, bus }),
   });
@@ -201,7 +205,10 @@ describe('ai-log spoiler canary', () => {
     expect(runs[0].status).toBe('error');
     expect(runs[0].error_message).toBe('verification exhausted after 3 attempts');
     expect(steps.map((s) => [s.slug, s.status])).toEqual([
-      ['generate', 'done'],
+      ['draft-problem', 'done'],
+      ['author-solution', 'done'],
+      ['author-tests', 'done'],
+      ['author-packet', 'done'],
       ['edge-audit', 'done'],
       ['calibrate', 'done'],
       ['static-check', 'done'],
@@ -226,14 +233,20 @@ describe('ai-log spoiler canary', () => {
     const audit = steps.find((s) => s.slug === 'edge-audit')!;
     expect(audit.detail).toBe('2 edge cases · 1 change applied');
 
-    // The generate prompt is shown; repair prompts are the masked twins.
-    const generate = steps.find((s) => s.slug === 'generate')!;
-    expect(generate.prompt_text).toContain('counting canaries');
-    const repair = steps.find((s) => s.slug === 'repair')!;
-    expect(repair.prompt_text).toContain('█ withheld █');
+    // The draft prompt is the topic brief, shown; every prompt that embeds
+    // the answer key (the two later authoring stages, and repair) is the
+    // masked twin.
+    const draft = steps.find((s) => s.slug === 'draft-problem')!;
+    expect(draft.prompt_text).toContain('counting canaries');
+    for (const slug of ['author-tests', 'author-packet', 'repair']) {
+      expect(steps.find((s) => s.slug === slug)!.prompt_text).toContain('█ withheld █');
+    }
 
     // Streamed partials landed (safe keys only) — the differ path really ran.
-    expect(generate.response_text).toContain('Canary Question');
+    expect(draft.response_text).toContain('Canary Question');
+    // author-packet's allowlist is empty (packet + probes are both spoilers),
+    // so its whole streamed response is dropped.
+    expect(steps.find((s) => s.slug === 'author-packet')!.response_text).toBeNull();
   });
 
   it('a green run (scaffold included) leaks the canary nowhere and records the full happy-path taxonomy', async () => {
@@ -246,7 +259,10 @@ describe('ai-log spoiler canary', () => {
     expect(runs).toHaveLength(1);
     expect(runs[0].status).toBe('done');
     expect(steps.map((s) => [s.slug, s.status])).toEqual([
-      ['generate', 'done'],
+      ['draft-problem', 'done'],
+      ['author-solution', 'done'],
+      ['author-tests', 'done'],
+      ['author-packet', 'done'],
       ['edge-audit', 'done'],
       ['calibrate', 'done'],
       ['static-check', 'done'],
@@ -265,7 +281,7 @@ describe('ai-log spoiler canary', () => {
       bus,
       workspaceRoot: tempRoot,
       llm: makeCanaryLlm(),
-      resolveProvider: () => null,
+      hasProvider: () => false,
       verify: async () => GREEN,
       aiLog: createAiLog({ db, bus }),
     });
@@ -305,7 +321,7 @@ describe('ai-log spoiler canary', () => {
       bus,
       workspaceRoot: tempRoot,
       llm: throwingLlm,
-      resolveProvider: () => 'openai',
+      hasProvider: () => true,
       verify: async () => GREEN,
       aiLog: createAiLog({ db, bus }),
     });

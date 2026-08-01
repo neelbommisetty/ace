@@ -14,7 +14,11 @@
  * crash. Mirrors the onStageResult convention in generation.ts.
  */
 import {
+  AuthorPacketSchema,
+  AuthorSolutionSchema,
+  AuthorTestsSchema,
   CalibrationSchema,
+  DraftProblemSchema,
   EdgeAuditSchema,
   GeneratedQuestionSchema,
 } from '../lib/gen-pipeline.js';
@@ -146,7 +150,13 @@ export const NULL_AI_LOG: AiLog = {
 // then render while the stream is still filling. Non-llm slugs (and unknown
 // ones) have no schema; their partials are still fail-closed-filtered.
 const STEP_SCHEMA_KEYS: Record<string, readonly string[]> = {
-  generate: Object.keys(GeneratedQuestionSchema.shape),
+  // The four authoring stages of the split generation capsule…
+  'draft-problem': Object.keys(DraftProblemSchema.shape),
+  'author-solution': Object.keys(AuthorSolutionSchema.shape),
+  'author-tests': Object.keys(AuthorTestsSchema.shape),
+  'author-packet': Object.keys(AuthorPacketSchema.shape),
+  // …and the whole-object revisions (verify-repair, calibration rework,
+  // regenerate), which all record on the `repair` slug.
   repair: Object.keys(GeneratedQuestionSchema.shape),
   'edge-audit': Object.keys(EdgeAuditSchema.shape),
   calibrate: Object.keys(CalibrationSchema.shape),

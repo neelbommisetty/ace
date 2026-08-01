@@ -14,7 +14,7 @@ export const WITHHELD_MARKER = '█ withheld █';
  * and the drift guard in spoilers.test.ts all derive from this list.
  */
 // followUps (NEE-343, behavioral-only) joins this list, not
-// WIRE_SAFE_KEYS.generate: it is the candidate drill-down question bank
+// WIRE_SAFE_KEYS['author-packet']: it is the candidate drill-down question bank
 // (written to the hidden `.probes.md`, NEE-345's territory), structurally
 // the same kind of content as interviewerPacket's own "Skeptical
 // Follow-ups" section for coding/design — a probe read before the
@@ -53,24 +53,36 @@ export function splitSpoilers<T extends object>(
 
 /** Per-step wire allowlist. Fail-closed: an unknown slug maps to the empty set. */
 export const WIRE_SAFE_KEYS: Record<string, ReadonlySet<string>> = {
-  // competency (NEE-343, behavioral-only) is wire-safe: it is visible
-  // interview framing, written straight into the README (the same
-  // treatment coding/design questions give their whole problem statement)
-  // — knowing "this probes conflict-handling" doesn't hand the candidate an
-  // answer. followUps is deliberately NOT here — see SPOILER_KEYS below.
-  // estimatedMinutes/supportCode are likewise candidate-visible: the README
-  // shows the estimate, and the support module is the fake backend the live
-  // preview serves — neither is answer-key material.
-  generate: new Set([
+  // The four authoring stages of the split generation capsule, each keyed by
+  // its own step slug. competency (NEE-343, behavioral-only) is wire-safe:
+  // it is visible interview framing, written straight into the README (the
+  // same treatment coding/design questions give their whole problem
+  // statement) — knowing "this probes conflict-handling" doesn't hand the
+  // candidate an answer. followUps is deliberately NOT here — see
+  // SPOILER_KEYS below. estimatedMinutes/supportCode are likewise
+  // candidate-visible: the README shows the estimate, and the support module
+  // is the fake backend the live preview serves — neither is answer-key
+  // material.
+  'draft-problem': new Set([
     'title',
     'slug',
     'description',
     'signature',
-    'testCode',
-    'competency',
     'estimatedMinutes',
-    'supportCode',
+    'competency',
   ]),
+  // referenceSolution/solutionCode are the answer key; only the support
+  // module survives this stage's response.
+  'author-solution': new Set(['supportCode']),
+  'author-tests': new Set(['testCode']),
+  // Explicit empty set, not an omission: BOTH of this stage's fields
+  // (interviewerPacket, followUps) are spoilers, so nothing it streams is
+  // wire-safe. Fail-closed lookup would do the same thing — the entry exists
+  // so the silence reads as a decision.
+  'author-packet': new Set(),
+  // Whole-object revisions (verify-repair, calibration rework, regenerate)
+  // all stream on the `repair` slug, so its allowlist spans every stage's
+  // wire-safe keys at once.
   repair: new Set([
     'title',
     'slug',
