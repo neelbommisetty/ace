@@ -58,10 +58,11 @@ prose. Fields:
   minutes a strong candidate at the target level needs to read the
   problem, implement a solution, and pass the tests. Any honest value from
   10 to 60 is valid — a 10- or 25-minute question is fine when that is
-  what the scope actually takes. A full-size question is expected to land
-  around 45; 60 is a hard cap — if your honest estimate exceeds 60, SHRINK
-  the question and re-estimate rather than reporting a number over the
-  cap. Omit (return `null`) for design and behavioral categories.
+  what the scope actually takes. Target the per-difficulty minutes given in
+  the Difficulty Calibration section above, not a fixed number; 60 is a hard
+  cap regardless of that target — if your honest estimate exceeds 60,
+  SHRINK the question and re-estimate rather than reporting a number over
+  the cap. Omit (return `null`) for design and behavioral categories.
 - `interviewerPacket` — a Markdown document with exactly these sections:
   - `## Capability Tested` — which charter capabilities this question
     surfaces, and how.
@@ -158,11 +159,12 @@ repairing your previous output, included in that message:
 1. Is the scenario production-flavored and framed in a believable product
    context, rather than a textbook rehash or trivia outside the target role?
 2. Would a strong Senior finish in the intended time — for coding
-   categories, the `estimatedMinutes` you reported (~45 for a full-size
-   question, 60 absolute max); for design and behavioral, the difficulty
-   calibration above — and would only a credible Staff engineer nail the
-   constraints, edge cases, and trade-offs? If it is comfortably solvable
-   without surfacing Staff-level signal, raise the bar before answering.
+   categories, the `estimatedMinutes` you reported, against the
+   per-difficulty target in the Difficulty Calibration section above (60
+   absolute max); for design and behavioral, the difficulty calibration
+   above — and would only a credible Staff engineer nail the constraints,
+   edge cases, and trade-offs? If it is comfortably solvable without
+   surfacing Staff-level signal, raise the bar before answering.
 3. (Coding categories) Does every expected test value have a derivation you
    actually traced?
 4. (Coding categories) Does the signature match the Environment & Test
@@ -170,8 +172,9 @@ repairing your previous output, included in that message:
 5. (Coding categories) Does the reference solution satisfy every single test
    you wrote?
 6. (Coding categories) Is `estimatedMinutes` an honest whole-number
-   estimate you actually derived — 10 to 60, never padded to hit 45, never
-   left above the 60 cap — and `null` only for design/behavioral?
+   estimate you actually derived — 10 to 60, never padded to hit the top of
+   its band, never left above the 60 cap — and `null` only for
+   design/behavioral?
 7. (`react-apps`, `web-components`) Does every string/role/label the tests
    query appear verbatim in the description's `## UI Contract`?
 8. (`react-apps`, `web-components`) For every scoped query in the tests

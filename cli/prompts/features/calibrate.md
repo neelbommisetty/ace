@@ -30,18 +30,19 @@ question's own material claims:
    actually demands — the edge cases, the interacting concerns, the depth
    of reasoning — match what this difficulty promises, not more, not less?
 3. **Coding questions**: any honest estimate from 10 to 60 minutes is a
-   valid question size — a short question is not a defect. A full-size
-   question is expected to land around 45 minutes; 60 is a hard cap.
-   Verdict `too-big` when your honest estimate exceeds the 60-minute cap,
-   OR when the complexity overshoots the declared difficulty band
-   regardless of the minute count. Verdict `too-small` when the question is
-   trivially below its declared band — solvable with no real reasoning in a
-   fraction of the time a candidate at that difficulty should spend.
+   valid question size — a short question is not a defect. Judge against
+   the per-difficulty target in the band above; 60 is a hard cap regardless
+   of difficulty. Verdict `too-big` when your honest estimate exceeds the
+   60-minute cap, OR when the complexity overshoots the declared difficulty
+   band regardless of the minute count. Verdict `too-small` when the
+   question is trivially below its declared band — solvable with no real
+   reasoning in a fraction of the time a candidate at that difficulty should
+   spend.
 4. **Design questions**: the user message states the time budget for this
    category and difficulty — judge the question against that stated budget,
-   not against the coding 45/60 numbers above. `too-big` when the scope
-   cannot be reasonably covered in the budget; `too-small` when the scope
-   is thin enough that time would run out with nothing left to discuss.
+   not against the coding hard cap above. `too-big` when the scope cannot
+   be reasonably covered in the budget; `too-small` when the scope is thin
+   enough that time would run out with nothing left to discuss.
 5. **Never suggest padding.** A question that is naturally short and still
    demonstrates real Staff-level signal is a `fits` verdict, not a defect
    to fix by inflating scope. Recommend shrinking oversized questions;

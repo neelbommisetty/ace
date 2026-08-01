@@ -291,10 +291,19 @@ export function createGenerationEngine(opts: {
         // competency the revision is meant to keep or address.
         const corpusNote =
           category === 'behavioral' ? buildBehavioralCorpusNote(db, job.sourceQuestionId) : '';
+        // Coding-only: `estimatedMinutes` is a field the output contract
+        // only asks coding categories to report, so a numeric time target
+        // only means something there. Design gets its own time-budget line
+        // one stage later, in buildCalibrationUserMessage's design branch.
+        // Behavioral never sizes against a clock.
+        const timeBudget =
+          config.type === 'coding'
+            ? `\n\nTime budget: a ${difficulty} ${config.name} question targets ${getSuggestedTime(category, difficulty)} minutes. Choose scope that fits it.`
+            : '';
         const userMessage = `Generate a ${difficulty} difficulty ${config.name} interview question about: ${job.topic}
 
 Category slug: ${category}
-Question type: ${config.type}${corpusNote}`;
+Question type: ${config.type}${corpusNote}${timeBudget}`;
 
         // Full verified pipeline: generate → edge-audit → sandbox verify with
         // repair loop (design categories: critique pass, no sandbox). Each

@@ -33,12 +33,12 @@ careless implementations break.
   Multiple edge-case classes interact; a merely-working solution that
   ignores ordering/cancellation contracts should NOT pass all tests.
 
-Size the question honestly for its difficulty. Short questions (10, 25
-minutes) are valid — not every easy needs padding to fill a slot. A
-full-size question is expected to take a strong Senior about 45 minutes;
-up to 60 is allowed when the material genuinely warrants it. 60 minutes is
-a hard cap — if the design needs more, shrink scope rather than exceed it.
-Never pad a naturally short question to look bigger than it is.
+Size the question honestly for its difficulty. Short questions are valid —
+not every easy needs padding to fill a slot. For this category:
+easy targets about 15 minutes, medium about 30, hard about 45.
+60 minutes is a hard cap — if the design needs more, shrink scope rather
+than exceed it. Never pad a naturally short question to look bigger than
+it is.
 
 ## Environment & Test Contract
 

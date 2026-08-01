@@ -414,7 +414,7 @@ export function buildAuditUserMessage(
  * description + reference solution + tests (+ support module when present).
  * Design: description + the static per-category/difficulty time budget in
  * place of code sections — the calibrator judges design scope against that
- * number, never the coding 45/60 figures. Both variants carry the
+ * number, never the coding hard cap. Both variants carry the
  * interviewer packet, masked, same as buildAuditUserMessage.
  */
 export function buildCalibrationUserMessage(
@@ -439,7 +439,7 @@ export function buildCalibrationUserMessage(
     if (question.supportCode) sections.push(supportModuleSection(question.supportCode));
   } else {
     sections.push({
-      text: `## Time Budget\n\nThe stated time budget for a ${params.difficulty} ${params.category} question is ${getSuggestedTime(params.category, params.difficulty)} minutes — judge this question's scope against that budget, not the coding 45/60 numbers.`,
+      text: `## Time Budget\n\nThe stated time budget for a ${params.difficulty} ${params.category} question is ${getSuggestedTime(params.category, params.difficulty)} minutes — judge this question's scope against that budget, not the coding hard cap.`,
     });
   }
   sections.push({
@@ -461,7 +461,6 @@ export function buildCalibrationReworkUserMessage(
   question: GeneratedQuestion,
   calibration: CalibrationResult,
 ): BuiltPrompt {
-  const verb = calibration.verdict === 'too-big' ? 'Shrink' : 'Grow';
   return renderSections([
     { text: params.userMessage },
     {
@@ -473,9 +472,22 @@ export function buildCalibrationReworkUserMessage(
       masked: `## Calibration Feedback\n\nVerdict: ${calibration.verdict}\n\n${WITHHELD_MARKER}`,
     },
     {
-      text: `${verb} the question's scope to address the calibration feedback above. Keep
-"title" and "slug" exactly as they were. Return the complete JSON object
-with ALL fields (not only the ones you changed).`,
+      text:
+        calibration.verdict === 'too-big'
+          ? `Shrink the question's scope to address the calibration feedback above. The
+target is ${getSuggestedTime(params.category, params.difficulty)} minutes for a ${params.difficulty} ${params.category} question — cut breadth, not depth:
+drop normalization rules, field-coercion cases, and extra examples before you
+touch anything else. The interacting concerns that give this question its
+difficulty band must survive — if your rewrite leaves only one interacting
+guarantee standing, you cut the wrong thing. Keep "title" and "slug" exactly
+as they were. Return the complete JSON object with ALL fields (not only the
+ones you changed).`
+          : `Grow the question's scope to address the calibration feedback above. The
+target is ${getSuggestedTime(params.category, params.difficulty)} minutes for a ${params.difficulty} ${params.category} question — add breadth by adding
+another interacting concern, never by piling on normalization rules,
+field-coercion cases, or extra examples. Keep "title" and "slug" exactly as
+they were. Return the complete JSON object with ALL fields (not only the ones
+you changed).`,
     },
   ]);
 }

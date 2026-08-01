@@ -42,12 +42,12 @@ counters/todo lists with no interaction contract.
   management, or cleanup should NOT pass all tests. Hard means interacting
   contracts under time pressure, never obscure React trivia.
 
-Size the question honestly for its difficulty. Short questions (10, 25
-minutes) are valid — not every easy needs padding to fill a slot. A
-full-size question is expected to take a strong Senior about 45 minutes;
-up to 60 is allowed when the material genuinely warrants it. 60 minutes is
-a hard cap — if the design needs more, shrink scope rather than exceed it.
-Never pad a naturally short question to look bigger than it is.
+Size the question honestly for its difficulty. Short questions are valid —
+not every easy needs padding to fill a slot. For this category:
+easy targets about 20 minutes, medium about 35, hard about 50.
+60 minutes is a hard cap — if the design needs more, shrink scope rather
+than exceed it. Never pad a naturally short question to look bigger than
+it is.
 
 ## Environment & Test Contract
 
