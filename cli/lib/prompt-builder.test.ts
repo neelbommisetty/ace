@@ -1,6 +1,13 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { GENERATABLE_CATEGORY_SLUGS, type CategorySlug } from './categories.js';
+import {
+  GENERATABLE_CATEGORY_SLUGS,
+  getSuggestedTime,
+  type CategorySlug,
+  type Difficulty,
+} from './categories.js';
+import { getImportMetaDirname } from './import-meta.js';
 import {
   buildBrainstormPrompt,
   buildQuestionSection,
@@ -184,5 +191,61 @@ describe('parseCapsuleSections', () => {
     expect([...sections.keys()]).toEqual(['Real', 'Next']);
     expect(sections.get('Real')).toContain('## Not A Section');
     expect(sections.get('Real')).toContain('after');
+  });
+});
+
+// Tripwire keyed by the full slug enum — widening CategorySlug forces a new
+// entry here, so a category can't silently go unchecked. Only the five
+// coding capsules state per-difficulty minute anchors in prose; the rest
+// size their questions some other way (design capsules) or don't generate
+// at all (playground).
+const CAPSULE_STATES_MINUTE_ANCHORS: Record<CategorySlug, boolean> = {
+  'js-ts': true,
+  'web-components': true,
+  'react-apps': true,
+  'leetcode-ds': true,
+  'leetcode-algo': true,
+  'design-fe': false,
+  'design-be': false,
+  'design-full': false,
+  behavioral: false,
+  playground: false,
+  'playground-ts': false,
+};
+
+describe('Difficulty Calibration minute anchors match suggestedTimes (NEE-406)', () => {
+  // The generator and calibrator both quote these minute anchors from
+  // prose, not from shared/categories.ts — nothing binds the two together
+  // except this test. A capsule number that drifts from getSuggestedTime
+  // is a silent contradiction between what the LLM is told to write and
+  // what the calibrate stage checks it against.
+  const PROMPTS_DIR = path.resolve(getImportMetaDirname(import.meta), '../prompts');
+  const ANCHOR_RE =
+    /easy targets about (\d+) minutes,\s+medium about (\d+),\s+hard about (\d+)\./;
+
+  const anchoredSlugs = GENERATABLE_CATEGORY_SLUGS.filter(
+    (slug) => CAPSULE_STATES_MINUTE_ANCHORS[slug],
+  );
+
+  it.each(anchoredSlugs)('%s capsule anchors equal getSuggestedTime for every difficulty', (slug) => {
+    const raw = fs.readFileSync(path.join(PROMPTS_DIR, `categories/${slug}.md`), 'utf8');
+    const calibration = parseCapsuleSections(raw).get('Difficulty Calibration');
+    expect(calibration, `categories/${slug}.md is missing "## Difficulty Calibration"`).toBeDefined();
+
+    const match = ANCHOR_RE.exec(calibration!);
+    expect(
+      match,
+      `categories/${slug}.md's Difficulty Calibration prose doesn't match "easy targets about N minutes, medium about N, hard about N." — update the prose or ANCHOR_RE`,
+    ).not.toBeNull();
+
+    const [, easy, medium, hard] = match!;
+    const anchors: Record<Difficulty, number> = {
+      easy: Number(easy),
+      medium: Number(medium),
+      hard: Number(hard),
+    };
+    for (const difficulty of ['easy', 'medium', 'hard'] as const) {
+      expect(anchors[difficulty]).toBe(getSuggestedTime(slug, difficulty));
+    }
   });
 });

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { VerifyResult } from './gen-verify.js';
+import { getSuggestedTime } from './categories.js';
 import {
   buildAuditUserMessage,
   buildCalibrationReworkUserMessage,
@@ -948,6 +949,39 @@ describe('masked prompt construction (NEE-265)', () => {
     expect(built.maskedPrompt).not.toContain('drop the retry-with-backoff branch');
     expect(built.maskedPrompt).toContain('too-big');
     expect(built.maskedPrompt).toContain(`"referenceSolution": "${WITHHELD_MARKER}"`);
+  });
+
+  it('buildCalibrationReworkUserMessage carries Shrink wording and the target minutes for a too-big verdict', () => {
+    const calibration: CalibrationResult = {
+      verdict: 'too-big',
+      estimatedMinutes: 75,
+      issues: 'drop the retry-with-backoff branch — it duplicates the base case',
+    };
+    const built = buildCalibrationReworkUserMessage(PARAMS, STAGE1, calibration);
+    expect(built.prompt).toContain("Shrink the question's scope");
+    expect(built.prompt).toContain(
+      `target is ${getSuggestedTime(PARAMS.category, PARAMS.difficulty)} minutes`,
+    );
+    expect(built.prompt).not.toContain("Grow the question's scope");
+  });
+
+  it('buildCalibrationReworkUserMessage carries Grow wording and the target minutes for a too-small verdict, and masks the issues prose the same as the too-big path', () => {
+    const calibration: CalibrationResult = {
+      verdict: 'too-small',
+      estimatedMinutes: 10,
+      issues: 'add a concurrent-write conflict case',
+    };
+    const built = buildCalibrationReworkUserMessage(PARAMS, STAGE1, calibration);
+    expect(built.prompt).toContain("Grow the question's scope");
+    expect(built.prompt).toContain(
+      `target is ${getSuggestedTime(PARAMS.category, PARAMS.difficulty)} minutes`,
+    );
+    expect(built.prompt).not.toContain("Shrink the question's scope");
+    expect(built.prompt).toContain('add a concurrent-write conflict case');
+
+    expect(built.maskedPrompt).toContain(WITHHELD_MARKER);
+    expect(built.maskedPrompt).not.toContain('add a concurrent-write conflict case');
+    expect(built.maskedPrompt).toContain('too-small');
   });
 
   it('buildRegenerateUserMessage embeds the topic brief, prior output, and feedback — masks spoilers, allows retitle/re-slug', () => {

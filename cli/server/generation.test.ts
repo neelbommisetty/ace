@@ -1824,3 +1824,78 @@ describe('regenerate with feedback (NEE-386)', () => {
     expect(revised.archivedAt).toBeNull();
   });
 });
+
+describe('time budget line in the generate user message (NEE-406)', () => {
+  it('appends "Time budget:" with the getSuggestedTime minutes for a coding category', async () => {
+    const { llm, calls } = makeFakeLlm([() => VALID_GENERATED_PAYLOAD]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engine.start({ category: 'leetcode-ds', difficulty: 'hard', topic: 'two sum variant' });
+    await waitFor('generation-done');
+
+    const userMessage = calls[0].messages[1]?.content ?? '';
+    expect(userMessage).toContain(
+      `Time budget: a hard LeetCode Data Structures question targets ${getSuggestedTime('leetcode-ds', 'hard')} minutes`,
+    );
+  });
+
+  it('omits the "Time budget:" line for design categories', async () => {
+    const { llm, calls } = makeFakeLlm(
+      [
+        () => ({
+          title: 'Design a Feed',
+          slug: 'design-a-feed',
+          description: 'Design a social feed system.',
+          signature: null,
+          testCode: null,
+          supportCode: null,
+          solutionCode: null,
+          referenceSolution: null,
+          interviewerPacket: null,
+          estimatedMinutes: 5,
+          competency: null,
+          followUps: null,
+        }),
+      ],
+      { estimatedMinutes: 5 },
+    );
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engine.start({ category: 'design-fe', difficulty: 'medium', topic: 'design a feed' });
+    await waitFor('generation-done');
+
+    const userMessage = calls[0].messages[1]?.content ?? '';
+    expect(userMessage).not.toContain('Time budget:');
+  });
+
+  it('omits the "Time budget:" line for behavioral', async () => {
+    const { llm, calls } = makeFakeLlm([
+      () => ({ ...VALID_GENERATED_PAYLOAD, competency: 'conflict', followUps: ['probe'] }),
+    ]);
+    const engine = createGenerationEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      resolveProvider: FAKE_PROVIDER,
+      verify: FAKE_VERIFY_GREEN,
+    });
+    engine.start({ category: 'behavioral', difficulty: 'medium', topic: 'conflict' });
+    await waitFor('generation-done');
+
+    const userMessage = calls[0].messages[1]?.content ?? '';
+    expect(userMessage).not.toContain('Time budget:');
+  });
+});
