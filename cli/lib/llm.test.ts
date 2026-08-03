@@ -10,6 +10,7 @@ import type {
   chatObjectStream as ChatObjectStreamFn,
   chatStream as ChatStreamFn,
   getModelId as GetModelIdFn,
+  salvageObject as SalvageObjectFn,
   withResponseActivityTap as WithResponseActivityTapFn,
 } from './llm.js';
 
@@ -32,13 +33,19 @@ let chatObject: typeof ChatObjectFn;
 let chatObjectStream: typeof ChatObjectStreamFn;
 let chatStream: typeof ChatStreamFn;
 let getModelId: typeof GetModelIdFn;
+let salvageObject: typeof SalvageObjectFn;
 let withResponseActivityTap: typeof WithResponseActivityTapFn;
 
 beforeAll(async () => {
   process.env.ACE_E2E_MOCK_LLM = '1';
-  ({ chatObject, chatObjectStream, chatStream, getModelId, withResponseActivityTap } = await import(
-    './llm.js'
-  ));
+  ({
+    chatObject,
+    chatObjectStream,
+    chatStream,
+    getModelId,
+    salvageObject,
+    withResponseActivityTap,
+  } = await import('./llm.js'));
 });
 
 // Mirrors cli/lib/gen-pipeline.ts's GeneratedQuestionSchema (kept local: a
@@ -803,6 +810,159 @@ describe('Fable fallback', () => {
   });
 });
 
+// Reuses the ProbeResultSchema declared above — the same shape (bounds
+// included) the live NEE-411 failure was actually validated against.
+const TWO_PROBES = {
+  probes: [
+    { question: 'What was still unresolved when it shipped?', source: 'derived' },
+    { question: 'Which trade-off would you revisit?', source: 'bank' },
+  ],
+};
+
+function noObject(text: string | undefined, finishReason: 'stop' | 'length' = 'stop') {
+  return new NoObjectGeneratedError({
+    message: 'No object generated: response did not match schema.',
+    text,
+    response: { id: 'resp-1', timestamp: new Date(0), modelId: 'claude-sonnet-5' },
+    usage: {
+      inputTokens: 1,
+      outputTokens: 1,
+      totalTokens: 2,
+      inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+      outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+    },
+    finishReason,
+  });
+}
+
+describe('salvageObject (NEE-411)', () => {
+  it('recovers the double-encoded envelope observed live on the probe slot', () => {
+    // Verbatim shape from the activity log of the failing run: the whole
+    // payload re-encoded as a JSON string INTO its own single field.
+    const text = JSON.stringify({ probes: JSON.stringify(TWO_PROBES) });
+    expect(salvageObject(ProbeResultSchema, noObject(text))).toEqual(TWO_PROBES);
+  });
+
+  it('decodes a stringified field in place, keeping its siblings', () => {
+    const schema = z.object({ slug: z.string(), tags: z.array(z.string()) });
+    const text = JSON.stringify({ slug: 'two-sum', tags: '["array","hash"]' });
+    // DECODE is tried before COLLAPSE precisely so `slug` survives.
+    expect(salvageObject(schema, noObject(text))).toEqual({
+      slug: 'two-sum',
+      tags: ['array', 'hash'],
+    });
+  });
+
+  it('is schema-agnostic — every slot shares this path', () => {
+    const schema = z.object({ ideas: z.array(z.string()) });
+    const text = JSON.stringify({ ideas: JSON.stringify({ ideas: ['a', 'b'] }) });
+    expect(salvageObject(schema, noObject(text))).toEqual({ ideas: ['a', 'b'] });
+  });
+
+  it('returns the payload untouched when it already satisfies the schema', () => {
+    expect(salvageObject(ProbeResultSchema, noObject(JSON.stringify(TWO_PROBES)))).toEqual(
+      TWO_PROBES,
+    );
+  });
+
+  it('refuses to guess when the field is prose rather than encoded JSON', () => {
+    const text = JSON.stringify({ probes: 'I could not answer that.' });
+    expect(salvageObject(ProbeResultSchema, noObject(text))).toBeUndefined();
+  });
+
+  it('never weakens the schema — an unwrapped payload that still fails stays failed', () => {
+    // One probe, against ProbeResultSchema's .min(2). Unwrapping succeeds;
+    // validation must not.
+    const text = JSON.stringify({ probes: JSON.stringify({ probes: [TWO_PROBES.probes[0]] }) });
+    expect(salvageObject(ProbeResultSchema, noObject(text))).toBeUndefined();
+  });
+
+  it('does not salvage a truncated response', () => {
+    // A 'length' finish means the missing bytes are simply absent — there is
+    // nothing mis-encoded to un-wrap, and "recovering" a cut-off answer is
+    // exactly the masking this must not do.
+    const text = JSON.stringify({ probes: JSON.stringify(TWO_PROBES) });
+    expect(salvageObject(ProbeResultSchema, noObject(text, 'length'))).toBeUndefined();
+  });
+
+  it('ignores unparseable text, absent text, and unrelated errors', () => {
+    expect(salvageObject(ProbeResultSchema, noObject('{"probes": "{\\"probes\\":['))).toBeUndefined();
+    expect(salvageObject(ProbeResultSchema, noObject(undefined))).toBeUndefined();
+    expect(salvageObject(ProbeResultSchema, new Error('socket hang up'))).toBeUndefined();
+  });
+
+  // The two caps are pinned separately below. Pinned together (one deeply
+  // nested payload) they mask each other: either alone stops that search, so
+  // raising just one keeps the test green and the other cap goes unguarded.
+
+  it('stops unwrapping at SALVAGE_MAX_DEPTH', () => {
+    const wrapped = (n: number) => {
+      let text = JSON.stringify(TWO_PROBES);
+      for (let i = 0; i < n; i++) text = JSON.stringify({ probes: text });
+      return text;
+    };
+    // A single-field chain branches into only 7 readings total — far under
+    // SALVAGE_MAX_CANDIDATES — so depth is provably what ends this search.
+    expect(salvageObject(ProbeResultSchema, noObject(wrapped(3)))).toEqual(TWO_PROBES);
+    expect(salvageObject(ProbeResultSchema, noObject(wrapped(4)))).toBeUndefined();
+  });
+
+  it('stops after SALVAGE_MAX_CANDIDATES on a wide payload', () => {
+    const wide = (decoys: number) => {
+      const obj: Record<string, string> = {};
+      for (let i = 0; i < decoys; i++) obj[`note${i}`] = JSON.stringify({ [`k${i}`]: `v${i}` });
+      obj.probes = JSON.stringify(TWO_PROBES);
+      return JSON.stringify(obj);
+    };
+    // Every extra double-encoded field branches the walk twice. Nothing here
+    // nests past depth 2, so the candidate cap — not the depth cap — is what
+    // ends the search, and the recoverable reading exists either way.
+    expect(salvageObject(ProbeResultSchema, noObject(wide(6)))).toEqual(TWO_PROBES);
+    expect(salvageObject(ProbeResultSchema, noObject(wide(8)))).toBeUndefined();
+  });
+});
+
+describe('chatObject real path (mocked ai seam) — NEE-411', () => {
+  const env = useIsolatedEnv();
+
+  it('salvages a double-encoded response instead of failing, without a second call', async () => {
+    // The streaming twin of this test lives below. Both call sites wire the
+    // salvage separately, and chatObject's only production caller
+    // (reviews.ts's review-extract) degrades silently to regex parsing on any
+    // failure — so a regression here would surface nowhere at all.
+    env.writeConfig({ ANTHROPIC_API_KEY: 'k1' });
+    const { llm, generateObject } = await loadRealLlm();
+    generateObject.mockRejectedValueOnce(
+      noObject(JSON.stringify({ probes: JSON.stringify(TWO_PROBES) })),
+    );
+
+    const result = await llm.chatObject(
+      'probe',
+      [{ role: 'user', content: 'hi' }],
+      ProbeResultSchema,
+    );
+
+    expect(result).toEqual(TWO_PROBES);
+    expect(generateObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('rethrows the original error when nothing can be salvaged', async () => {
+    env.writeConfig({ ANTHROPIC_API_KEY: 'k1' });
+    const { llm, generateObject } = await loadRealLlm();
+    const rejection = noObject('{"probes": "{\\"probes\\":[');
+    generateObject.mockRejectedValueOnce(rejection);
+
+    const err: unknown = await llm
+      .chatObject('probe', [{ role: 'user', content: 'hi' }], ProbeResultSchema)
+      .catch((e: unknown) => e);
+
+    // Identity matters downstream: job-engine.ts keys its friendly message
+    // off NoObjectGeneratedError, generation.ts persists .text.
+    expect(err).toBe(rejection);
+    expect(NoObjectGeneratedError.isInstance(err)).toBe(true);
+  });
+});
+
 describe('chatObjectStream real path (mocked ai seam)', () => {
   const env = useIsolatedEnv();
 
@@ -881,5 +1041,34 @@ describe('chatObjectStream real path (mocked ai seam)', () => {
     // match on: isInstance plus .text for the raw-response job column.
     expect(NoObjectGeneratedError.isInstance(err)).toBe(true);
     expect((err as NoObjectGeneratedError).text).toBe(rawText);
+  });
+
+  it('salvages a double-encoded response instead of failing, without a second call (NEE-411)', async () => {
+    env.writeConfig({ ANTHROPIC_API_KEY: 'k1' });
+    const { llm, streamText } = await loadRealLlm();
+    const rejection = noObject(JSON.stringify({ probes: JSON.stringify(TWO_PROBES) }));
+    const output = Promise.reject(rejection);
+    output.catch(() => {});
+    streamText.mockReturnValueOnce({
+      partialOutputStream: (async function* () {
+        yield { probes: '{"probes":[' };
+      })(),
+      output,
+    } as never);
+
+    const seen: Array<Record<string, unknown>> = [];
+    const result = await llm.chatObjectStream(
+      'probe',
+      [{ role: 'user', content: 'hi' }],
+      ProbeResultSchema,
+      { onPartial: (partial) => seen.push(partial) },
+    );
+
+    expect(result).toEqual(TWO_PROBES);
+    // Free recovery: the already-paid-for answer is re-read, not re-bought.
+    expect(streamText).toHaveBeenCalledTimes(1);
+    // The recovered object lands as the last partial so the Activity Log ends
+    // showing what the caller received, not the mis-encoded blob.
+    expect(seen.at(-1)).toEqual(TWO_PROBES);
   });
 });

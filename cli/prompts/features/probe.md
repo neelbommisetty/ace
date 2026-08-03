@@ -37,19 +37,15 @@ next, in the order you'd ask them.
   why you're asking, do not soften it with interviewer commentary — that
   framing belongs to the human reading it, not the output.
 
-## Output Format
+## Output
 
-**IMPORTANT**: Respond with a single JSON object matching this shape — no
-code fences, no surrounding text.
+Return 2 to 4 probes. Each probe has exactly two parts:
 
-```json
-{
-  "probes": [
-    { "question": "The follow-up question, verbatim.", "source": "bank" },
-    { "question": "Another follow-up question, verbatim.", "source": "derived" }
-  ]
-}
-```
+- `question` — the follow-up itself, verbatim, exactly as you would ask it
+  out loud.
+- `source` — `bank` when it comes from the Probe Bank above (as-is or
+  lightly adapted), `derived` when you wrote it fresh against this
+  candidate's answer.
 
 ## Rules
 

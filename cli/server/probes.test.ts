@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { NoObjectGeneratedError } from 'ai';
 import { getProbeBankMd, scaffoldQuestionAt } from '../lib/scaffold.js';
 import type { LLMMessage, LLMSlot } from '../lib/llm.js';
 import { createAiLog } from './ai-log.js';
@@ -556,6 +557,53 @@ describe('createProbeEngine', () => {
     await errored;
 
     expect(db.listProbeSets(question.id)).toEqual([]);
+  });
+
+  it('an unsalvageable NoObjectGeneratedError surfaces as the actionable fallback message', async () => {
+    // The test above throws a ZodError, which takes toEngineErrorMessage's
+    // `err.message` branch. This is the OTHER branch — the one a real parse
+    // failure takes, and the string the user actually sees. Nothing pinned it
+    // before NEE-411; salvage now handles the recoverable shape, so what is
+    // left here is a genuinely unreadable response.
+    const question = writeQuestion('conflict-unparseable', { story: REAL_STORY });
+    const { llm } = makeFakeLlm([
+      () => {
+        throw new NoObjectGeneratedError({
+          message: 'No object generated: could not parse the response.',
+          text: '{"probes": "{\\"probes\\":[',
+          response: { id: 'resp-1', timestamp: new Date(0), modelId: 'claude-sonnet-5' },
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            inputTokenDetails: {
+              noCacheTokens: undefined,
+              cacheReadTokens: undefined,
+              cacheWriteTokens: undefined,
+            },
+            outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+          },
+          finishReason: 'stop',
+        });
+      },
+    ]);
+    const engine = createProbeEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm,
+      hasProvider: FAKE_HAS_PROVIDER,
+    });
+
+    const errored = waitFor('probes-error');
+    engine.start(question, null);
+    const payload = await errored;
+
+    expect(payload.message).toBe(
+      'the model did not return parseable follow-up probes — try again',
+    );
+    expect(db.listProbeSets(question.id)).toEqual([]);
+    expect(engine.isRunning(question.id)).toBe(false);
   });
 
   it('assertNotRunning: a second start() for the same question while one is in flight throws synchronously', () => {

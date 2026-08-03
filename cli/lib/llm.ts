@@ -550,6 +550,122 @@ function fableRetryRoute(route: ResolvedRoute, err: unknown): ResolvedRoute | nu
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Double-encoded structured output (NEE-411)
+// ---------------------------------------------------------------------------
+//
+// Observed live on the `probe` slot: the model answered with its whole payload
+// JSON-encoded *into* the single field the payload was supposed to contain —
+//
+//   {"probes": "{\"probes\":[{\"question\":\"…\",\"source\":\"derived\"}, …]}"}
+//
+// The inner object was complete and perfectly valid; only the envelope was
+// wrong. The AI SDK's schema check rejected it, and every caller here turned
+// that into a hard user-facing failure ("the model did not return parseable
+// follow-up probes"), throwing away a good, already-paid-for answer. Retrying
+// by hand produced the same content on the next sample.
+//
+// So: before an unparseable structured response is allowed to fail, try a few
+// mechanical re-readings of the raw text and see whether any of them satisfy
+// the CALLER'S OWN schema. That schema stays the sole judge — nothing here
+// loosens, coerces, or repairs anything, so a genuinely bad response still
+// fails exactly as it does today.
+
+// JSON.parse rounds per candidate, counting the first parse of `err.text`.
+// The shape observed above needs 2; 3 leaves one round of headroom without
+// letting a pathological payload walk forever.
+const SALVAGE_MAX_DEPTH = 3;
+
+// The walk branches twice per JSON-ish string field and the widest schema here
+// (GeneratedQuestionSchema) has 12 — a flat ceiling is cheaper to reason about
+// than a per-level one, and any real double-encode is found in the first few.
+const SALVAGE_MAX_CANDIDATES = 16;
+
+/**
+ * Strict JSON.parse, `undefined` on failure.
+ *
+ * Deliberately NOT the SDK's `fixJson`/`parsePartialJson` (which back
+ * `partialOutputStream`): those close unterminated strings and arrays, which
+ * would turn a TRUNCATED response into a valid-looking short one. ProbeResultSchema
+ * accepts 2..4 probes, so a four-probe answer cut off mid-flight would "repair"
+ * into a plausible two-probe answer and be saved as if the model meant it.
+ */
+function parseStrictJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A string that could be a JSON object or array — the only thing worth
+ * decoding. Bare scalars are excluded on purpose: turning `"42"` into `42`
+ * is type coercion (exactly what the caller's schema is there to catch),
+ * not un-encoding.
+ */
+function looksLikeJsonContainer(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  return trimmed.startsWith('{') || trimmed.startsWith('[');
+}
+
+/**
+ * Yields the re-readings of `raw` worth testing against a schema, nearest
+ * interpretation first.
+ *
+ * For every string-valued field that looks like JSON, two readings are tried,
+ * in this order:
+ *   1. DECODE — replace just that field with its parsed value, keeping every
+ *      sibling. Strictly less lossy, so it goes first.
+ *   2. COLLAPSE — the parsed value *is* the whole payload and the outer object
+ *      was a stray envelope. This is the shape actually observed in the wild.
+ */
+function* salvageCandidates(raw: unknown, depth: number): Generator<unknown> {
+  yield raw;
+  if (depth >= SALVAGE_MAX_DEPTH) return;
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return;
+
+  for (const [key, value] of Object.entries(raw)) {
+    if (!looksLikeJsonContainer(value)) continue;
+    const inner = parseStrictJson(value);
+    if (inner === undefined) continue;
+    yield* salvageCandidates({ ...raw, [key]: inner }, depth + 1);
+    yield* salvageCandidates(inner, depth + 1);
+  }
+}
+
+/**
+ * Recovers a schema-valid object from a failed structured-output call, or
+ * `undefined` when there is nothing honest to recover.
+ *
+ * Total by contract — it validates with `safeParse` and never throws. That is
+ * load-bearing: `job-engine.ts`'s `toEngineErrorMessage` keys its friendly
+ * fallback off `NoObjectGeneratedError` identity, and `generation.ts` persists
+ * `err.text` into the job row's rawText column. Substituting a different error
+ * on the way out would break both.
+ */
+export function salvageObject<T>(schema: z.ZodType<T>, err: unknown): T | undefined {
+  if (!NoObjectGeneratedError.isInstance(err)) return undefined;
+  if (!err.text) return undefined;
+  // Truncation and refusal have nothing mis-encoded to un-wrap: a 'length'
+  // finish means the bytes needed are simply absent, and "salvaging" that is
+  // precisely the masking this must not do. A refusal is fableRetryRoute's
+  // business, and its text is prose, not a payload.
+  if (err.finishReason === 'length' || isRefusalFinish(err.finishReason)) return undefined;
+
+  const raw = parseStrictJson(err.text);
+  if (raw === undefined) return undefined;
+
+  let tried = 0;
+  for (const candidate of salvageCandidates(raw, 0)) {
+    if (++tried > SALVAGE_MAX_CANDIDATES) break;
+    const parsed = schema.safeParse(candidate);
+    if (parsed.success) return parsed.data;
+  }
+  return undefined;
+}
+
 // Statuses whose Response constructor rejects a body outright — those (and
 // bodyless responses) must pass through untouched or the wrap itself throws.
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
@@ -754,7 +870,15 @@ export async function chatObject<T>(
     result = await call(route);
   } catch (err) {
     const retry = fableRetryRoute(route, err);
-    if (!retry) throw err;
+    // The Fable branch is checked first so its ZDR latch and no-latch refusal
+    // behaviour stay byte-identical. A response that fails to parse only on
+    // that retry is knowingly not salvaged — a rare double failure, not worth
+    // the extra nesting here.
+    if (!retry) {
+      const salvaged = salvageObject(schema, err);
+      if (salvaged !== undefined) return salvaged;
+      throw err;
+    }
     return (await call(retry)).object;
   }
   // A refusal arrives on an HTTP 200 with no usable object — retry it on
@@ -880,7 +1004,18 @@ export async function chatObjectStream<T>(
     // A Fable retry replays the whole streaming call, so onPartial fires
     // again from the start — callers overwrite per partial, never append.
     const retry = fableRetryRoute(route, err);
-    if (!retry) throw err;
+    // Same ordering rationale (and the same knowing gap on the retry's own
+    // response) as chatObject above.
+    if (!retry) {
+      const salvaged = salvageObject(schema, err);
+      if (salvaged === undefined) throw err;
+      // Push the recovered object through as a final partial: ai-log.ts's
+      // PartialDiffer emits a wholesale `set` once a value stops being a
+      // prefix of its successor, so the Activity Log ends showing what the
+      // caller actually received rather than the mis-encoded blob.
+      firePartial(salvaged);
+      return salvaged;
+    }
     return (await runOnce(retry)).value;
   }
   if (attempt.refused) return (await runOnce(fableFallbackRoute(route))).value;
