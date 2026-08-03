@@ -345,3 +345,77 @@ describe('AiPanel — follow-up probes gating (NEE-345)', () => {
     expect(document.querySelector('textarea')).toBeNull();
   });
 });
+
+describe('AiPanel — paid actions row (NEE-412)', () => {
+  // The overflowing state: a keyed prose question renders BOTH long labels at
+  // once. They live in `.pane-actions` below the header now, because no panel
+  // width ever fit them inside the 38px `.pane-header`.
+  const bothActions = {
+    question: BEHAVIORAL_QUESTION,
+    settings: KEYED_SETTINGS,
+    onRequest: vi.fn(),
+    onRequestProbes: vi.fn(),
+  };
+
+  it('renders both paid actions together, outside the pane header', () => {
+    const { container } = renderPanel(bothActions);
+
+    const review = screen.getByRole('button', { name: 'Request review · anthropic/claude-opus-5' });
+    const probes = screen.getByRole('button', {
+      name: 'Follow-up probes · anthropic/claude-sonnet-5',
+    });
+
+    const actions = container.querySelector('.pane-actions');
+    expect(actions).toContainElement(review);
+    expect(actions).toContainElement(probes);
+    // The header keeps only the title and the collapse caret — the whole
+    // point of the fix.
+    expect(container.querySelector('.pane-header')).not.toContainElement(review);
+    // The caret's accessible name is its "▸" glyph, so match on the title.
+    expect(container.querySelector('.pane-header .icon-btn')).toHaveAttribute(
+      'title',
+      'Collapse AI panel',
+    );
+  });
+
+  it('keeps the model visible on the button, not only in the accessible name', () => {
+    // Load-bearing: the accessible names above are supplied by aria-label, so
+    // without this the suite would stay green if the visible model line
+    // disappeared entirely — losing what NEE-303 put there.
+    renderPanel(bothActions);
+    expect(screen.getByText('anthropic/claude-opus-5')).toBeInTheDocument();
+    expect(screen.getByText('anthropic/claude-sonnet-5')).toBeInTheDocument();
+  });
+
+  it('drops the model line while an action is running, leaving just the status', () => {
+    const { container } = renderPanel({
+      ...bothActions,
+      stream: { jobId: 'j1', text: '', error: null },
+      probesRunning: true,
+    });
+    expect(screen.getByRole('button', { name: 'Reviewing…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Drafting probes…' })).toBeDisabled();
+    // Asserted structurally rather than per model id: the names above come
+    // from aria-label, so a check against one slot's model would leave the
+    // other button's sub-line unpinned.
+    expect(container.querySelectorAll('.btn-stack-sub')).toHaveLength(0);
+  });
+
+  it('omits the actions row entirely in readonly mode', () => {
+    // renderPanel supplies onRequest by default — readonly means neither
+    // callback is present.
+    const { container } = renderPanel({
+      question: BEHAVIORAL_QUESTION,
+      settings: KEYED_SETTINGS,
+      onRequest: undefined,
+    });
+    expect(container.querySelector('.pane-actions')).toBeNull();
+  });
+
+  it('keeps the full provider/model reachable in the tooltip', () => {
+    renderPanel(bothActions);
+    expect(
+      screen.getByRole('button', { name: /Follow-up probes/ }),
+    ).toHaveAttribute('title', expect.stringContaining('anthropic/claude-sonnet-5'));
+  });
+});

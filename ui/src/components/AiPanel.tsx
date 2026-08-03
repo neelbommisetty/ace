@@ -119,6 +119,28 @@ export function AiPanel({
     [hasReviews, question.category, question.slug],
   );
 
+  // Both actions carry a `· provider/model` suffix (NEE-303), and neither the
+  // 38px `.pane-header` nor the panel itself is ever wide enough for two of
+  // them: even at the 520px maximum the header runs ~170px over, and at the
+  // 220px minimum a single full label already overflows on its own. So the
+  // buttons live in their own wrapping row below the header, stacking the
+  // model onto a second line — see `.pane-actions` in styles.css. The
+  // accessible name still spells out the full one-line label the header used
+  // to show, which is what NEE-303 actually promised: name the model that will
+  // run BEFORE the paid click.
+  const showReview = onRequest != null && canRequest;
+  const showProbes = onRequestProbes != null && canRequestProbes;
+  const reviewLabel = running
+    ? 'Reviewing…'
+    : reviewModel != null
+      ? `Request review · ${modelLabel(reviewModel)}`
+      : 'Request review';
+  const probeLabel = probesRunning
+    ? 'Drafting probes…'
+    : probeModel != null
+      ? `Follow-up probes · ${modelLabel(probeModel)}`
+      : 'Follow-up probes';
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
@@ -140,30 +162,40 @@ export function AiPanel({
       <div className="pane-header">
         <span className="pane-title">AI review</span>
         <div className="ai-header-actions">
+          <button className="icon-btn" onClick={onCollapse} title="Collapse AI panel">
+            ▸
+          </button>
+        </div>
+      </div>
+      {(showReview || showProbes) && (
+        <div className="pane-actions">
           {onRequest && canRequest && (
             <button
-              className="btn btn-small btn-accent"
+              className="btn btn-small btn-accent btn-stack"
               disabled={running}
               onClick={onRequest}
+              aria-label={reviewLabel}
               title={
                 reviewModel != null
                   ? `Costs one LLM call · ${modelLabel(reviewModel)}`
                   : 'runs an LLM review — needs an API key in Settings'
               }
             >
-              {running && <span className="pulse-dot pulse-dot-on-accent" />}
-              {running
-                ? 'Reviewing…'
-                : reviewModel != null
-                  ? `Request review · ${modelLabel(reviewModel)}`
-                  : 'Request review'}
+              <span className="btn-stack-main">
+                {running && <span className="pulse-dot pulse-dot-on-accent" />}
+                {running ? 'Reviewing…' : 'Request review'}
+              </span>
+              {!running && reviewModel != null && (
+                <span className="btn-stack-sub">{modelLabel(reviewModel)}</span>
+              )}
             </button>
           )}
           {onRequestProbes && canRequestProbes && (
             <button
-              className="btn btn-small"
+              className="btn btn-small btn-stack"
               disabled={probesRunning || (probeSets != null && probeSets.length > 0)}
               onClick={onRequestProbes}
+              aria-label={probeLabel}
               title={
                 probeSets != null && probeSets.length > 0
                   ? 'Follow-up probes already generated for this attempt'
@@ -172,19 +204,17 @@ export function AiPanel({
                     : 'runs an LLM to draft follow-up questions — needs an API key in Settings'
               }
             >
-              {probesRunning && <span className="pulse-dot" />}
-              {probesRunning
-                ? 'Drafting probes…'
-                : probeModel != null
-                  ? `Follow-up probes · ${modelLabel(probeModel)}`
-                  : 'Follow-up probes'}
+              <span className="btn-stack-main">
+                {probesRunning && <span className="pulse-dot" />}
+                {probesRunning ? 'Drafting probes…' : 'Follow-up probes'}
+              </span>
+              {!probesRunning && probeModel != null && (
+                <span className="btn-stack-sub">{modelLabel(probeModel)}</span>
+              )}
             </button>
           )}
-          <button className="icon-btn" onClick={onCollapse} title="Collapse AI panel">
-            ▸
-          </button>
         </div>
-      </div>
+      )}
       <div className="pane-scroll" ref={scrollRef} onScroll={onScroll}>
         {/* Proactive (settings-derived, before any click) or reactive (a 503
             slipped through, e.g. a key removed in another tab mid-session) —

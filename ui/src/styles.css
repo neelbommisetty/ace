@@ -381,6 +381,42 @@ code {
   font-size: 12px;
 }
 
+/* A two-line button: the action on top, the `provider/model` it will run on
+ * below it (NEE-412). Both AI-panel actions carry that suffix, and no panel
+ * width ever fit them side by side on one line — see `.pane-actions`. Cascade
+ * order matters: this must come after `.btn`/`.btn-small` to win the
+ * flex-direction and `white-space` it overrides. */
+.btn-stack {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  line-height: 1.25;
+}
+
+.btn-stack-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.btn-stack-sub {
+  font-size: 11px;
+  color: var(--dim);
+  /* Overrides `.btn`'s nowrap: at the 220px panel minimum two of these share
+   * a row, and a long `provider/model` must break rather than push the button
+   * past the panel edge — the whole bug this rule exists to fix. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+/* --dim is near-invisible on the accent fill — the accent button's own ink is
+ * dark, so the sub-line just steps back from it instead. */
+.btn-accent .btn-stack-sub {
+  color: inherit;
+  opacity: 0.72;
+}
+
 .icon-btn {
   font: inherit;
   font-size: 12px;
@@ -1003,6 +1039,32 @@ code {
   justify-content: space-between;
   padding: 0 8px 0 12px;
   height: 38px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* A pane's paid actions, on their own wrapping row under the fixed-height
+ * `.pane-header` (NEE-412).
+ *
+ * Measured budget for the AI panel, which is why this exists: `.pane-slot-ai`
+ * is min 300px (>1400px viewport) / 260px (900-1400) / 220px (<=900) and max
+ * 520px, leaving 199-499px of usable header width after the pane border and
+ * the header's 20px padding. "AI review" (~70px) + "Request review ·
+ * anthropic/claude-sonnet-5" (~281px) + "Follow-up probes · anthropic/
+ * claude-sonnet-5" (~283px) + gaps + the collapse caret is ~666px — over
+ * budget at EVERY width the panel can be dragged to, not just narrow ones,
+ * and still ~167px over at the 520px maximum. Stripping the model suffix
+ * would not have saved it either (~265px of bare labels vs a 199px floor).
+ *
+ * So wrapping here is unconditional rather than a breakpoint: no fixed height
+ * (unlike `.pane-header`, whose 38px `.pane-tabs` depends on), and the row
+ * disappears entirely when a pane has no actions to offer. */
+.pane-actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -3362,8 +3424,13 @@ code {
  *
  * 1280x800 and 1180x800 — below the 1400px breakpoint: side panes shrink
  *   to 26%/240px and 24%/260px. The AI panel defaults open at both (the
- *   1150px default-collapse threshold sits below 1180), each comfortably
- *   fitting "AI review" + Request review + collapse in its 260px+ header.
+ *   1150px default-collapse threshold sits below 1180), fitting
+ *   "AI review" + collapse in its 260px+ header. NEE-412 corrects what this
+ *   line used to claim: the paid actions do NOT fit that header and never
+ *   did once NEE-345 added a second button and NEE-303 appended
+ *   `· provider/model` to both. They now live in `.pane-actions`, a wrapping
+ *   row below the header, which is width-independent by construction — see
+ *   the measured budget in that rule.
  *   The problem pane defaults open too (>=900px); its header (two tabs +
  *   collapse) never approaches its 240px+ width. .center-col easily clears
  *   its 420px floor at both — even with both side panes at their shrunk
