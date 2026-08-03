@@ -559,6 +559,41 @@ describe('createProbeEngine', () => {
     expect(db.listProbeSets(question.id)).toEqual([]);
   });
 
+  it('names a silent recovery in the step detail (NEE-411)', async () => {
+    // The salvaged object is what gets logged, so a run that only succeeded
+    // after being un-double-encoded would otherwise be indistinguishable from
+    // a clean one — and a slot that mis-encodes constantly would look healthy.
+    const question = writeQuestion('conflict-salvaged', { story: REAL_STORY });
+    const aiLog = createAiLog({ db, bus });
+    const chatObjectStream = async (
+      _slot: LLMSlot,
+      _messages: LLMMessage[],
+      _schema: unknown,
+      opts?: FakeLlmOpts & { onSalvaged?: () => void },
+    ) => {
+      opts?.onRoute?.(FAKE_ROUTE);
+      opts?.onSalvaged?.();
+      return TWO_PROBES;
+    };
+    const engine = createProbeEngine({
+      db,
+      bus,
+      workspaceRoot: tempRoot,
+      llm: { chatObjectStream } as unknown as ProbeLlm,
+      hasProvider: FAKE_HAS_PROVIDER,
+      aiLog,
+    });
+
+    const done = waitFor('probes-done');
+    engine.start(question, null);
+    await done;
+
+    const run = db.listAiRuns({ limit: 10 }).find((r) => r.kind === 'probe');
+    const step = db.listAiSteps(run!.id).find((s) => s.slug === 'probe');
+    expect(step?.status).toBe('done');
+    expect(step?.detail).toBe('2 probes (recovered from a mis-encoded response)');
+  });
+
   it('an unsalvageable NoObjectGeneratedError surfaces as the actionable fallback message', async () => {
     // The test above throws a ZodError, which takes toEngineErrorMessage's
     // `err.message` branch. This is the OTHER branch — the one a real parse

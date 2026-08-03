@@ -10,6 +10,8 @@ import type {
   chatObjectStream as ChatObjectStreamFn,
   chatStream as ChatStreamFn,
   getModelId as GetModelIdFn,
+  isSelfEncoded as IsSelfEncodedFn,
+  payloadString as PayloadStringFn,
   salvageObject as SalvageObjectFn,
   withResponseActivityTap as WithResponseActivityTapFn,
 } from './llm.js';
@@ -33,6 +35,8 @@ let chatObject: typeof ChatObjectFn;
 let chatObjectStream: typeof ChatObjectStreamFn;
 let chatStream: typeof ChatStreamFn;
 let getModelId: typeof GetModelIdFn;
+let isSelfEncoded: typeof IsSelfEncodedFn;
+let payloadString: typeof PayloadStringFn;
 let salvageObject: typeof SalvageObjectFn;
 let withResponseActivityTap: typeof WithResponseActivityTapFn;
 
@@ -43,6 +47,8 @@ beforeAll(async () => {
     chatObjectStream,
     chatStream,
     getModelId,
+    isSelfEncoded,
+    payloadString,
     salvageObject,
     withResponseActivityTap,
   } = await import('./llm.js'));
@@ -919,6 +925,53 @@ describe('salvageObject (NEE-411)', () => {
     // ends the search, and the recoverable reading exists either way.
     expect(salvageObject(ProbeResultSchema, noObject(wide(6)))).toEqual(TWO_PROBES);
     expect(salvageObject(ProbeResultSchema, noObject(wide(8)))).toBeUndefined();
+  });
+});
+
+describe('payloadString / isSelfEncoded (NEE-411)', () => {
+  // Built per test, not in the describe body: the exports land in beforeAll,
+  // which runs after collection.
+  const testsSchema = () => z.object({ testCode: payloadString('testCode') });
+
+  it('accepts real source, prose, and null', () => {
+    const schema = testsSchema();
+    const code = 'import { describe, it } from "vitest";\ndescribe("x", () => {});';
+    expect(schema.safeParse({ testCode: code }).success).toBe(true);
+    expect(schema.safeParse({ testCode: 'plain prose about the tests' }).success).toBe(true);
+    expect(schema.safeParse({ testCode: null }).success).toBe(true);
+  });
+
+  it('rejects the field holding the whole response re-encoded', () => {
+    const doubled = JSON.stringify({ testCode: 'import { it } from "vitest";' });
+    expect(testsSchema().safeParse({ testCode: doubled }).success).toBe(false);
+  });
+
+  it('does not fire on JSON that simply is not the response envelope', () => {
+    // A test file could legitimately embed a JSON fixture. Only the field's
+    // OWN name coming back marks a double-encode.
+    expect(isSelfEncoded('{"users":[{"id":1}]}', 'testCode')).toBe(false);
+    // Nor on a stringified array — that shape cannot carry the field name.
+    expect(isSelfEncoded('["a","b"]', 'testCode')).toBe(false);
+    expect(isSelfEncoded('42', 'testCode')).toBe(false);
+    expect(isSelfEncoded(null, 'testCode')).toBe(false);
+  });
+
+  it('composes with salvage: the guard makes a swallowed artifact recoverable', () => {
+    // This is the whole point of the pair. Without the guard a double-encoded
+    // testCode is a valid string and lands on disk as a broken test file;
+    // with it, validation fails, which is exactly what lets salvageObject
+    // reach in and return the real file.
+    const real = 'import { it } from "vitest";\nit("works", () => {});';
+    const text = JSON.stringify({ testCode: JSON.stringify({ testCode: real }) });
+    expect(salvageObject(testsSchema(), noObject(text))).toEqual({ testCode: real });
+  });
+
+  it('leaves the wire shape strict — a refinement is invisible to the JSON Schema', () => {
+    // NEE-263: the codex backend enforces strict mode regardless of our
+    // opt-out, so every property must stay required with no extras allowed.
+    const json = z.toJSONSchema(testsSchema(), { io: 'output' }) as Record<string, unknown>;
+    expect(json.required).toEqual(['testCode']);
+    expect(json.additionalProperties).toBe(false);
   });
 });
 

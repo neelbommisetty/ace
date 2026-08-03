@@ -174,6 +174,52 @@ describe('the four authoring-stage schemas', () => {
   });
 });
 
+// NEE-411: a double-encoded response is still a perfectly good STRING, so a
+// field typed `string` accepts the whole payload and writes it to disk as if
+// it were a test file or a packet. Probe's failure was loud only because its
+// one field is an array. These pin the guard onto the real schemas — the unit
+// tests for payloadString itself build their own schema and would not notice
+// a field quietly reverting to a bare z.string().
+describe('artifact fields reject the whole response re-encoded', () => {
+  // Stage and field first so it.each's %s title consumes those two and never
+  // interpolates the zod object itself.
+  const GUARDED: Array<[string, string, z.ZodObject]> = [
+    ['author-solution', 'referenceSolution', AuthorSolutionSchema],
+    ['author-solution', 'supportCode', AuthorSolutionSchema],
+    ['author-solution', 'solutionCode', AuthorSolutionSchema],
+    ['author-tests', 'testCode', AuthorTestsSchema],
+    ['author-packet', 'interviewerPacket', AuthorPacketSchema],
+    ['calibrate', 'issues', CalibrationSchema],
+  ];
+
+  /** A valid payload for `schema`, with `field` set to `value`. */
+  function withField(schema: z.ZodObject, field: string, value: unknown) {
+    const payload: Record<string, unknown> = {};
+    for (const key of Object.keys(schema.shape)) payload[key] = null;
+    if ('title' in schema.shape) payload.title = 'Two Sum';
+    if ('verdict' in schema.shape) payload.verdict = 'fits';
+    payload[field] = value;
+    return payload;
+  }
+
+  it.each(GUARDED)('%s.%s rejects a self-encoded value', (_stage, field, schema) => {
+    const doubled = JSON.stringify({ [field]: 'the real content' });
+    expect(schema.safeParse(withField(schema, field, doubled)).success).toBe(false);
+  });
+
+  it.each(GUARDED)('%s.%s still accepts real content and null', (_stage, field, schema) => {
+    expect(schema.safeParse(withField(schema, field, 'the real content')).success).toBe(true);
+    expect(schema.safeParse(withField(schema, field, null)).success).toBe(true);
+  });
+
+  it('does not fire on a JSON fixture that is not the response envelope', () => {
+    // Test files legitimately embed JSON. Only the field's OWN name returning
+    // marks a double-encode.
+    const fixture = '{"users":[{"id":1,"name":"ada"}]}';
+    expect(AuthorTestsSchema.safeParse({ testCode: fixture }).success).toBe(true);
+  });
+});
+
 describe('CalibrationSchema (stage 2.5) is strict-structured-output compatible', () => {
   it('lists every property in required', () => {
     const emitted = zodSchema(CalibrationSchema).jsonSchema as JsonSchemaObjectNode;

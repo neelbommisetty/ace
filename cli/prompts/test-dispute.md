@@ -24,27 +24,26 @@ You will receive:
    - `ambiguous` — the problem statement is unclear and both interpretations are valid
 5. If the verdict is `test_incorrect` or `ambiguous`, audit the **entire test file**, not just the failing tests: a wrong interpretation usually leaks into other test cases that happen to pass against this solution. Every test that encodes the wrong expectation must be corrected in `fixedTestCode`.
 
-## Output Format
+## Output
 
-**IMPORTANT**: Respond with a single JSON object matching this shape — no code fences, no surrounding text.
-
-```json
-{
-  "verdict": "test_incorrect | solution_incorrect | ambiguous",
-  "summary": "One-sentence summary of the finding",
-  "details": "Detailed explanation with step-by-step trace showing why the test or solution is wrong",
-  "failingTests": [
-    {
-      "testName": "name of the failing test",
-      "verdict": "test_incorrect | solution_incorrect | ambiguous",
-      "explanation": "Why this specific test is wrong or why the solution fails it",
-      "fixedAssertion": "The corrected expect(...) line, if test_incorrect. null if solution_incorrect."
-    }
-  ],
-  "fixedTestCode": "The complete corrected test file content, with EVERY test case that encodes the wrong expectation rewritten — currently-passing ones included, not just the failing assertions (only if verdict is test_incorrect or ambiguous). null if verdict is solution_incorrect.",
-  "hint": "A nudge toward the bug in the solution (only if verdict is solution_incorrect, without revealing the answer). null if test_incorrect."
-}
-```
+- `verdict` — the overall call: `test_incorrect`, `solution_incorrect`, or
+  `ambiguous`.
+- `summary` — the finding in one sentence.
+- `details` — the full explanation, including the step-by-step trace showing
+  why the test or the solution is wrong.
+- `failingTests` — one entry per failing test:
+  - `testName` — the failing test's name.
+  - `verdict` — the same three values, for this test specifically.
+  - `explanation` — why this specific test is wrong, or why the solution
+    fails it.
+  - `fixedAssertion` — the corrected `expect(...)` line when this test is
+    `test_incorrect`; null when the solution is the one at fault.
+- `fixedTestCode` — the complete corrected test file when the verdict is
+  `test_incorrect` or `ambiguous`; null when it is `solution_incorrect`.
+  Rewrite EVERY test case that encodes the wrong expectation, currently
+  passing ones included — not only the failing assertions.
+- `hint` — when the verdict is `solution_incorrect`, a nudge toward the bug
+  that does not reveal the answer; null when the test is at fault.
 
 ## Rules
 

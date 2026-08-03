@@ -8,7 +8,8 @@ import {
 } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
-import type { z } from 'zod';
+// Value import, not type-only: `payloadString` below builds a schema.
+import { z } from 'zod';
 import { loadAceConfig, type AceConfig } from './config.js';
 import type { LLMSlot } from '../../shared/wire-types.js';
 
@@ -666,6 +667,57 @@ export function salvageObject<T>(schema: z.ZodType<T>, err: unknown): T | undefi
   return undefined;
 }
 
+/**
+ * The same double-encode as `salvageObject`, caught from the inside: `value`
+ * is a string field whose content is the whole response re-encoded, carrying
+ * this very field again.
+ *
+ * `salvageObject` only ever runs when validation ALREADY failed, so it cannot
+ * help a schema whose field is typed `string` — a double-encoded payload is
+ * still a perfectly good string, so zod accepts it and the JSON blob is
+ * written to disk as if it were a test file or a packet. Probe's failure was
+ * loud only because its one field is an array (NEE-411). This is the guard
+ * that makes those fields fail loudly too — and because they then fail as a
+ * NoObjectGeneratedError, salvage picks them up and recovers them for free.
+ */
+export function isSelfEncoded(value: string | null | undefined, field: string): boolean {
+  if (value == null) return false;
+  const trimmed = value.trim();
+  // Only an object can carry the field name back. A stringified array is a
+  // different (and for these fields, harmless) shape.
+  if (!trimmed.startsWith('{')) return false;
+  const parsed = parseStrictJson(trimmed);
+  if (parsed == null || typeof parsed !== 'object') return false;
+  return field in parsed;
+}
+
+/**
+ * A nullable string field holding a whole artifact — a source file, a packet,
+ * a prose block — guarded against swallowing the entire response.
+ *
+ * The guard is invisible on the wire: a zod refinement does not appear in the
+ * generated JSON Schema, so every property stays required and the object stays
+ * `additionalProperties: false` — the strict-mode shape the codex backend
+ * enforces regardless of our opt-out (NEE-263).
+ */
+/** Shared swallow contract: a reporting bug must never kill a paid call. */
+function fireSalvaged(onSalvaged: (() => void) | undefined): void {
+  try {
+    onSalvaged?.();
+  } catch {
+    // Swallowed by contract — see above.
+  }
+}
+
+export function payloadString(field: string) {
+  return z
+    .string()
+    .nullable()
+    .refine((value) => !isSelfEncoded(value, field), {
+      message: `${field} is the whole response re-encoded as JSON, not ${field} itself`,
+    });
+}
+
 // Statuses whose Response constructor rejects a body outright — those (and
 // bodyless responses) must pass through untouched or the wrap itself throws.
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
@@ -830,7 +882,15 @@ export async function chatObject<T>(
   slot: LLMSlot,
   messages: LLMMessage[],
   schema: z.ZodType<T>,
-  opts?: { abortSignal?: AbortSignal; maxOutputTokens?: number },
+  opts?: {
+    abortSignal?: AbortSignal;
+    maxOutputTokens?: number;
+    /** Fired when a response only validated after being un-double-encoded
+     *  (NEE-411). Without it a slot that mis-encodes half its responses looks
+     *  perfectly healthy — the recovery is exactly what destroys the evidence.
+     *  Same swallow contract as the streaming callbacks. */
+    onSalvaged?: () => void;
+  },
 ): Promise<T> {
   if (mockLlm) {
     if (process.env.ACE_MOCK_LLM_MODE) {
@@ -876,7 +936,10 @@ export async function chatObject<T>(
     // the extra nesting here.
     if (!retry) {
       const salvaged = salvageObject(schema, err);
-      if (salvaged !== undefined) return salvaged;
+      if (salvaged !== undefined) {
+        fireSalvaged(opts?.onSalvaged);
+        return salvaged;
+      }
       throw err;
     }
     return (await call(retry)).object;
@@ -916,6 +979,10 @@ export async function chatObjectStream<T>(
      *  fallback retry — see chatStream's onRoute for why a caller that
      *  persists the model must record this instead of re-resolving. */
     onRoute?: (route: ResolvedRoute) => void;
+    /** Fired when a response only validated after being un-double-encoded
+     *  (NEE-411) — see chatObject's copy for why a silent recovery is worth
+     *  reporting. Same swallow contract as onPartial. */
+    onSalvaged?: () => void;
   },
 ): Promise<T> {
   const firePartial = (partial: unknown): void => {
@@ -1012,8 +1079,12 @@ export async function chatObjectStream<T>(
       // Push the recovered object through as a final partial: ai-log.ts's
       // PartialDiffer emits a wholesale `set` once a value stops being a
       // prefix of its successor, so the Activity Log ends showing what the
-      // caller actually received rather than the mis-encoded blob.
+      // caller actually received rather than the mis-encoded blob. That is
+      // also precisely why onSalvaged exists — the clean partial is the last
+      // thing recorded, so nothing else would hint the response arrived
+      // mis-encoded.
       firePartial(salvaged);
+      fireSalvaged(opts?.onSalvaged);
       return salvaged;
     }
     return (await runOnce(retry)).value;

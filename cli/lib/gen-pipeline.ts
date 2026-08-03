@@ -8,7 +8,13 @@ import {
   type QuestionType,
 } from './categories.js';
 import { verifyGeneratedQuestion, type VerifyFn } from './gen-verify.js';
-import { chatObjectStream, isMockLlm, type LLMMessage, type LLMSlot } from './llm.js';
+import {
+  chatObjectStream,
+  isMockLlm,
+  payloadString,
+  type LLMMessage,
+  type LLMSlot,
+} from './llm.js';
 import { buildQuestionSection, buildSystemPrompt } from './prompt-builder.js';
 import { renderSolutionStub } from './scaffold.js';
 import { maskSpoilerValues, SPOILER_KEYS, WITHHELD_MARKER } from './spoilers.js';
@@ -84,19 +90,19 @@ export const DraftProblemSchema = z.object({
  * `referenceSolution`.
  */
 export const AuthorSolutionSchema = z.object({
-  referenceSolution: z.string().nullable(),
-  supportCode: z.string().nullable(),
-  solutionCode: z.string().nullable(),
+  referenceSolution: payloadString('referenceSolution'),
+  supportCode: payloadString('supportCode'),
+  solutionCode: payloadString('solutionCode'),
 });
 
 /** Stage 3 — the whole test file, authored against stage 2 (coding only). */
 export const AuthorTestsSchema = z.object({
-  testCode: z.string().nullable(),
+  testCode: payloadString('testCode'),
 });
 
 /** Stage 4 — the hidden interviewer packet (+ behavioral probes). All categories. */
 export const AuthorPacketSchema = z.object({
-  interviewerPacket: z.string().nullable(),
+  interviewerPacket: payloadString('interviewerPacket'),
   followUps: z.array(z.string()).nullable(),
 });
 
@@ -227,7 +233,7 @@ export type EdgeAuditResult = z.infer<typeof EdgeAuditSchema>;
 export const CalibrationSchema = z.object({
   verdict: z.enum(['fits', 'too-big', 'too-small']),
   estimatedMinutes: z.number().nullable(),
-  issues: z.string().nullable(),
+  issues: payloadString('issues'),
 });
 
 export type CalibrationResult = z.infer<typeof CalibrationSchema>;
@@ -845,6 +851,7 @@ export async function generateVerifiedQuestion(
     schema: z.ZodType<T>,
     slot: LLMSlot,
     step?: GenerationStepHandle,
+    onSalvaged?: () => void,
   ): Promise<T> => {
     const controller = new AbortController();
     const abortWith = (message: string) =>
@@ -882,6 +889,7 @@ export async function generateVerifiedQuestion(
           clearTimeout(stallTimer);
           stallTimer = armStall();
         },
+        onSalvaged,
       });
     } finally {
       clearTimeout(stallTimer);
@@ -940,8 +948,14 @@ export async function generateVerifiedQuestion(
     slot: LLMSlot,
     systemPrompt: string,
     prompt: BuiltPrompt,
-  ): Promise<{ value: T; step: GenerationStepHandle }> => {
+  ): Promise<{ value: T; step: GenerationStepHandle; salvaged: boolean }> => {
     const step = steps.step({ ...spec, prompt: prompt.maskedPrompt });
+    // A response that only validated after being un-double-encoded (NEE-411).
+    // The recovered object is what gets recorded, so without this the stage
+    // reads as a clean success and a chronically mis-encoding slot stays
+    // invisible — which matters most here, where payloadString() now makes a
+    // swallowed artifact fail (and therefore become salvageable) at all.
+    let salvaged = false;
     const value = await callStream(
       [
         { role: 'system', content: systemPrompt },
@@ -950,14 +964,21 @@ export async function generateVerifiedQuestion(
       schema,
       slot,
       step,
+      () => {
+        salvaged = true;
+      },
     ).catch((err: unknown) => {
       // Raw model text is never stored on a parse failure (it is the unparsed
       // answer key) — only the error's own message, masked by the recorder.
       step.fail(errorText(err));
       throw err;
     });
-    return { value, step };
+    return { value, step, salvaged };
   };
+
+  /** The stage detail for a recordedCall, naming a silent recovery when one happened. */
+  const salvageDetail = (salvaged: boolean): string | undefined =>
+    salvaged ? 'recovered from a mis-encoded response' : undefined;
 
   let question: GeneratedQuestion = { ...EMPTY_QUESTION };
 
@@ -994,14 +1015,14 @@ export async function generateVerifiedQuestion(
       params.regenerate.priorQuestion,
       params.regenerate.feedback,
     );
-    const { value, step } = await recordedCall(
+    const { value, step, salvaged } = await recordedCall(
       { slug: 'repair', label: 'Revising the question', kind: 'llm' },
       GeneratedQuestionSchema,
       'repair',
       repairSystemPrompt,
       prompt,
     );
-    step.done();
+    step.done(salvageDetail(salvaged));
     // No identity pin: a regenerated question may legitimately retitle.
     question = value;
     registerSpoilers(question);
@@ -1016,7 +1037,7 @@ export async function generateVerifiedQuestion(
       prompt: params.userMessage,
       maskedPrompt: params.userMessage,
     };
-    const { value, step } = await recordedCall(
+    const { value, step, salvaged } = await recordedCall(
       {
         slug: 'draft-problem',
         label: AUTHORING_STAGES['draft-problem'].label,
@@ -1027,7 +1048,7 @@ export async function generateVerifiedQuestion(
       buildSystemPrompt('draft-problem', params.category),
       prompt,
     );
-    step.done();
+    step.done(salvageDetail(salvaged));
     question = value;
     registerSpoilers(question);
     onStageResult(question);
@@ -1053,7 +1074,7 @@ export async function generateVerifiedQuestion(
       }
       onProgress(phase, 1);
       const prompt = buildStagePrompt(stage);
-      const { value, step } = await recordedCall(
+      const { value, step, salvaged } = await recordedCall(
         { slug: stage, label, kind: 'llm' },
         schema,
         stage,
@@ -1071,7 +1092,7 @@ export async function generateVerifiedQuestion(
           );
         }
       }
-      step.done();
+      step.done(salvageDetail(salvaged));
       question = merged;
       registerSpoilers(question);
       onStageResult(question);

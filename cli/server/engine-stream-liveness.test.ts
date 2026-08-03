@@ -15,7 +15,11 @@ import { openDb } from './db.js';
 import { createBus, type Bus } from './sse.js';
 import type { AceDb, QuestionRow, TestRunRow } from './types.js';
 
-vi.mock('../lib/llm.js', () => ({
+// Partial mock: only the network-touching entry points are faked. Pure
+// helpers (payloadString, which gen-pipeline calls at module scope) must stay
+// real — a fake would silently change the schemas under test.
+vi.mock('../lib/llm.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/llm.js')>()),
   isMockLlm: vi.fn(() => true),
   hasAnyProvider: vi.fn(() => true),
   chatStream: vi.fn(),

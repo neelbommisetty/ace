@@ -15,7 +15,10 @@ import { openDb } from './db.js';
 import { createBus, type Bus } from './sse.js';
 import type { AceDb, QuestionRow } from './types.js';
 
-vi.mock('../lib/llm.js', () => ({
+// Partial mock — see engine-stream-liveness.test.ts for why the pure
+// helpers must stay real.
+vi.mock('../lib/llm.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/llm.js')>()),
   isMockLlm: vi.fn(() => true),
   hasAnyProvider: vi.fn(() => true),
   chatStream: vi.fn(),

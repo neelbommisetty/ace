@@ -272,6 +272,11 @@ ${bankSection}`;
       // model that refused. The pre-call resolution is the fallback for mock
       // mode and the injected test seam, where no route is ever taken.
       let usedModel = getModelId('probe');
+      // The recovered object is what the log records, so a run that only
+      // succeeded after being un-double-encoded would otherwise read as a
+      // clean success — this slot is where that failure was first seen
+      // (NEE-411).
+      let salvaged = false;
       try {
         result = await llm.chatObjectStream('probe', messages, ProbeResultSchema, {
           abortSignal: abort,
@@ -279,12 +284,19 @@ ${bankSection}`;
           onRoute: (route) => {
             usedModel = route.model;
           },
+          onSalvaged: () => {
+            salvaged = true;
+          },
         });
       } catch (err) {
         step.fail(err instanceof Error ? err.message : String(err));
         throw err;
       }
-      step.done(`${result.probes.length} probes`);
+      step.done(
+        salvaged
+          ? `${result.probes.length} probes (recovered from a mis-encoded response)`
+          : `${result.probes.length} probes`,
+      );
       // A paid call that resolved after dispose() — see
       // JobRegistry.isDisposed() for the write-through rationale.
       if (inFlight.isDisposed()) return;

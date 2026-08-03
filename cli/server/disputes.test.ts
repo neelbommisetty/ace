@@ -56,4 +56,24 @@ describe('DisputeResultSchema is strict-structured-output compatible', () => {
     expect(result.fixedTestCode).toBeNull();
     expect(result.failingTests[0].fixedAssertion).toBeNull();
   });
+
+  // NEE-411: fixedTestCode is a whole file, so a double-encoded response is
+  // still a valid string and would be applied to the user's test file as-is.
+  it('rejects a fixedTestCode holding the whole response re-encoded', () => {
+    const base = {
+      verdict: 'test_incorrect' as const,
+      summary: 'The test encodes the wrong expectation.',
+      details: 'Trace: the spec says [] , the test asserts undefined.',
+      failingTests: [],
+      hint: null,
+    };
+    const real = 'import { it } from "vitest";\nit("works", () => {});';
+    expect(DisputeResultSchema.safeParse({ ...base, fixedTestCode: real }).success).toBe(true);
+    expect(
+      DisputeResultSchema.safeParse({
+        ...base,
+        fixedTestCode: JSON.stringify({ fixedTestCode: real }),
+      }).success,
+    ).toBe(false);
+  });
 });

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { hasTests, lookupCategoryConfig, type CategoryConfig } from '../lib/categories.js';
 import { getImportMetaDirname } from '../lib/import-meta.js';
-import { chatObjectStream, type LLMMessage } from '../lib/llm.js';
+import { chatObjectStream, payloadString, type LLMMessage } from '../lib/llm.js';
 import { readFileOr } from '../lib/read-file-or.js';
 import { buildQuestionSection } from '../lib/prompt-builder.js';
 import { maskPromptText } from '../lib/spoilers.js';
@@ -38,7 +38,7 @@ export const DisputeResultSchema = z.object({
       fixedAssertion: z.string().nullable(),
     }),
   ),
-  fixedTestCode: z.string().nullable(),
+  fixedTestCode: payloadString('fixedTestCode'),
   hint: z.string().nullable(),
 });
 
@@ -48,6 +48,15 @@ type DisputeResult = z.infer<typeof DisputeResultSchema>;
 // mirrors STREAM_IDLE_TIMEOUT_MS there, kept local since the two engines
 // don't otherwise share constants.
 const STREAM_IDLE_TIMEOUT_MS = 180_000;
+
+// The generation pipeline is the only other caller that sets this, and for
+// the same reason (NEE-411): `fixedTestCode` is a COMPLETE rewritten test
+// file, and this runs on a model whose adaptive thinking counts against the
+// same budget. llm.ts's 8192 default is sized for an answer, not an artifact
+// — a long file truncates into a 'length' finish, which is the one failure
+// salvage deliberately refuses to paper over. Matches gen-pipeline's
+// MAX_OUTPUT_TOKENS, kept local for the same reason the timeout above is.
+const MAX_OUTPUT_TOKENS = 32_000;
 
 /** Returns an actionable error when the run is not disputable, else null. */
 export function getDisputeGuardError(question: QuestionRow, run: TestRunRow): string | null {
@@ -222,12 +231,19 @@ ${buildFailureOutput(run)}
           .join('\n\n'),
       });
       let result: DisputeResult;
+      // Recorded in the step detail below: the recovered object is what gets
+      // logged, so without this the run reads as a clean success (NEE-411).
+      let salvaged = false;
       try {
         result = await chatObjectStream('dispute', messages, DisputeResultSchema, {
           abortSignal: abort.signal,
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
           onPartial: (partial) => step.partial(partial),
           onStreamActivity: () => {
             lastActivityAt = Date.now();
+          },
+          onSalvaged: () => {
+            salvaged = true;
           },
         });
       } catch (err) {
@@ -236,7 +252,7 @@ ${buildFailureOutput(run)}
       } finally {
         clearInterval(watchdog);
       }
-      step.done(result.verdict);
+      step.done(salvaged ? `${result.verdict} (recovered from a mis-encoded response)` : result.verdict);
       // A paid call that resolved after dispose() — see
       // JobRegistry.isDisposed() for the write-through rationale.
       if (inFlight.isDisposed()) return;
