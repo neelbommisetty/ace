@@ -31,27 +31,30 @@ export const IdeaListSchema = z.object({
 // Appended to the builder-assembled brainstorm prompt so the model returns
 // the structured shape chatObject/IdeaListSchema expects, while keeping the
 // persona prompt itself schema-agnostic and readable.
+//
+// Deliberately NOT a restated JSON envelope (braces/quoted fields/fenced
+// example) on top of chatObjectStream's Output.object(IdeaListSchema): that
+// gives the model two competing readings of the same `reply` output slot,
+// and it resolves the conflict by over-escaping its reply one level too far
+// (literal `\n`/`\"` in the persisted text). This is the exact double-
+// instruction pattern NEE-411 (af23ff7, 1a6e94a) removed from
+// cli/prompts/*.md — that copy just hadn't been ported off this TS const
+// yet. Keep this as a plain field-bullet list; no braces, no quoted field
+// names, no fenced example, no `|` union syntax, no category slug join (the
+// prompt-builder digest already lists categories).
 const STRUCTURED_OUTPUT_ADDENDUM = `
-## Output Format
+## Output
 
-Respond with a JSON object shaped like this:
+- \`reply\` — your conversational reply to the user, in markdown.
+- \`ideas\` — the question ideas this reply actually proposes, up to 5.
+  Each has:
+  - \`title\` — a short, specific name for the question.
+  - \`category\` — the generation category it belongs to, from the list above.
+  - \`difficulty\` — per that category's difficulty calibration.
+  - \`pitch\` — 1–2 sentences selling the idea.
+  - \`topic\` — the self-contained generation brief described above.
 
-{
-  "reply": string,   // your conversational reply to the user (markdown ok)
-  "ideas": [          // 0-5 concrete question ideas surfaced by this reply
-    {
-      "title": string,
-      "category": ${GENERATABLE_CATEGORY_SLUGS.join(' | ')},
-      "difficulty": "easy" | "medium" | "hard",
-      "pitch": string,  // 1-2 sentences selling the idea
-      "topic": string   // a ready-to-feed description for question generation
-    }
-  ]
-}
-
-Only include ideas when you are actually proposing concrete question
-directions — a purely conversational reply (e.g. a clarifying question) should
-return an empty "ideas" array.
+A purely conversational reply returns \`ideas\` empty.
 `;
 
 /**

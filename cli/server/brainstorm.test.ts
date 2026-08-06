@@ -144,10 +144,11 @@ describe('createBrainstormEngine', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].messages[0].role).toBe('system');
     // Builder-assembled prompt: charter first, then the brainstorm skeleton,
-    // with the structured-output addendum appended by the engine.
+    // with the structured-output addendum (the '## Output' field-bullet
+    // list, NEE-413) appended by the engine.
     expect(calls[0].messages[0].content).toContain('# Interviewer Charter');
     expect(calls[0].messages[0].content).toContain('Question Design Partner');
-    expect(calls[0].messages[0].content).toContain('## Output Format');
+    expect(calls[0].messages[0].content).toContain('## Output');
 
     expect(engine.isThinking(sessionId)).toBe(false);
     expect(engine.isAnyRunning()).toBe(false);
@@ -371,6 +372,36 @@ describe('brainstorm playground exclusion (NEE-387)', () => {
     expect(systemPrompt).toContain('react-apps');
     // …and nothing in it (builder output or addendum) names a playground.
     expect(systemPrompt).not.toContain('playground');
+  });
+});
+
+describe('structured-output addendum shape (NEE-413)', () => {
+  // Pins the addendum's field-bullet form against a regression back to the
+  // JSON-envelope form (braces, quoted field names, fenced example) that
+  // NEE-411 (af23ff7, 1a6e94a) removed from cli/prompts/*.md: giving the
+  // model two competing readings of the same `reply` output slot made it
+  // over-escape its reply one level too far (literal `\n`/`\"`).
+  it('never restates a JSON envelope for the output shape in the system prompt sent to the llm', async () => {
+    const { llm, calls } = makeFakeLlm([() => VALID_IDEA_PAYLOAD]);
+    const engine = createBrainstormEngine({ db, bus, workspaceRoot: tempRoot, llm });
+
+    const done = waitFor('brainstorm-done');
+    engine.startTurn(null, 'idea about arrays');
+    await done;
+
+    const systemPrompt = calls[0].messages[0].content;
+    expect(systemPrompt).not.toContain('## Output Format');
+    // No fenced example anywhere: today the assembled prompt has zero code
+    // fences (the capsules' fenced sections sit outside the digest that
+    // buildBrainstormPrompt includes). If a capsule ever legitimately fences
+    // code inside a digest-included section, rescope this to the addendum
+    // (`systemPrompt.slice(systemPrompt.indexOf('## Output'))`) — don't drop it.
+    expect(systemPrompt).not.toContain('```');
+    // Quoted-JSON field name from the old envelope — the new bullet form
+    // uses backticks (`reply`) instead, asserted as a positive below.
+    expect(systemPrompt).not.toContain('"reply"');
+    expect(systemPrompt).toContain('## Output');
+    expect(systemPrompt).toContain('`reply`');
   });
 });
 
