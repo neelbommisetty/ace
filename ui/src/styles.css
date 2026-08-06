@@ -3051,6 +3051,7 @@ code {
   max-width: 80%;
   background: var(--accent);
   color: var(--bg);
+  white-space: pre-wrap;
 }
 
 .brainstorm-turn-assistant {
@@ -3059,9 +3060,12 @@ code {
   color: var(--ink);
 }
 
-.brainstorm-turn-assistant p {
-  margin: 0 0 8px;
-  white-space: pre-wrap;
+.brainstorm-turn-assistant .markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.brainstorm-turn-assistant .idea-grid {
+  margin-top: 10px;
 }
 
 .brainstorm-composer {

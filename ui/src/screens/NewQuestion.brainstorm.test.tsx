@@ -307,4 +307,46 @@ describe('NewQuestion — brainstorm mode', () => {
       'openai/gpt-5.6-terra',
     );
   });
+
+  // NEE-413: assistant turns render as markdown (bold, lists, ...); user turns stay plain text.
+  it('renders an assistant turn as markdown (bold + list) inside .brainstorm-turn-assistant', async () => {
+    sessionStorage.setItem(SESSION_KEY, 'markdown-session');
+    getBrainstormSession.mockResolvedValue({
+      session: session({
+        id: 'markdown-session',
+        messages: [
+          { role: 'user', content: 'give me ideas' },
+          {
+            role: 'assistant',
+            content: 'Here are **two** ideas:\n\n- alpha\n- beta',
+            ideas: [],
+          },
+        ],
+      }),
+    });
+
+    await openBrainstormTab();
+
+    const strongText = await screen.findByText('two');
+    const bubble = strongText.closest('.brainstorm-turn-assistant') as HTMLElement;
+    expect(bubble).not.toBeNull();
+    const strong = bubble.querySelector('strong');
+    expect(strong).not.toBeNull();
+    expect(strong).toHaveTextContent('two');
+    expect(bubble.querySelectorAll('li')).toHaveLength(2);
+  });
+
+  it('renders a user turn with markdown-looking syntax as literal plain text (NEE-413)', async () => {
+    sessionStorage.setItem(SESSION_KEY, 'plain-user-session');
+    getBrainstormSession.mockResolvedValue({
+      session: session({
+        id: 'plain-user-session',
+        messages: [{ role: 'user', content: '**not markdown**' }],
+      }),
+    });
+
+    await openBrainstormTab();
+
+    expect(await screen.findByText('**not markdown**')).toBeInTheDocument();
+  });
 });

@@ -1,4 +1,6 @@
 import { useRef, useState, type FormEvent } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Link } from 'react-router';
 import {
   ApiError,
@@ -453,7 +455,9 @@ function BrainstormPane({
               </div>
             ) : (
               <div key={i} className="brainstorm-turn brainstorm-turn-assistant">
-                <p>{turn.content}</p>
+                <div className="markdown">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.content}</ReactMarkdown>
+                </div>
                 {/* An empty `ideas` array is the expected shape for a purely
                     conversational reply (see STRUCTURED_OUTPUT_ADDENDUM in
                     cli/server/brainstorm.ts) as well as for the parse-failure
