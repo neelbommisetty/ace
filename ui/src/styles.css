@@ -2821,8 +2821,18 @@ code {
 
 /* ---- new question ---------------------------------------------------------- */
 
+/* screen shell — restores .library-scroll scrolling on /new (NEE-414) */
+.new-question {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
 .new-question-wrap {
-  max-width: 640px;
+  width: 100%;
+  max-width: 960px;
+  margin-inline: auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
